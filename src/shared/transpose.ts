@@ -8,7 +8,7 @@ const FLAT_MINOR = new Set(["Dm", "Gm", "Cm", "Fm", "Bbm", "Ebm"]);
 
 // Suffix is an allow-list of chord-quality parts so ordinary words are not chords.
 const CHORD_RE =
-  /^(\(?)([A-G][#b]?)((?:maj|min|dim|aug|sus|add|m|M|\+|°|ø|b|#|-|\d+)*)(?:\/([A-G][#b]?))?(\)?)$/;
+  /^(\(?)([A-G][#b]?)((?:maj|min|dim|aug|sus|add|m|M|\+|\u00b0|\u00f8|b|#|-|\d+)*)(?:\/([A-G][#b]?))?(\)?)$/;
 
 function noteIndex(note: string): number {
   const i = SHARP_NAMES.indexOf(note);
