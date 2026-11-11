@@ -2,10 +2,16 @@
   command = "npm run build"
   publish = "dist"
 
+[build.environment]
+  NODE_VERSION = "22"
+
 [functions]
   directory = "netlify/functions"
 
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
+# `npm run dev` (netlify dev) proxies to the Vite dev server, which serves
+# its own module URLs and SPA fallback. Redirect rules live in
+# public/_redirects, which Vite copies into dist for production.
+[dev]
+  framework = "#custom"
+  command = "npx vite --port 5173 --strictPort"
+  targetPort = 5173

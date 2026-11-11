@@ -1,0 +1,6 @@
+# Unknown API routes: JSON 404, never the app shell.
+# Functions with config.path (/api/songs, ...) are matched before these rules.
+/api/*  /api-404.json  404!
+
+# Single-page app: every other path loads the app (deep links like /songs/<id>).
+/*  /index.html  200
