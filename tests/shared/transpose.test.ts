@@ -68,9 +68,9 @@ describe("transposeChord", () => {
 
 describe("isChord", () => {
   it("accepts chords", () => {
-    for (const t of ["G", "(G)", "C/G", "F#m7b5", "Bbmaj7"]) expect(isChord(t)).toBe(true);
+    for (const t of ["G", "(G)", "C/G", "F#m7b5", "Bbmaj7", "A", "A7", "Em", "Cmaj7", "Gm7b5", "Dsus4", "Asus2", "Cadd9", "Bdim", "Caug", "C+", "Dm7", "G6", "E9", "A13", "D7sus4"]) expect(isChord(t)).toBe(true);
   });
   it("rejects non-chords", () => {
-    for (const t of ["x2", "|", "-", "day", "[Verse"]) expect(isChord(t)).toBe(false);
+    for (const t of ["x2", "|", "-", "day", "[Verse", "Bed", "Dead", "Dog", "Game", "Cat", "Chorus", "Bridge", "Coda", "Fade"]) expect(isChord(t)).toBe(false);
   });
 });
