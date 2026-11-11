@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { memoryKV } from "../../netlify/functions/lib/kv";
-import { makeRepo, ValidationError } from "../../netlify/functions/lib/repo";
+import { makeRepo, NotFoundError, ValidationError } from "../../netlify/functions/lib/repo";
 import type { SongInput } from "../../src/shared/types";
 
 const song = (over: Partial<SongInput> = {}): SongInput => ({
@@ -182,6 +182,46 @@ describe("tracks", () => {
     await repo.deleteTrack(t.id);
     expect(await repo.getTrackPart(t.id, 0)).toBeNull();
     expect(await kv.list("tracks/")).toEqual([]);
+  });
+
+  it("renames a track, trimming the title", async () => {
+    const repo = makeRepo(memoryKV());
+    const t = await repo.createTrack({ title: "Demo", size: 10 });
+    await repo.putTrackPart(t.id, 0, bytes(10));
+    const renamed = await repo.renameTrack(t.id, "  Better Name ");
+    expect(renamed.title).toBe("Better Name");
+    expect(renamed).toMatchObject({ id: t.id, size: 10, parts: 1, uploadedParts: 1, createdAt: t.createdAt });
+    expect((await repo.listTracks())[0].title).toBe("Better Name");
+  });
+
+  it("rename rejects an empty title and a missing track", async () => {
+    const repo = makeRepo(memoryKV());
+    const t = await repo.createTrack({ title: "Demo", size: 10 });
+    await expect(repo.renameTrack(t.id, "   ")).rejects.toBeInstanceOf(ValidationError);
+    await expect(repo.renameTrack(t.id, 5 as unknown as string)).rejects.toBeInstanceOf(ValidationError);
+    await expect(repo.renameTrack("nope", "X")).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("purges unfinished uploads older than the limit, keeping recent and finished ones", async () => {
+    const kv = memoryKV();
+    const repo = makeRepo(kv);
+    const DAY = 24 * 60 * 60 * 1000;
+    const stale = await repo.createTrack({ title: "Stale", size: 7_000_000 });
+    await repo.putTrackPart(stale.id, 0, bytes(100));
+    const done = await repo.createTrack({ title: "Done", size: 10 });
+    await repo.putTrackPart(done.id, 0, bytes(10));
+    const later = Date.now() + 2 * DAY;
+    // A fresh unfinished upload (created "now" relative to `later`) must survive.
+    const recent = { ...(await repo.createTrack({ title: "Recent", size: 7_000_000 })) };
+    await kv.setText(`tracks/${recent.id}`, JSON.stringify({ ...recent, createdAt: new Date(later - 1000).toISOString() }));
+
+    expect(await repo.purgeAbandonedTracks(DAY, later)).toBe(1);
+
+    expect(await kv.getText(`tracks/${stale.id}`)).toBeNull();
+    expect(await kv.list(`audio/${stale.id}/`)).toEqual([]);
+    expect(await kv.getText(`tracks/${recent.id}`)).not.toBeNull();
+    expect((await repo.listTracks()).map((x) => x.id)).toEqual([done.id]);
+    expect(await kv.list(`audio/${done.id}/`)).toHaveLength(1);
   });
 
   it("counts parts correctly when uploaded concurrently", async () => {

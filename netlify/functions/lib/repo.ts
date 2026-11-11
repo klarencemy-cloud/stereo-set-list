@@ -207,6 +207,26 @@ export function makeRepo(kv: KV) {
       await writeJson(`tracks/${track.id}`, track);
       return track;
     },
+    async renameTrack(id: string, title: string): Promise<Track> {
+      if (typeof title !== "string" || !title.trim()) throw new ValidationError("title is required");
+      const t = await readJson<Track>(`tracks/${id}`);
+      if (!t) throw new NotFoundError("track not found");
+      const next: Track = { ...t, title: title.trim() };
+      await writeJson(`tracks/${id}`, next);
+      return next;
+    },
+    /** Deletes uploads that never finished and are older than `maxAgeMs`. Returns how many were removed. */
+    async purgeAbandonedTracks(maxAgeMs: number, now: number = Date.now()): Promise<number> {
+      let removed = 0;
+      for (const t of await readAll<Track>("tracks/")) {
+        if (t.uploadedParts === t.parts) continue;
+        if (now - Date.parse(t.createdAt) < maxAgeMs) continue;
+        for (const k of await kv.list(`audio/${t.id}/`)) await kv.delete(k);
+        await kv.delete(`tracks/${t.id}`);
+        removed++;
+      }
+      return removed;
+    },
     async putTrackPart(id: string, n: number, bytes: ArrayBuffer): Promise<void> {
       const t = await readJson<Track>(`tracks/${id}`);
       if (!t) throw new NotFoundError("track not found");

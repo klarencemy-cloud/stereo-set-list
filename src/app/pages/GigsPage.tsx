@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api";
-import { formatGigDate } from "../formatDate";
+import { formatGigDate, todayISO } from "../formatDate";
 import type { Gig } from "../../shared/types";
 
 export default function GigsPage() {
@@ -26,6 +26,10 @@ export default function GigsPage() {
       setFormError("Enter a name and a date.");
       return;
     }
+    if (date < todayISO()) {
+      setFormError("The date can't be in the past.");
+      return;
+    }
     setFormError("");
     setSaving(true);
     try {
@@ -46,14 +50,14 @@ export default function GigsPage() {
         )}
       </div>
       {creating && (
-        <form onSubmit={create}>
+        <form onSubmit={create} noValidate>
           <label className="field">
             Name
             <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
           </label>
           <label className="field">
             Date
-            <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+            <input className="input" type="date" min={todayISO()} value={date} onChange={(e) => setDate(e.target.value)} />
           </label>
           {formError && <p className="error" role="alert">{formError}</p>}
           <div className="row">

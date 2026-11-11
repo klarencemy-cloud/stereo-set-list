@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { loadTrackUrl, uploadTrack } from "../upload";
+import { downloadFileName, loadTrackUrl, uploadTrack } from "../upload";
 import type { Track } from "../../shared/types";
 
 export default function TracksPage() {
@@ -13,6 +13,8 @@ export default function TracksPage() {
   const [uploadError, setUploadError] = useState("");
   const [playing, setPlaying] = useState<{ id: string; url: string } | null>(null);
   const [loadingId, setLoadingId] = useState("");
+  const [renamingId, setRenamingId] = useState("");
+  const [draft, setDraft] = useState("");
   const urlRef = useRef<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -65,6 +67,40 @@ export default function TracksPage() {
     }
   };
 
+  const onDownload = async (t: Track) => {
+    setError("");
+    setLoadingId(t.id);
+    try {
+      const url = await loadTrackUrl(t);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = downloadFileName(t.title);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoadingId("");
+    }
+  };
+
+  const onRename = async (t: Track) => {
+    if (!draft.trim()) {
+      setError("Enter a title.");
+      return;
+    }
+    setError("");
+    try {
+      const updated = await api.updateTrack(t.id, draft.trim());
+      setTracks((list) => (list ?? []).map((x) => (x.id === t.id ? { ...x, title: updated.title } : x)));
+      setRenamingId("");
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
   const onDelete = async (t: Track) => {
     if (!window.confirm(`Delete "${t.title}"?`)) return;
     try {
@@ -78,7 +114,7 @@ export default function TracksPage() {
 
   return (
     <main className="page">
-      <h1>Our Songs</h1>
+      <h1>Original Songs</h1>
       <form onSubmit={onUpload}>
         <label className="field">
           Title
@@ -108,11 +144,43 @@ export default function TracksPage() {
       <ul className="list">
         {(tracks ?? []).map((t) => (
           <li key={t.id} className="list-row" style={{ flexWrap: "wrap" }}>
-            <span className="grow">
-              <strong>{t.title}</strong>
-            </span>
+            {renamingId === t.id ? (
+              <form
+                className="grow"
+                style={{ display: "flex", gap: 8, flexWrap: "wrap" }}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void onRename(t);
+                }}
+              >
+                <input
+                  className="input grow"
+                  aria-label={`Title for ${t.title}`}
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                />
+                <button type="button" className="btn" onClick={() => { setRenamingId(""); setError(""); }}>Cancel</button>
+                <button type="submit" className="btn primary">Save</button>
+              </form>
+            ) : (
+              <>
+                <span className="grow">
+                  <strong>{t.title}</strong>
+                </span>
+                <button
+                  className="btn"
+                  onClick={() => { setDraft(t.title); setError(""); setRenamingId(t.id); }}
+                  aria-label={`Rename ${t.title}`}
+                >
+                  Rename
+                </button>
+              </>
+            )}
             <button className="btn" onClick={() => onPlay(t)} disabled={loadingId === t.id} aria-label={`Play ${t.title}`}>
               {loadingId === t.id ? "Loading…" : "Play"}
+            </button>
+            <button className="btn" onClick={() => onDownload(t)} disabled={loadingId === t.id} aria-label={`Download ${t.title}`}>
+              Download
             </button>
             <button className="btn" onClick={() => onDelete(t)} aria-label={`Delete ${t.title}`}>Delete</button>
             {playing?.id === t.id && (

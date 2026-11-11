@@ -56,6 +56,7 @@ export const api = {
 
   listTracks: () => json<Track[]>("/api/tracks"),
   createTrack: (title: string, size: number) => json<Track>("/api/tracks", send("POST", { title, size })),
+  updateTrack: (id: string, title: string) => json<Track>(`/api/tracks/${id}`, send("PUT", { title })),
   putTrackPart: async (id: string, n: number, bytes: Blob | ArrayBuffer): Promise<void> => {
     await request(`/api/tracks/${id}/parts/${n}`, {
       method: "PUT",

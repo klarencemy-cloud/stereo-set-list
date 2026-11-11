@@ -1,6 +1,13 @@
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+/** Today's date as "YYYY-MM-DD" in the device's local timezone. */
+export function todayISO(): string {
+  const n = new Date();
+  const p = (v: number) => String(v).padStart(2, "0");
+  return `${n.getFullYear()}-${p(n.getMonth() + 1)}-${p(n.getDate())}`;
+}
+
 /** "2026-12-20" -> "Sun, 20 Dec 2026", independent of the machine's timezone. */
 export function formatGigDate(date: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);

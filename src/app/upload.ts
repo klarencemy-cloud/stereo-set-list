@@ -26,6 +26,12 @@ export async function uploadTrack(
   return track;
 }
 
+/** File name for a saved track: the title, minus characters that are unsafe in file names. */
+export function downloadFileName(title: string): string {
+  const clean = title.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim();
+  return `${clean || "track"}.mp3`;
+}
+
 export async function loadTrackUrl(track: Track): Promise<string> {
   const parts: ArrayBuffer[] = [];
   for (let n = 0; n < track.parts; n++) parts.push(await api.getTrackPart(track.id, n));

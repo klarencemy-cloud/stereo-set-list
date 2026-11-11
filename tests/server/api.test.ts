@@ -89,6 +89,30 @@ describe("tracks API", () => {
     expect(res.status).toBe(400);
   });
 
+  it("renames a track with PUT and 404s for an unknown one", async () => {
+    const { tracks } = setup();
+    const t = await (await tracks(jsonReq("POST", "/api/tracks", { title: "Demo", size: 5 }))).json();
+    const ok = await tracks(jsonReq("PUT", `/api/tracks/${t.id}`, { title: "New" }));
+    expect(ok.status).toBe(200);
+    expect((await ok.json()).title).toBe("New");
+    expect((await tracks(jsonReq("PUT", `/api/tracks/${t.id}`, { title: "" }))).status).toBe(400);
+    expect((await tracks(jsonReq("PUT", "/api/tracks/nope", { title: "X" }))).status).toBe(404);
+  });
+
+  it("listing removes unfinished uploads that are over a day old", async () => {
+    const memory = memoryKV();
+    const repo = makeRepo(memory);
+    const tracks = makeTracksHandler(repo);
+    const t = await repo.createTrack({ title: "Stuck", size: 7_000_000 });
+    await memory.setText(
+      `tracks/${t.id}`,
+      JSON.stringify({ ...t, createdAt: new Date(Date.now() - 25 * 3600 * 1000).toISOString() }),
+    );
+    const res = await tracks(jsonReq("GET", "/api/tracks"));
+    expect(res.status).toBe(200);
+    expect(await memory.getText(`tracks/${t.id}`)).toBeNull();
+  });
+
   it("round-trips a part as raw bytes", async () => {
     const { tracks } = setup();
     const created = await tracks(jsonReq("POST", "/api/tracks", { title: "Demo", size: 5 }));
@@ -100,6 +124,8 @@ describe("tracks API", () => {
     const got = await tracks(jsonReq("GET", `/api/tracks/${t.id}/parts/0`));
     expect(got.status).toBe(200);
     expect(got.headers.get("Content-Type")).toBe("audio/mpeg");
+    // Parts never change once stored, so browsers may keep them (but shared caches may not).
+    expect(got.headers.get("Cache-Control")).toBe("private, max-age=31536000, immutable");
     expect([...new Uint8Array(await got.arrayBuffer())]).toEqual([1, 2, 3, 4, 5]);
     expect((await tracks(jsonReq("GET", `/api/tracks/${t.id}/parts/9`))).status).toBe(404);
     expect((await (await tracks(jsonReq("GET", "/api/tracks"))).json()).length).toBe(1);

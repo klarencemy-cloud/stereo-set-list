@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
@@ -114,6 +114,71 @@ describe("GigPage", () => {
     expect(await screen.findByText("home")).toBeInTheDocument();
   });
 
+  it("shows Delete gig without entering setlist edit mode", async () => {
+    mocked.deleteGig.mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Delete gig" }));
+    await waitFor(() => expect(mocked.deleteGig).toHaveBeenCalledWith("g1"));
+  });
+
+  it("does not delete when the confirm is cancelled", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Delete gig" }));
+    expect(mocked.deleteGig).not.toHaveBeenCalled();
+  });
+
+  it("edits the gig name and date", async () => {
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
+    expect(screen.getByLabelText("Name")).toHaveValue("Winter Show");
+    expect(screen.getByLabelText("Date")).toHaveValue("2026-12-20");
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: " Spring Show " } });
+    fireEvent.change(screen.getByLabelText("Date"), { target: { value: "2027-03-05" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(mocked.updateGig).toHaveBeenCalledWith("g1", { name: "Spring Show", date: "2027-03-05" }),
+    );
+    expect(await screen.findByRole("heading", { name: "Spring Show" })).toBeInTheDocument();
+    expect(screen.getByText("Fri, 5 Mar 2027")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
+  });
+
+  it("rejects an empty name when editing details", async () => {
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "  " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Enter a name and a date.");
+    expect(mocked.updateGig).not.toHaveBeenCalled();
+  });
+
+  it("cancel leaves the details unchanged", async () => {
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Other" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("heading", { name: "Winter Show" })).toBeInTheDocument();
+    expect(mocked.updateGig).not.toHaveBeenCalled();
+  });
+
+  it("shows an error when saving details fails", async () => {
+    mocked.updateGig.mockRejectedValue(new ApiError(400, "bad date"));
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Other" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("bad date");
+    expect(screen.getByLabelText("Name")).toBeInTheDocument();
+  });
+
   it("shows an error when the gig is missing", async () => {
     mocked.getGig.mockRejectedValue(new ApiError(404, "Gig not found"));
     renderGig();
@@ -156,6 +221,36 @@ describe("GigsPage", () => {
       expect(mocked.createGig).toHaveBeenCalledWith({ name: "Pub", date: "2026-12-31", songIds: [] }),
     );
     expect(await screen.findByText("gig page")).toBeInTheDocument();
+  });
+
+  describe("past dates", () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 11, 20, 15, 0) });
+    });
+    afterEach(() => vi.useRealTimers());
+
+    it("blocks a past date and does not create the gig", async () => {
+      mocked.listGigs.mockResolvedValue([]);
+      renderList();
+      fireEvent.click(await screen.findByRole("button", { name: "New gig" }));
+      expect(screen.getByLabelText("Date")).toHaveAttribute("min", "2026-12-20");
+      fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Old" } });
+      fireEvent.change(screen.getByLabelText("Date"), { target: { value: "2026-12-19" } });
+      fireEvent.click(screen.getByRole("button", { name: "Create gig" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("past");
+      expect(mocked.createGig).not.toHaveBeenCalled();
+    });
+
+    it("allows today", async () => {
+      mocked.listGigs.mockResolvedValue([]);
+      mocked.createGig.mockResolvedValue({ id: "g9", name: "Now", date: "2026-12-20", songIds: [] });
+      renderList();
+      fireEvent.click(await screen.findByRole("button", { name: "New gig" }));
+      fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Now" } });
+      fireEvent.change(screen.getByLabelText("Date"), { target: { value: "2026-12-20" } });
+      fireEvent.click(screen.getByRole("button", { name: "Create gig" }));
+      await waitFor(() => expect(mocked.createGig).toHaveBeenCalled());
+    });
   });
 
   it("shows an error when creating fails", async () => {

@@ -10,7 +10,7 @@ There is no login yet. Anyone with the site's address can view, add, change and 
   - If the import fails, paste the chords instead.
   - **Transpose** changes the key for the whole band.
 - **Gigs:** a name, a date and an ordered setlist. Each song shows its agreed key.
-- **Our Songs:** upload mp3s (max 25 MB each) and play them back.
+- **Original Songs:** upload mp3s (max 25 MB each) and play them back.
 
 ## Run it on your computer
 

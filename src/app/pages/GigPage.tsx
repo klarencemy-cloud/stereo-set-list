@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../api";
 import { formatGigDate } from "../formatDate";
@@ -13,6 +14,9 @@ export default function GigPage() {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toAdd, setToAdd] = useState("");
+  const [editingDetails, setEditingDetails] = useState(false);
+  const [name, setName] = useState("");
+  const [date, setDate] = useState("");
 
   useEffect(() => {
     let alive = true;
@@ -65,6 +69,34 @@ export default function GigPage() {
     void save(next);
   }
 
+  function startEditDetails() {
+    if (!gig) return;
+    setName(gig.name);
+    setDate(gig.date);
+    setError("");
+    setEditingDetails(true);
+  }
+
+  async function saveDetails(e: FormEvent) {
+    e.preventDefault();
+    if (!gig || saving) return;
+    if (!name.trim() || !date) {
+      setError("Enter a name and a date.");
+      return;
+    }
+    setError("");
+    setSaving(true);
+    try {
+      const updated = await api.updateGig(gig.id, { name: name.trim(), date });
+      setGig({ ...gig, name: updated.name, date: updated.date });
+      setEditingDetails(false);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not save the gig.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function removeGig() {
     if (!gig || !window.confirm(`Delete "${gig.name}"? This cannot be undone.`)) return;
     try {
@@ -81,8 +113,30 @@ export default function GigPage() {
 
   return (
     <main className="page">
-      <h1>{gig.name}</h1>
-      <p className="muted">{formatGigDate(gig.date)}</p>
+      {editingDetails ? (
+        <form onSubmit={saveDetails}>
+          <label className="field">
+            Name
+            <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
+          </label>
+          <label className="field">
+            Date
+            <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          </label>
+          <div className="row">
+            <button type="button" className="btn" onClick={() => { setEditingDetails(false); setError(""); }}>
+              Cancel
+            </button>
+            <button type="submit" className="btn primary" disabled={saving}>Save</button>
+          </div>
+        </form>
+      ) : (
+        <>
+          <h1>{gig.name}</h1>
+          <p className="muted">{formatGigDate(gig.date)}</p>
+          <button type="button" className="btn" onClick={startEditDetails}>Edit details</button>
+        </>
+      )}
       <div className="row">
         <h2>Setlist</h2>
         <button type="button" className="btn" onClick={() => setEditing((v) => !v)}>
@@ -141,11 +195,11 @@ export default function GigPage() {
           >
             Add song
           </button>
-          <p>
-            <button type="button" className="btn" onClick={removeGig}>Delete gig</button>
-          </p>
         </>
       )}
+      <p>
+        <button type="button" className="btn" onClick={removeGig}>Delete gig</button>
+      </p>
     </main>
   );
 }

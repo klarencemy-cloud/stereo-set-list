@@ -38,7 +38,7 @@ export function AppRoutes() {
       <nav className="bottom-nav" aria-label="Main">
         <NavLink to="/" end>Gigs</NavLink>
         <NavLink to="/songs">Songs</NavLink>
-        <NavLink to="/tracks">Our Songs</NavLink>
+        <NavLink to="/tracks">Original Songs</NavLink>
       </nav>
     </>
   );
