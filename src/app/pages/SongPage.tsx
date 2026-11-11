@@ -9,7 +9,7 @@ import TransposeControl from "../components/TransposeControl";
 import { useAutoscroll } from "../components/useAutoscroll";
 
 const SPEEDS = [0.5, 1, 1.5, 2, 3];
-const KEY_UNKNOWN = "Key unknown — fix it in Edit";
+const KEY_UNKNOWN = "Key unknown \u2014 fix it in Edit";
 
 export default function SongPage() {
   const { id = "" } = useParams();
@@ -82,7 +82,7 @@ export default function SongPage() {
       </p>
       <div className="pill-row">
         <button type="button" className="pill pill-yellow" onClick={() => setRunning((r) => !r)}>
-          <span aria-hidden="true">{running ? "⏸" : "▶"}</span> Autoscroll
+          <span aria-hidden="true">{running ? "\u23f8" : "\u25b6"}</span> Autoscroll
         </button>
         <button type="button" className="pill" onClick={() => setSpeedIdx((i) => (i + 1) % SPEEDS.length)}>
           {`Speed: ${SPEEDS[speedIdx]}`}
@@ -96,11 +96,11 @@ export default function SongPage() {
       {error && <p role="alert" className="error">{error}</p>}
       <p className="song-info">
         <span>Key: <strong>{song.bandKey}</strong></span>
-        {" · "}
+        {" \u00b7 "}
         <span>{song.capo > 0 ? `Capo: ${song.capo}` : "No capo"}</span>
         {source && (
           <>
-            {" · "}
+            {" \u00b7 "}
             <a className="source-link" href={source} target="_blank" rel="noopener noreferrer">
               Source
             </a>

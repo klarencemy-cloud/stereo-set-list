@@ -105,7 +105,7 @@ describe("SongPage", () => {
   it("shows the untransposed sheet and a note when the key is unknown", async () => {
     mocked.getSong.mockResolvedValue({ ...song, originalKey: "H", bandKey: "A" });
     renderPage();
-    expect(await screen.findByText("Key unknown — fix it in Edit")).toBeInTheDocument();
+    expect(await screen.findByText("Key unknown \u2014 fix it in Edit")).toBeInTheDocument();
     const chords = Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent);
     expect(chords).toEqual(["G", "C"]);
   });
@@ -113,7 +113,7 @@ describe("SongPage", () => {
   it("shows an error instead of crashing when transposing an unknown key", async () => {
     mocked.getSong.mockResolvedValue({ ...song, originalKey: "H", bandKey: "H" });
     renderPage();
-    await screen.findByText("Key unknown — fix it in Edit");
+    await screen.findByText("Key unknown \u2014 fix it in Edit");
     fireEvent.click(screen.getByRole("button", { name: "Transpose" }));
     fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/key/i);
