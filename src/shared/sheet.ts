@@ -43,7 +43,7 @@ export function transposeContent(content: string, fromKey: string, toKey: string
           const delta = next.length - chord.length;
           let pad = spaces;
           if (delta > 0) pad = spaces.slice(Math.min(delta, spaces.length));
-          else if (delta < 0 && line.slice(offset + match.length).replace(/$/, "").length > 0) {
+          else if (delta < 0 && line.slice(offset + match.length).replace(/\r$/, "").length > 0) {
             pad = spaces + " ".repeat(-delta);
           }
           return `[ch]${next}[/ch]${pad}`;
