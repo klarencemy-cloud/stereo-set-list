@@ -80,6 +80,21 @@ describe("SongPage", () => {
     expect(chords).toEqual(["A", "D"]);
   });
 
+  it("disables the transpose buttons while a save is pending", async () => {
+    let resolve!: (v: unknown) => void;
+    mocked.updateSong.mockReturnValue(new Promise((r) => (resolve = r)));
+    renderPage();
+    await screen.findByText("[Intro]");
+    fireEvent.click(screen.getByRole("button", { name: "Transpose" }));
+    fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
+    expect(screen.getByRole("button", { name: "Transpose up" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Transpose down" })).toBeDisabled();
+    resolve({ ...song, bandKey: "Bb" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Transpose up" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Transpose down" })).toBeEnabled();
+    expect(mocked.updateSong).toHaveBeenCalledTimes(1);
+  });
+
   it("cycles the speed", async () => {
     renderPage();
     const btn = await screen.findByRole("button", { name: /Speed: 1$/ });

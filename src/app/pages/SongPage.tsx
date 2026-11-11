@@ -17,6 +17,7 @@ export default function SongPage() {
   const [running, setRunning] = useState(false);
   const [speedIdx, setSpeedIdx] = useState(1);
   const [showTranspose, setShowTranspose] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -32,16 +33,19 @@ export default function SongPage() {
   useAutoscroll(SPEEDS[speedIdx], running);
 
   async function transpose(semitones: number) {
-    if (!song) return;
+    if (!song || saving) return;
     const previous = song.bandKey;
     const next = transposeKey(previous, semitones);
     setError(null);
+    setSaving(true);
     setSong({ ...song, bandKey: next });
     try {
       await api.updateSong(song.id, { bandKey: next });
     } catch (e) {
       setSong((s) => (s ? { ...s, bandKey: previous } : s));
       setError(e instanceof ApiError ? e.message : "Could not save the new key.");
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -73,7 +77,7 @@ export default function SongPage() {
         </button>
         <Link className="pill" to={`/songs/${song.id}/edit`}>Edit</Link>
       </div>
-      {showTranspose && <TransposeControl bandKey={song.bandKey} onChange={transpose} />}
+      {showTranspose && <TransposeControl bandKey={song.bandKey} onChange={transpose} busy={saving} />}
       {error && <p role="alert" className="error">{error}</p>}
       <p className="song-info">
         <span>Key: <strong>{song.bandKey}</strong></span>
