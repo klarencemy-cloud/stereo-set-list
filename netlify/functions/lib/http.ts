@@ -14,11 +14,16 @@ export function routeParts(req: Request): string[] {
 }
 
 export async function readBody<T>(req: Request): Promise<T> {
+  let body: unknown;
   try {
-    return (await req.json()) as T;
+    body = await req.json();
   } catch {
     throw new ValidationError("Invalid JSON body");
   }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new ValidationError("Request body must be a JSON object");
+  }
+  return body as T;
 }
 
 /** Wrap a handler so repo errors become HTTP responses. */
@@ -29,7 +34,8 @@ export function guard(fn: (req: Request) => Promise<Response>) {
     } catch (e) {
       if (e instanceof ValidationError) return json({ message: e.message }, 400);
       if (e instanceof NotFoundError) return json({ message: e.message }, 404);
-      throw e;
+      console.error(e);
+      return json({ message: "Something went wrong" }, 500);
     }
   };
 }

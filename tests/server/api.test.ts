@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { memoryKV } from "../../netlify/functions/lib/kv";
 import { makeRepo } from "../../netlify/functions/lib/repo";
 import { makeSongsHandler } from "../../netlify/functions/songs";
@@ -87,5 +87,25 @@ describe("tracks API", () => {
     expect((await tracks(jsonReq("GET", `/api/tracks/${t.id}/parts/9`))).status).toBe(404);
     expect((await (await tracks(jsonReq("GET", "/api/tracks"))).json()).length).toBe(1);
     expect((await tracks(jsonReq("DELETE", `/api/tracks/${t.id}`))).status).toBe(204);
+  });
+});
+
+describe("error handling", () => {
+  it("returns 400 for non-object JSON bodies", async () => {
+    const { songs } = setup();
+    for (const body of ["null", "5", '"x"', "[]"]) {
+      const res = await songs(new Request(U + "/api/songs", { method: "POST", body }));
+      expect(res.status).toBe(400);
+      expect((await res.json()).message).toBeTruthy();
+    }
+  });
+
+  it("returns a JSON 500 for unexpected errors", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const repo = { listSongs: async () => { throw new Error("boom"); } } as unknown as ReturnType<typeof makeRepo>;
+    const res = await makeSongsHandler(repo)(jsonReq("GET", "/api/songs"));
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ message: "Something went wrong" });
+    spy.mockRestore();
   });
 });
