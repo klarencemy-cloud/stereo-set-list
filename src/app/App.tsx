@@ -1,5 +1,6 @@
-import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
+import { BrowserRouter, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { SITE_NAME } from "./config";
+import ErrorBoundary from "./components/ErrorBoundary";
 import SongsPage from "./pages/SongsPage";
 import SongFormPage from "./pages/SongFormPage";
 import SongPage from "./pages/SongPage";
@@ -18,19 +19,22 @@ function Placeholder({ title }: { title: string }) {
 }
 
 export function AppRoutes() {
+  const location = useLocation();
   return (
     <>
       <header className="topbar">{SITE_NAME}</header>
-      <Routes>
-        <Route path="/" element={<GigsPage />} />
-        <Route path="/gigs/:id" element={<GigPage />} />
-        <Route path="/songs" element={<SongsPage />} />
-        <Route path="/songs/new" element={<SongFormPage />} />
-        <Route path="/songs/:id/edit" element={<SongFormPage />} />
-        <Route path="/songs/:id" element={<SongPage />} />
-        <Route path="/tracks" element={<TracksPage />} />
-        <Route path="*" element={<Placeholder title="Not found" />} />
-      </Routes>
+      <ErrorBoundary resetKey={location.pathname}>
+        <Routes>
+          <Route path="/" element={<GigsPage />} />
+          <Route path="/gigs/:id" element={<GigPage />} />
+          <Route path="/songs" element={<SongsPage />} />
+          <Route path="/songs/new" element={<SongFormPage />} />
+          <Route path="/songs/:id/edit" element={<SongFormPage />} />
+          <Route path="/songs/:id" element={<SongPage />} />
+          <Route path="/tracks" element={<TracksPage />} />
+          <Route path="*" element={<Placeholder title="Not found" />} />
+        </Routes>
+      </ErrorBoundary>
       <nav className="bottom-nav" aria-label="Main">
         <NavLink to="/" end>Gigs</NavLink>
         <NavLink to="/songs">Songs</NavLink>

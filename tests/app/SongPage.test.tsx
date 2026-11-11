@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 vi.mock("../../src/app/api", async () => {
@@ -100,6 +100,45 @@ describe("SongPage", () => {
     const btn = await screen.findByRole("button", { name: /Speed: 1$/ });
     fireEvent.click(btn);
     expect(screen.getByRole("button", { name: "Speed: 1.5" })).toBeInTheDocument();
+  });
+
+  it("shows the untransposed sheet and a note when the key is unknown", async () => {
+    mocked.getSong.mockResolvedValue({ ...song, originalKey: "H", bandKey: "A" });
+    renderPage();
+    expect(await screen.findByText("Key unknown — fix it in Edit")).toBeInTheDocument();
+    const chords = Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent);
+    expect(chords).toEqual(["G", "C"]);
+  });
+
+  it("shows an error instead of crashing when transposing an unknown key", async () => {
+    mocked.getSong.mockResolvedValue({ ...song, originalKey: "H", bandKey: "H" });
+    renderPage();
+    await screen.findByText("Key unknown — fix it in Edit");
+    fireEvent.click(screen.getByRole("button", { name: "Transpose" }));
+    fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/key/i);
+    expect(mocked.updateSong).not.toHaveBeenCalled();
+  });
+
+  it("shows a Source link that opens in a new tab when the song has one", async () => {
+    const url = "https://tabs.ultimate-guitar.com/tab/x/y-chords-1";
+    mocked.getSong.mockResolvedValue({ ...song, sourceUrl: url });
+    renderPage();
+    const link = await screen.findByRole("link", { name: "Source" });
+    expect(link).toHaveAttribute("href", url);
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  });
+
+  it("has no Source link without a source URL or with a non-web URL", async () => {
+    renderPage();
+    await screen.findByText("[Intro]");
+    expect(screen.queryByRole("link", { name: "Source" })).not.toBeInTheDocument();
+    cleanup();
+    mocked.getSong.mockResolvedValue({ ...song, sourceUrl: "javascript:alert(1)" });
+    renderPage();
+    await screen.findByText("[Intro]");
+    expect(screen.queryByRole("link", { name: "Source" })).not.toBeInTheDocument();
   });
 
   it("shows an error when the song cannot be loaded", async () => {

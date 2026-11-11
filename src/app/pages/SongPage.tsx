@@ -9,6 +9,7 @@ import TransposeControl from "../components/TransposeControl";
 import { useAutoscroll } from "../components/useAutoscroll";
 
 const SPEEDS = [0.5, 1, 1.5, 2, 3];
+const KEY_UNKNOWN = "Key unknown — fix it in Edit";
 
 export default function SongPage() {
   const { id = "" } = useParams();
@@ -35,7 +36,13 @@ export default function SongPage() {
   async function transpose(semitones: number) {
     if (!song || saving) return;
     const previous = song.bandKey;
-    const next = transposeKey(previous, semitones);
+    let next: string;
+    try {
+      next = transposeKey(previous, semitones);
+    } catch {
+      setError(KEY_UNKNOWN);
+      return;
+    }
     setError(null);
     setSaving(true);
     setSong({ ...song, bandKey: next });
@@ -57,7 +64,15 @@ export default function SongPage() {
     );
   }
 
-  const content = transposeContent(song.content, song.originalKey, song.bandKey);
+  let content = song.content;
+  let keyUnknown = false;
+  try {
+    content = transposeContent(song.content, song.originalKey, song.bandKey);
+  } catch {
+    // A stored key we can't read: show the sheet as written rather than crash.
+    keyUnknown = true;
+  }
+  const source = song.sourceUrl && /^https?:\/\//i.test(song.sourceUrl) ? song.sourceUrl : null;
 
   return (
     <main className="page song-page">
@@ -83,7 +98,16 @@ export default function SongPage() {
         <span>Key: <strong>{song.bandKey}</strong></span>
         {" · "}
         <span>{song.capo > 0 ? `Capo: ${song.capo}` : "No capo"}</span>
+        {source && (
+          <>
+            {" · "}
+            <a className="source-link" href={source} target="_blank" rel="noopener noreferrer">
+              Source
+            </a>
+          </>
+        )}
       </p>
+      {keyUnknown && <p className="muted key-note">{KEY_UNKNOWN}</p>}
       <ChordSheet content={content} onTap={() => setRunning(false)} />
     </main>
   );

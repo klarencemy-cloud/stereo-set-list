@@ -177,6 +177,10 @@ h2 { font-size: 1.1rem; margin: 1rem 0 0.5rem; }
 .transpose-key { min-width: 48px; text-align: center; font-weight: 800; font-size: 20px; }
 .transpose-note { margin: 4px 0 0; font-size: 14px; }
 .song-info { margin: 8px 0 12px; }
+.source-link { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent); font-weight: 600; }
+.key-note { margin: 0 0 12px; font-weight: 600; }
+.danger-zone { margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border); }
+.btn.danger { color: var(--error); border-color: var(--error); }
 .sheet {
   overflow-x: auto; max-width: 100%;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;

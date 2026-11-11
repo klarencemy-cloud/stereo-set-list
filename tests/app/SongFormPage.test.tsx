@@ -7,7 +7,7 @@ vi.mock("../../src/app/api", async () => {
   const actual = await vi.importActual<typeof import("../../src/app/api")>("../../src/app/api");
   return {
     ...actual,
-    api: { importSong: vi.fn(), createSong: vi.fn(), updateSong: vi.fn(), getSong: vi.fn() },
+    api: { importSong: vi.fn(), createSong: vi.fn(), updateSong: vi.fn(), getSong: vi.fn(), deleteSong: vi.fn() },
   };
 });
 
@@ -27,8 +27,25 @@ function renderForm() {
   );
 }
 
+function renderEdit() {
+  return render(
+    <MemoryRouter initialEntries={["/songs/s1/edit"]}>
+      <Routes>
+        <Route path="/songs/:id/edit" element={<SongFormPage />} />
+        <Route path="/songs" element={<div>songs list</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+const stored = {
+  id: "s1", title: "Stored", artist: "Band", sourceUrl: null, originalKey: "G", bandKey: "G", capo: 0,
+  content: "[ch]G[/ch]", updatedAt: "x",
+};
+
 beforeEach(() => {
   Object.values(mocked).forEach((f) => f.mockReset());
+  vi.restoreAllMocks();
 });
 
 describe("SongFormPage", () => {
@@ -88,5 +105,42 @@ describe("SongFormPage", () => {
     expect(sent.bandKey).toBe("G");
     expect(sent.originalKey).toBe("G");
     expect(sent.sourceUrl).toBeNull();
+  });
+
+  it("has no Delete song button when adding", () => {
+    renderForm();
+    expect(screen.queryByRole("button", { name: "Delete song" })).not.toBeInTheDocument();
+  });
+
+  it("deletes the song after confirming and goes to the song list", async () => {
+    mocked.getSong.mockResolvedValue(stored);
+    mocked.deleteSong.mockResolvedValue(undefined);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderEdit();
+    await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("Stored"));
+    fireEvent.click(screen.getByRole("button", { name: "Delete song" }));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Stored"));
+    expect(mocked.deleteSong).toHaveBeenCalledWith("s1");
+    expect(await screen.findByText("songs list")).toBeInTheDocument();
+  });
+
+  it("does nothing when the delete is not confirmed", async () => {
+    mocked.getSong.mockResolvedValue(stored);
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderEdit();
+    await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("Stored"));
+    fireEvent.click(screen.getByRole("button", { name: "Delete song" }));
+    expect(mocked.deleteSong).not.toHaveBeenCalled();
+  });
+
+  it("shows an error when the delete fails", async () => {
+    mocked.getSong.mockResolvedValue(stored);
+    mocked.deleteSong.mockRejectedValue(new ApiError(500, "Could not delete"));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderEdit();
+    await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("Stored"));
+    fireEvent.click(screen.getByRole("button", { name: "Delete song" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not delete");
+    expect(screen.queryByText("songs list")).not.toBeInTheDocument();
   });
 });

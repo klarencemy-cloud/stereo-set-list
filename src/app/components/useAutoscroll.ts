@@ -28,17 +28,28 @@ export function useAutoscroll(speed: number, running: boolean): void {
     const nav = navigator as Navigator & {
       wakeLock?: { request: (type: "screen") => Promise<{ release: () => Promise<void> }> };
     };
-    if (nav.wakeLock) {
+    const acquire = () => {
+      if (!nav.wakeLock) return;
       nav.wakeLock.request("screen").then(
         (l) => {
           if (cancelled) l.release().catch(() => {});
-          else lock = l;
+          else {
+            if (lock) lock.release().catch(() => {});
+            lock = l;
+          }
         },
         () => {},
       );
-    }
+    };
+    // The browser drops the lock when the page is hidden; take it again on return.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") acquire();
+    };
+    acquire();
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", onVisible);
       if (lock) lock.release().catch(() => {});
     };
   }, [running]);

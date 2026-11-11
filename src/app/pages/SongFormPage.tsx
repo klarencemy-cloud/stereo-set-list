@@ -34,6 +34,7 @@ export default function SongFormPage() {
   const [existing, setExisting] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [message, setMessage] = useState("");
 
   useEffect(() => {
@@ -93,6 +94,19 @@ export default function SongFormPage() {
     } catch (e) {
       setMessage((e as Error).message);
       setSaving(false);
+    }
+  }
+
+  async function removeSong() {
+    if (!id || !window.confirm(`Delete "${title || "this song"}"? This cannot be undone.`)) return;
+    setDeleting(true);
+    setMessage("");
+    try {
+      await api.deleteSong(id);
+      navigate("/songs");
+    } catch (e) {
+      setMessage((e as Error).message);
+      setDeleting(false);
     }
   }
 
@@ -191,6 +205,14 @@ export default function SongFormPage() {
       <button type="button" className="btn primary" disabled={!canSave} onClick={save}>
         Save
       </button>
+
+      {editing && (
+        <p className="danger-zone">
+          <button type="button" className="btn danger" disabled={deleting || saving} onClick={removeSong}>
+            {deleting ? "Deleting..." : "Delete song"}
+          </button>
+        </p>
+      )}
     </main>
   );
 }
