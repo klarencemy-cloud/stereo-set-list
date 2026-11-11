@@ -36,7 +36,8 @@ export function memoryKV(): KV {
 }
 
 export function blobsKV(): KV {
-  const store = getStore("band");
+  // Strong consistency: a write must be visible to the very next read (transpose, setlist edits, uploads).
+  const store = getStore({ name: "band", consistency: "strong" });
   return {
     async getText(k) {
       return (await store.get(k, { type: "text" })) ?? null;
