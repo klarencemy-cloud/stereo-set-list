@@ -1,1 +1,1 @@
-export const SITE_NAME = "Band Book";
+export const SITE_NAME = "Stereo Set";

@@ -1,4 +1,4 @@
-# Band Book
+# Stereo Set
 
 A private website for the band: cover songs with chords in one agreed key, gig setlists, and mp3s of our unreleased songs. It works on phones and desktop.
 
