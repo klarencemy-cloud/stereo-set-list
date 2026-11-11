@@ -11,6 +11,8 @@ export class ImportError extends Error {
 
 const UG_HOSTS = new Set(["tabs.ultimate-guitar.com", "www.ultimate-guitar.com"]);
 const MAX_REDIRECTS = 3;
+/** Give up on Ultimate Guitar well before the function's own time limit. */
+const FETCH_TIMEOUT_MS = 7000;
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
@@ -72,8 +74,10 @@ export async function importFromUg(url: string, fetchFn: typeof fetch = fetch): 
       res = await fetchFn(current, {
         redirect: "manual",
         headers: { "User-Agent": USER_AGENT, Accept: "text/html,application/xhtml+xml" },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
     } catch {
+      // Network failure, abort or timeout.
       throw new ImportError("blocked");
     }
     if (res.status >= 300 && res.status < 400) {
@@ -89,7 +93,14 @@ export async function importFromUg(url: string, fetchFn: typeof fetch = fetch): 
       continue;
     }
     if (res.status !== 200) throw new ImportError("blocked");
-    return parseUgHtml(await res.text(), url);
+    let html: string;
+    try {
+      html = await res.text();
+    } catch {
+      // The body stream can also hit the timeout or drop.
+      throw new ImportError("blocked");
+    }
+    return parseUgHtml(html, url);
   }
   throw new ImportError("blocked");
 }

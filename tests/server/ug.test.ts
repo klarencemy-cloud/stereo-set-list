@@ -63,6 +63,32 @@ describe("importFromUg", () => {
     expect(song.title).toBe("Garden Path Song");
     expect(f).toHaveBeenCalledTimes(2);
   });
+  it("maps an aborted or timed-out fetch to blocked", async () => {
+    const f = vi.fn(async () => {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    });
+    await expect(importFromUg(URL_OK, f as unknown as typeof fetch)).rejects.toMatchObject({ code: "blocked" });
+  });
+  it("passes a timeout signal to every upstream fetch", async () => {
+    const f = vi
+      .fn(async (_u: string, _i?: RequestInit) => res(200, fixture))
+      .mockResolvedValueOnce(res(301, "", { location: "https://www.ultimate-guitar.com/tab/a/b-chords-9" }));
+    await importFromUg(URL_OK, f as unknown as typeof fetch);
+    expect(f).toHaveBeenCalledTimes(2);
+    for (const [, init] of f.mock.calls) expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+  it("maps a body that fails to read to blocked", async () => {
+    const broken = new Response(
+      new ReadableStream({
+        start(c) {
+          c.error(new DOMException("timed out", "TimeoutError"));
+        },
+      }),
+      { status: 200 },
+    );
+    const f = vi.fn(async () => broken);
+    await expect(importFromUg(URL_OK, f as unknown as typeof fetch)).rejects.toMatchObject({ code: "blocked" });
+  });
   it("maps unparseable pages to parse", async () => {
     const f = vi.fn(async () => res(200, "<html></html>"));
     await expect(importFromUg(URL_OK, f as unknown as typeof fetch)).rejects.toMatchObject({ code: "parse" });
