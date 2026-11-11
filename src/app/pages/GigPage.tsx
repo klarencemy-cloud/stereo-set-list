@@ -2,13 +2,13 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../api";
 import { formatGigDate } from "../formatDate";
-import type { Gig, Song } from "../../shared/types";
+import type { Gig, SongSummary } from "../../shared/types";
 
 export default function GigPage() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
   const [gig, setGig] = useState<Gig | null>(null);
-  const [songs, setSongs] = useState<Song[]>([]);
+  const [songs, setSongs] = useState<SongSummary[]>([]);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);

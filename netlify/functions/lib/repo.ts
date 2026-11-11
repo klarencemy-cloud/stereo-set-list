@@ -1,5 +1,6 @@
 import { CHUNK_SIZE, MAX_AUDIO_BYTES } from "../../../src/shared/types";
-import type { Gig, GigInput, Song, SongInput, Track } from "../../../src/shared/types";
+import type { Gig, GigInput, Song, SongInput, SongSummary, Track } from "../../../src/shared/types";
+import { isValidKey } from "../../../src/shared/transpose";
 import type { KV } from "./kv";
 
 export class ValidationError extends Error {
@@ -14,6 +15,95 @@ export class NotFoundError extends Error {
     super(message);
     this.name = "NotFoundError";
   }
+}
+
+export const LIMITS = {
+  title: 200,
+  artist: 200,
+  sourceUrl: 500,
+  content: 100_000,
+  gigName: 200,
+  gigSongs: 100,
+} as const;
+
+const SONG_FIELDS = ["title", "artist", "sourceUrl", "originalKey", "bandKey", "capo", "content"] as const;
+const GIG_FIELDS = ["name", "date", "songIds"] as const;
+
+function checkString(field: string, v: unknown, max: number): string {
+  if (typeof v !== "string") throw new ValidationError(`${field} must be text`);
+  if (v.length > max) throw new ValidationError(`${field} is too long (max ${max} characters)`);
+  return v;
+}
+
+function checkSongField(field: (typeof SONG_FIELDS)[number], v: unknown): unknown {
+  switch (field) {
+    case "title":
+      if (typeof v === "string" && !v.trim()) throw new ValidationError("title is required");
+      return checkString(field, v, LIMITS.title);
+    case "artist":
+      return checkString(field, v, LIMITS.artist);
+    case "content":
+      return checkString(field, v, LIMITS.content);
+    case "sourceUrl":
+      return v === null ? null : checkString(field, v, LIMITS.sourceUrl);
+    case "originalKey":
+    case "bandKey":
+      if (typeof v !== "string" || !isValidKey(v)) {
+        throw new ValidationError(`${field} must be a key like C, F#m or Bb`);
+      }
+      return v;
+    case "capo":
+      if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 12) {
+        throw new ValidationError("capo must be a whole number from 0 to 12");
+      }
+      return v;
+  }
+}
+
+/** Copies only known song fields, validating each. With `partial`, missing fields are skipped. */
+function cleanSong(input: unknown, partial: boolean): Partial<SongInput> {
+  const src = (input ?? {}) as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const f of SONG_FIELDS) {
+    if (!(f in src)) {
+      if (partial) continue;
+      throw new ValidationError(`${f} is required`);
+    }
+    out[f] = checkSongField(f, src[f]);
+  }
+  return out as Partial<SongInput>;
+}
+
+function checkGigField(field: (typeof GIG_FIELDS)[number], v: unknown): unknown {
+  switch (field) {
+    case "name":
+      if (typeof v === "string" && !v.trim()) throw new ValidationError("name is required");
+      return checkString(field, v, LIMITS.gigName);
+    case "date":
+      if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+        throw new ValidationError("date must be YYYY-MM-DD");
+      }
+      return v;
+    case "songIds":
+      if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) {
+        throw new ValidationError("songIds must be a list of song ids");
+      }
+      if (v.length > LIMITS.gigSongs) throw new ValidationError(`a setlist can hold at most ${LIMITS.gigSongs} songs`);
+      return [...v];
+  }
+}
+
+function cleanGig(input: unknown, partial: boolean): Partial<GigInput> {
+  const src = (input ?? {}) as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const f of GIG_FIELDS) {
+    if (!(f in src)) {
+      if (partial) continue;
+      throw new ValidationError(`${f} is required`);
+    }
+    out[f] = checkGigField(f, src[f]);
+  }
+  return out as Partial<GigInput>;
 }
 
 export function makeRepo(kv: KV) {
@@ -41,29 +131,24 @@ export function makeRepo(kv: KV) {
     return { ...g, songIds: present.filter((x): x is string => x !== null) };
   }
 
-  function checkGig(g: GigInput) {
-    if (!g.name || !g.name.trim()) throw new ValidationError("name is required");
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(g.date)) throw new ValidationError("date must be YYYY-MM-DD");
-    if (!Array.isArray(g.songIds)) throw new ValidationError("songIds must be a list");
-  }
-
   return {
-    async listSongs(): Promise<Song[]> {
+    async listSongs(): Promise<SongSummary[]> {
       const songs = await readAll<Song>("songs/");
-      return songs.sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
+      return songs
+        .map(({ content: _content, ...summary }) => summary)
+        .sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
     },
     getSong,
     async createSong(input: SongInput): Promise<Song> {
-      if (!input.title || !input.title.trim()) throw new ValidationError("title is required");
-      const song: Song = { ...input, id: crypto.randomUUID(), updatedAt: new Date().toISOString() };
+      const clean = cleanSong(input, false) as SongInput;
+      const song: Song = { ...clean, id: crypto.randomUUID(), updatedAt: new Date().toISOString() };
       await writeJson(`songs/${song.id}`, song);
       return song;
     },
     async updateSong(id: string, patch: Partial<SongInput>): Promise<Song> {
       const cur = await getSong(id);
       if (!cur) throw new NotFoundError("song not found");
-      const next: Song = { ...cur, ...patch, id, updatedAt: new Date().toISOString() };
-      if (!next.title || !next.title.trim()) throw new ValidationError("title is required");
+      const next: Song = { ...cur, ...cleanSong(patch, true), id, updatedAt: new Date().toISOString() };
       await writeJson(`songs/${id}`, next);
       return next;
     },
@@ -84,16 +169,15 @@ export function makeRepo(kv: KV) {
     },
     getGig,
     async createGig(input: GigInput): Promise<Gig> {
-      checkGig(input);
-      const gig: Gig = { name: input.name, date: input.date, songIds: input.songIds, id: crypto.randomUUID() };
+      const clean = cleanGig(input, false) as GigInput;
+      const gig: Gig = { name: clean.name, date: clean.date, songIds: clean.songIds, id: crypto.randomUUID() };
       await writeJson(`gigs/${gig.id}`, gig);
       return gig;
     },
     async updateGig(id: string, patch: Partial<GigInput>): Promise<Gig> {
       const cur = await readJson<Gig>(`gigs/${id}`);
       if (!cur) throw new NotFoundError("gig not found");
-      const next: Gig = { ...cur, ...patch, id };
-      checkGig(next);
+      const next: Gig = { ...cur, ...cleanGig(patch, true), id };
       await writeJson(`gigs/${id}`, next);
       return next;
     },

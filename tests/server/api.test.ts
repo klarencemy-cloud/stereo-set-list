@@ -50,6 +50,23 @@ describe("songs API", () => {
     expect(broken.status).toBe(400);
     expect((await songs(jsonReq("PATCH", "/api/songs"))).status).toBe(405);
   });
+
+  it("400 for a bad key or oversize content; list has no content", async () => {
+    const { songs } = setup();
+    const badKey = await songs(jsonReq("POST", "/api/songs", { ...songBody, bandKey: "H" }));
+    expect(badKey.status).toBe(400);
+    expect((await badKey.json()).message).toMatch(/bandKey/);
+    const big = await songs(jsonReq("POST", "/api/songs", { ...songBody, content: "x".repeat(100_001) }));
+    expect(big.status).toBe(400);
+    expect((await big.json()).message).toMatch(/content/);
+
+    const song = await (await songs(jsonReq("POST", "/api/songs", songBody))).json();
+    expect((await songs(jsonReq("PUT", `/api/songs/${song.id}`, { originalKey: "X#" }))).status).toBe(400);
+    const list = await (await songs(jsonReq("GET", "/api/songs"))).json();
+    expect(list).toHaveLength(1);
+    expect(list[0]).not.toHaveProperty("content");
+    expect(list[0]).toMatchObject({ id: song.id, title: "Wonderwall", artist: "Oasis", bandKey: "F#m" });
+  });
 });
 
 describe("gigs API", () => {

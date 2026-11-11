@@ -1,4 +1,4 @@
-import type { Gig, GigInput, ImportedSong, Song, SongInput, Track } from "../shared/types";
+import type { Gig, GigInput, ImportedSong, Song, SongInput, SongSummary, Track } from "../shared/types";
 
 export class ApiError extends Error {
   status: number;
@@ -38,7 +38,7 @@ function send(method: string, body: unknown): RequestInit {
 }
 
 export const api = {
-  listSongs: () => json<Song[]>("/api/songs"),
+  listSongs: () => json<SongSummary[]>("/api/songs"),
   getSong: (id: string) => json<Song>(`/api/songs/${id}`),
   createSong: (input: SongInput) => json<Song>("/api/songs", send("POST", input)),
   updateSong: (id: string, patch: Partial<SongInput>) => json<Song>(`/api/songs/${id}`, send("PUT", patch)),

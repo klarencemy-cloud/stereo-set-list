@@ -10,6 +10,8 @@ export interface Song {
   updatedAt: string;
 }
 export type SongInput = Omit<Song, "id" | "updatedAt">;
+/** What the song list returns: everything except the chord sheet. */
+export type SongSummary = Omit<Song, "content">;
 
 export interface Gig {
   id: string;

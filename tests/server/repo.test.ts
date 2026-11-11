@@ -37,6 +37,65 @@ describe("songs", () => {
     expect((await repo.listSongs()).map((s) => s.title)).toEqual(["Apple", "banana", "cherry"]);
   });
 
+  it("listSongs returns summaries without content", async () => {
+    const repo = makeRepo(memoryKV());
+    await repo.createSong(song());
+    const [s] = await repo.listSongs();
+    expect(s).not.toHaveProperty("content");
+    expect(s).toMatchObject({ title: "Wonderwall", artist: "Oasis", bandKey: "Em" });
+  });
+
+  it("keeps only known fields", async () => {
+    const repo = makeRepo(memoryKV());
+    const s = await repo.createSong({ ...song(), extra: "x", id: "forced" } as unknown as SongInput);
+    expect(s).not.toHaveProperty("extra");
+    expect(s.id).not.toBe("forced");
+    const u = await repo.updateSong(s.id, { bandKey: "Am", junk: 1 } as unknown as Partial<SongInput>);
+    expect(u).not.toHaveProperty("junk");
+    expect(u.bandKey).toBe("Am");
+  });
+
+  it("rejects bad keys, types and sizes", async () => {
+    const repo = makeRepo(memoryKV());
+    const bad: Partial<Record<keyof SongInput, unknown>>[] = [
+      { originalKey: "H" },
+      { bandKey: "Emaj" },
+      { originalKey: "" },
+      { capo: 13 },
+      { capo: 1.5 },
+      { capo: "2" },
+      { title: 5 },
+      { artist: null },
+      { sourceUrl: 7 },
+      { title: "x".repeat(201) },
+      { artist: "x".repeat(201) },
+      { sourceUrl: "https://x/" + "a".repeat(500) },
+      { content: "x".repeat(100_001) },
+    ];
+    for (const over of bad) {
+      await expect(repo.createSong({ ...song(), ...over } as SongInput), JSON.stringify(over).slice(0, 40))
+        .rejects.toBeInstanceOf(ValidationError);
+    }
+    const missing = song() as Partial<SongInput>;
+    delete missing.content;
+    await expect(repo.createSong(missing as SongInput)).rejects.toBeInstanceOf(ValidationError);
+
+    const s = await repo.createSong(song());
+    for (const over of bad) {
+      await expect(repo.updateSong(s.id, over as Partial<SongInput>)).rejects.toBeInstanceOf(ValidationError);
+    }
+    await expect(repo.updateSong(s.id, { bandKey: undefined })).rejects.toBeInstanceOf(ValidationError);
+    expect((await repo.getSong(s.id))!.bandKey).toBe("Em");
+  });
+
+  it("accepts edge values", async () => {
+    const repo = makeRepo(memoryKV());
+    const s = await repo.createSong(
+      song({ title: "x".repeat(200), capo: 12, originalKey: "F#m", bandKey: "Bb", content: "x".repeat(100_000) }),
+    );
+    expect(s.capo).toBe(12);
+  });
+
   it("returns null for missing, throws on missing mutation", async () => {
     const repo = makeRepo(memoryKV());
     expect(await repo.getSong("nope")).toBeNull();
@@ -63,6 +122,30 @@ describe("gigs", () => {
     const g = await repo.createGig({ name: "Pub", date: "2026-12-01", songIds: [a.id, b.id] });
     await kv.delete(`songs/${a.id}`);
     expect((await repo.getGig(g.id))!.songIds).toEqual([b.id]);
+  });
+
+  it("validates gig fields", async () => {
+    const repo = makeRepo(memoryKV());
+    const ok = { name: "Pub", date: "2026-12-01", songIds: [] as string[] };
+    const bad: Record<string, unknown>[] = [
+      { name: "x".repeat(201) },
+      { name: 5 },
+      { date: "2026-1-01" },
+      { date: 20261201 },
+      { songIds: [1] },
+      { songIds: "a" },
+      { songIds: Array.from({ length: 101 }, (_, i) => `s${i}`) },
+    ];
+    for (const over of bad) {
+      await expect(repo.createGig({ ...ok, ...over } as never)).rejects.toBeInstanceOf(ValidationError);
+    }
+    const g = await repo.createGig({ ...ok, extra: 1 } as never);
+    expect(g).not.toHaveProperty("extra");
+    for (const over of bad) {
+      await expect(repo.updateGig(g.id, over as never)).rejects.toBeInstanceOf(ValidationError);
+    }
+    const u = await repo.updateGig(g.id, { name: "Club", junk: 2 } as never);
+    expect(u).toEqual({ id: g.id, name: "Club", date: "2026-12-01", songIds: [] });
   });
 
   it("lists newest date first", async () => {

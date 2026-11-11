@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
-import type { Song } from "../../shared/types";
+import type { SongSummary } from "../../shared/types";
 
 export default function SongsPage() {
-  const [songs, setSongs] = useState<Song[] | null>(null);
+  const [songs, setSongs] = useState<SongSummary[] | null>(null);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
 
