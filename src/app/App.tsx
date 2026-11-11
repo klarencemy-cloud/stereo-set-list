@@ -3,6 +3,8 @@ import { SITE_NAME } from "./config";
 import SongsPage from "./pages/SongsPage";
 import SongFormPage from "./pages/SongFormPage";
 import SongPage from "./pages/SongPage";
+import GigsPage from "./pages/GigsPage";
+import GigPage from "./pages/GigPage";
 import "./styles.css";
 
 function Placeholder({ title }: { title: string }) {
@@ -19,8 +21,8 @@ export function AppRoutes() {
     <>
       <header className="topbar">{SITE_NAME}</header>
       <Routes>
-        <Route path="/" element={<Placeholder title="Gigs" />} />
-        <Route path="/gigs/:id" element={<Placeholder title="Gig" />} />
+        <Route path="/" element={<GigsPage />} />
+        <Route path="/gigs/:id" element={<GigPage />} />
         <Route path="/songs" element={<SongsPage />} />
         <Route path="/songs/new" element={<SongFormPage />} />
         <Route path="/songs/:id/edit" element={<SongFormPage />} />

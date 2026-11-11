@@ -189,3 +189,6 @@ h2 { font-size: 1.1rem; margin: 1rem 0 0.5rem; }
   font-weight: 700; padding: 0; color: var(--text);
 }
 @media (min-width: 720px) { .song-title { font-size: 40px; } }
+
+.list-row.editing { flex-wrap: wrap; }
+.list-row.editing .grow { flex-basis: 100%; }
