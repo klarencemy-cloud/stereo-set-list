@@ -100,4 +100,13 @@ describe("tracks", () => {
     expect(await repo.getTrackPart(t.id, 0)).toBeNull();
     expect(await kv.list("tracks/")).toEqual([]);
   });
+
+  it("counts parts correctly when uploaded concurrently", async () => {
+    const repo = makeRepo(memoryKV());
+    const t = await repo.createTrack({ title: "Demo", size: 7_000_000 });
+    await Promise.all([0, 1, 2].map((n) => repo.putTrackPart(t.id, n, bytes(100))));
+    const tracks = await repo.listTracks();
+    expect(tracks.map((x) => x.id)).toEqual([t.id]);
+    expect(tracks[0].uploadedParts).toBe(3);
+  });
 });

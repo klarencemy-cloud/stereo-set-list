@@ -129,9 +129,9 @@ export function makeRepo(kv: KV) {
       if (!Number.isInteger(n) || n < 0 || n >= t.parts) throw new ValidationError("part number out of range");
       if (bytes.byteLength > CHUNK_SIZE) throw new ValidationError("part is too large");
       const key = `audio/${id}/${n}`;
-      const isNew = (await kv.getBytes(key)) === null;
       await kv.setBytes(key, bytes);
-      if (isNew) await writeJson(`tracks/${id}`, { ...t, uploadedParts: t.uploadedParts + 1 });
+      const uploadedParts = (await kv.list(`audio/${id}/`)).length;
+      await writeJson(`tracks/${id}`, { ...t, uploadedParts });
     },
     async getTrackPart(id: string, n: number): Promise<ArrayBuffer | null> {
       return kv.getBytes(`audio/${id}/${n}`);
