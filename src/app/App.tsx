@@ -5,6 +5,7 @@ import SongFormPage from "./pages/SongFormPage";
 import SongPage from "./pages/SongPage";
 import GigsPage from "./pages/GigsPage";
 import GigPage from "./pages/GigPage";
+import TracksPage from "./pages/TracksPage";
 import "./styles.css";
 
 function Placeholder({ title }: { title: string }) {
@@ -27,7 +28,7 @@ export function AppRoutes() {
         <Route path="/songs/new" element={<SongFormPage />} />
         <Route path="/songs/:id/edit" element={<SongFormPage />} />
         <Route path="/songs/:id" element={<SongPage />} />
-        <Route path="/tracks" element={<Placeholder title="Our Songs" />} />
+        <Route path="/tracks" element={<TracksPage />} />
         <Route path="*" element={<Placeholder title="Not found" />} />
       </Routes>
       <nav className="bottom-nav" aria-label="Main">
