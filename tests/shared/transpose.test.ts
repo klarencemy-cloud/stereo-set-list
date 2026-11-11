@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   KEYS,
   isChord,
+  isValidKey,
   prefersFlats,
   semitonesBetween,
   transposeChord,
@@ -63,6 +64,31 @@ describe("transposeChord", () => {
   });
   it("returns non-chords unchanged", () => {
     expect(transposeChord("x2", 2, false)).toBe("x2");
+    expect(transposeChord("N.C.", 2, false)).toBe("N.C.");
+  });
+  it("transposes chords with bracketed or unusual suffixes", () => {
+    expect(transposeChord("C7(b9)", 2, false)).toBe("D7(b9)");
+    expect(transposeChord("Am(maj7)", 2, false)).toBe("Bm(maj7)");
+    expect(transposeChord("Cmaj7(9)", 2, false)).toBe("Dmaj7(9)");
+    expect(transposeChord("Bm7(b5)", 1, false)).toBe("Cm7(b5)");
+    expect(transposeChord("C(add9)", 2, false)).toBe("D(add9)");
+    expect(transposeChord("(C7(b9))", 2, false)).toBe("(D7(b9))");
+  });
+  it("treats 6/9 as a suffix, not a slash bass", () => {
+    expect(transposeChord("G6/9", 2, false)).toBe("A6/9");
+    expect(transposeChord("G6/9/B", 2, false)).toBe("A6/9/C#");
+  });
+  it("leaves chords with an unknown root alone", () => {
+    expect(transposeChord("Cb", 2, false)).toBe("Cb");
+  });
+});
+
+describe("isValidKey", () => {
+  it("accepts a root with an optional minor m", () => {
+    for (const k of ["C", "F#", "Bb", "Em", "F#m", "Bbm", "Gb", "A#m"]) expect(isValidKey(k)).toBe(true);
+  });
+  it("rejects anything else", () => {
+    for (const k of ["", "H", "Cb", "Emaj", "C7", "c", "Am7", " G"]) expect(isValidKey(k)).toBe(false);
   });
 });
 

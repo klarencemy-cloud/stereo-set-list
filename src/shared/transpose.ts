@@ -47,10 +47,25 @@ export function isChord(token: string): boolean {
   return CHORD_RE.test(token);
 }
 
+/** True for a key the app can transpose: a note name with an optional trailing "m" (e.g. "F#m", "Bb"). */
+export function isValidKey(key: string): boolean {
+  const m = /^([A-G][#b]?)m?$/.exec(key);
+  return m !== null && noteIndex(m[1]) >= 0;
+}
+
+// Loose pattern for chords already marked with [ch] tags: any suffix is kept as-is.
+// "/X" is a slash bass only when X is a note, so "6/9" stays part of the suffix.
+const LOOSE_CHORD_RE = /^([A-G][#b]?)(.*?)(?:\/([A-G][#b]?))?$/;
+
 export function transposeChord(chord: string, semitones: number, useFlats: boolean): string {
-  const m = CHORD_RE.exec(chord);
+  // Only a leading "(" pairs with a trailing ")", so "C7(b9)" keeps its suffix intact.
+  const bracketed = chord.length > 2 && chord.startsWith("(") && chord.endsWith(")");
+  const inner = bracketed ? chord.slice(1, -1) : chord;
+  const m = LOOSE_CHORD_RE.exec(inner);
   if (!m) return chord;
-  const [, open, root, suffix, bass, close] = m;
+  const [, root, suffix, bass] = m;
+  if (noteIndex(root) < 0 || (bass && noteIndex(bass) < 0)) return chord;
   const newBass = bass ? "/" + shiftNote(bass, semitones, useFlats) : "";
-  return open + shiftNote(root, semitones, useFlats) + suffix + newBass + close;
+  const out = shiftNote(root, semitones, useFlats) + suffix + newBass;
+  return bracketed ? `(${out})` : out;
 }

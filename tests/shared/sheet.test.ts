@@ -46,6 +46,14 @@ describe("transposeContent", () => {
       "[ch]G[/ch]    [ch]C[/ch]",
     );
   });
+  it("keeps at least one space between chords when they get longer", () => {
+    const out = transposeContent("[ch]G[/ch] [ch]D[/ch] [ch]Em[/ch] [ch]C[/ch]", "G", "Bb");
+    expect(out).toBe("[ch]Bb[/ch] [ch]F[/ch] [ch]Gm[/ch] [ch]Eb[/ch]");
+    expect(out).not.toMatch(/\[\/ch\]\[ch\]/);
+  });
+  it("still closes up extra spaces down to one", () => {
+    expect(transposeContent("[ch]G[/ch]  [ch]D[/ch]", "G", "Bb")).toBe("[ch]Bb[/ch] [ch]F[/ch]");
+  });
   it("never adds trailing spaces", () => {
     expect(transposeContent("[ch]Bb[/ch]", "Bb", "G")).toBe("[ch]G[/ch]");
   });

@@ -42,7 +42,8 @@ export function transposeContent(content: string, fromKey: string, toKey: string
           const next = transposeChord(chord, semitones, useFlats);
           const delta = next.length - chord.length;
           let pad = spaces;
-          if (delta > 0) pad = spaces.slice(Math.min(delta, spaces.length));
+          // Never remove the last space, or neighbouring chords would merge.
+          if (delta > 0) pad = spaces.slice(Math.min(delta, Math.max(spaces.length - 1, 0)));
           else if (delta < 0 && line.slice(offset + match.length).replace(/\r$/, "").length > 0) {
             pad = spaces + " ".repeat(-delta);
           }
