@@ -22,7 +22,10 @@ export function AppRoutes() {
   const location = useLocation();
   return (
     <>
-      <header className="topbar">{SITE_NAME}</header>
+      <header className="topbar">
+        <img className="topbar-logo" src="/logo-64.png" alt="Stereobloc" width={28} height={28} />
+        <span>{SITE_NAME}</span>
+      </header>
       <ErrorBoundary resetKey={location.pathname}>
         <Routes>
           <Route path="/" element={<GigsPage />} />

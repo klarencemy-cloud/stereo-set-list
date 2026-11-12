@@ -1,12 +1,16 @@
-import { useEffect, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../api";
+import { loadSetlist, loadSong, peekSong, prefetchSong, rememberSong } from "../songCache";
 import type { Song } from "../../shared/types";
 import { transposeContent } from "../../shared/sheet";
 import { transposeKey } from "../../shared/transpose";
 import ChordSheet from "../components/ChordSheet";
 import TransposeControl from "../components/TransposeControl";
 import { useAutoscroll } from "../components/useAutoscroll";
+import { useWakeLock } from "../components/useWakeLock";
+import { useFontSize } from "../components/useFontSize";
+import { useSwipe } from "../components/useSwipe";
 
 const SPEEDS = [0.5, 1, 1.5, 2, 3];
 const KEY_UNKNOWN = "Key unknown \u2014 fix it in Edit";
@@ -26,12 +30,13 @@ export default function SongPage() {
   useEffect(() => {
     let alive = true;
     // Moving between songs reuses this component: start each one fresh, at the top.
-    setSong(null);
+    // A song fetched ahead of time shows straight away, with no loading screen.
+    setSong(peekSong(id) ?? null);
     setError(null);
     setRunning(false);
     setShowTranspose(false);
     window.scrollTo?.(0, 0);
-    api.getSong(id).then(
+    loadSong(id).then(
       (s) => alive && setSong(s),
       (e) => alive && setError(e instanceof ApiError ? e.message : "Could not load this song."),
     );
@@ -45,15 +50,17 @@ export default function SongPage() {
     setNeighbours({ prev: null, next: null });
     if (!gigId) return;
     let alive = true;
-    Promise.all([api.getGig(gigId), api.listSongs()]).then(
-      ([gig, all]) => {
+    loadSetlist(gigId).then(
+      (ids) => {
         if (!alive) return;
-        const exists = new Set(all.map((s) => s.id));
-        // Songs deleted after being added simply drop out of the setlist.
-        const ids = gig.songIds.filter((sid) => exists.has(sid));
         const i = ids.indexOf(id);
         if (i === -1) return;
-        setNeighbours({ prev: ids[i - 1] ?? null, next: ids[i + 1] ?? null });
+        const prev = ids[i - 1] ?? null;
+        const next = ids[i + 1] ?? null;
+        setNeighbours({ prev, next });
+        // Fetch the neighbours now so Next and Previous open instantly.
+        if (next) prefetchSong(next);
+        if (prev) prefetchSong(prev);
       },
       () => {
         // Navigation is a convenience; the song itself still works without it.
@@ -65,6 +72,16 @@ export default function SongPage() {
   }, [id, gigId]);
 
   useAutoscroll(SPEEDS[speedIdx], running);
+  // Keep the phone from dimming or locking for as long as a song is open.
+  useWakeLock(true);
+  const font = useFontSize();
+  const navigate = useNavigate();
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const { prev, next } = neighbours;
+  useSwipe(sheetRef, {
+    onLeft: next ? () => navigate(`/songs/${next}?gig=${gigId}`) : undefined,
+    onRight: prev ? () => navigate(`/songs/${prev}?gig=${gigId}`) : undefined,
+  });
 
   async function transpose(semitones: number) {
     if (!song || saving) return;
@@ -81,6 +98,7 @@ export default function SongPage() {
     setSong({ ...song, bandKey: next });
     try {
       await api.updateSong(song.id, { bandKey: next });
+      rememberSong({ ...song, bandKey: next });
     } catch (e) {
       setSong((s) => (s ? { ...s, bandKey: previous } : s));
       setError(e instanceof ApiError ? e.message : "Could not save the new key.");
@@ -120,6 +138,14 @@ export default function SongPage() {
         <button type="button" className="pill" onClick={() => setSpeedIdx((i) => (i + 1) % SPEEDS.length)}>
           {`Speed: ${SPEEDS[speedIdx]}`}
         </button>
+        <div className="pill pill-split" role="group" aria-label="Text size">
+          <button type="button" aria-label="Smaller text" disabled={!font.canShrink} onClick={font.smaller}>
+            {"A−"}
+          </button>
+          <button type="button" aria-label="Bigger text" disabled={!font.canGrow} onClick={font.bigger}>
+            A+
+          </button>
+        </div>
         <button type="button" className="pill" aria-expanded={showTranspose} onClick={() => setShowTranspose((v) => !v)}>
           Transpose
         </button>
@@ -141,7 +167,7 @@ export default function SongPage() {
         )}
       </p>
       {keyUnknown && <p className="muted key-note">{KEY_UNKNOWN}</p>}
-      <ChordSheet content={content} onTap={() => setRunning(false)} />
+      <ChordSheet content={content} sheetRef={sheetRef} fontSize={font.size} onTap={() => setRunning(false)} />
       {(neighbours.prev || neighbours.next) && (
         <nav className="song-nav" aria-label="Setlist">
           {neighbours.prev ? (

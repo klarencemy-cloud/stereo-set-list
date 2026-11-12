@@ -9,6 +9,7 @@ vi.mock("../../src/app/api", async () => {
 
 import { api, ApiError } from "../../src/app/api";
 import SongPage from "../../src/app/pages/SongPage";
+import { clearSongCache, peekSong } from "../../src/app/songCache";
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -37,6 +38,7 @@ function renderPage(path = "/songs/s1") {
 
 beforeEach(() => {
   window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
+  clearSongCache();
   Object.values(mocked).forEach((f) => f.mockReset());
   mocked.getSong.mockResolvedValue({ ...song });
 });
@@ -147,6 +149,73 @@ describe("SongPage", () => {
     beforeEach(() => {
       mocked.getGig.mockResolvedValue({ id: "g1", name: "Show", date: "2026-12-20", songIds: ["sA", "s1", "gone", "sC"] });
       mocked.listSongs.mockResolvedValue([summary("sA"), summary("s1"), summary("sC")]);
+      mocked.getSong.mockImplementation(async (id: string) =>
+        id === "s1" ? { ...song } : { ...song, id, title: `Song ${id}` },
+      );
+    });
+
+    it("prefetches the next and previous songs in the setlist", async () => {
+      renderPage("/songs/s1?gig=g1");
+      await screen.findByRole("link", { name: /Next song/ });
+      await waitFor(() => expect(mocked.getSong).toHaveBeenCalledWith("sC"));
+      expect(mocked.getSong).toHaveBeenCalledWith("sA");
+    });
+
+    it("opens the next song without a loading screen", async () => {
+      renderPage("/songs/s1?gig=g1");
+      const next = await screen.findByRole("link", { name: /Next song/ });
+      await waitFor(() => expect(peekSong("sC")).toBeDefined());
+      fireEvent.click(next);
+      expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Song sC" })).toBeInTheDocument();
+    });
+
+    it("loads the setlist once while moving through the gig", async () => {
+      renderPage("/songs/s1?gig=g1");
+      fireEvent.click(await screen.findByRole("link", { name: /Next song/ }));
+      await screen.findByRole("heading", { name: "Song sC" });
+      expect(await screen.findByRole("link", { name: /Previous song/ })).toHaveAttribute("href", "/songs/s1?gig=g1");
+      expect(mocked.getGig).toHaveBeenCalledTimes(1);
+      expect(mocked.listSongs).toHaveBeenCalledTimes(1);
+    });
+
+    it("swiping left on the sheet opens the next song, right goes back", async () => {
+      renderPage("/songs/s1?gig=g1");
+      await screen.findByRole("link", { name: /Next song/ });
+      const sheet = screen.getByTestId("sheet");
+      fireEvent.touchStart(sheet, { touches: [{ clientX: 300, clientY: 100 }] });
+      fireEvent.touchEnd(sheet, { changedTouches: [{ clientX: 180, clientY: 105 }] });
+      expect(await screen.findByRole("heading", { name: "Song sC" })).toBeInTheDocument();
+      await screen.findByRole("link", { name: /Previous song/ });
+      const next = screen.getByTestId("sheet");
+      fireEvent.touchStart(next, { touches: [{ clientX: 100, clientY: 100 }] });
+      fireEvent.touchEnd(next, { changedTouches: [{ clientX: 220, clientY: 100 }] });
+      expect(await screen.findByRole("heading", { name: "Test Song" })).toBeInTheDocument();
+    });
+
+    it("swiping does nothing outside a gig", async () => {
+      renderPage("/songs/s1");
+      await screen.findByText("[Intro]");
+      const sheet = screen.getByTestId("sheet");
+      fireEvent.touchStart(sheet, { touches: [{ clientX: 300, clientY: 100 }] });
+      fireEvent.touchEnd(sheet, { changedTouches: [{ clientX: 180, clientY: 100 }] });
+      expect(screen.getByRole("heading", { name: "Test Song" })).toBeInTheDocument();
+      expect(mocked.getSong).toHaveBeenCalledTimes(1);
+    });
+
+    it("transposing updates the cached song", async () => {
+      mocked.updateSong.mockResolvedValue({ ...song, bandKey: "Bb" });
+      renderPage("/songs/s1?gig=g1");
+      await screen.findByText("[Intro]");
+      fireEvent.click(screen.getByRole("button", { name: "Transpose" }));
+      fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Transpose up" })).toBeEnabled());
+      fireEvent.click(await screen.findByRole("link", { name: /Next song/ }));
+      await screen.findByRole("heading", { name: "Song sC" });
+      fireEvent.click(await screen.findByRole("link", { name: /Previous song/ }));
+      expect(await screen.findByText("No capo")).toBeInTheDocument();
+      expect(screen.getByText("No capo").parentElement).toHaveTextContent("Key: Bb");
+      expect(mocked.getSong.mock.calls.filter(([id]) => id === "s1")).toHaveLength(1);
     });
 
     it("links to the previous and next song in the gig, keeping the gig", async () => {
@@ -181,6 +250,35 @@ describe("SongPage", () => {
       expect(await screen.findByText("[Intro]")).toBeInTheDocument();
       expect(screen.queryByRole("link", { name: /Next song/ })).not.toBeInTheDocument();
     });
+  });
+
+  it("makes the chord sheet bigger and smaller", async () => {
+    localStorage.clear();
+    renderPage();
+    await screen.findByText("[Intro]");
+    fireEvent.click(screen.getByRole("button", { name: "Bigger text" }));
+    expect(screen.getByTestId("sheet")).toHaveStyle({ fontSize: "17px" });
+    fireEvent.click(screen.getByRole("button", { name: "Smaller text" }));
+    fireEvent.click(screen.getByRole("button", { name: "Smaller text" }));
+    expect(screen.getByTestId("sheet")).toHaveStyle({ fontSize: "13px" });
+    expect(screen.getByRole("button", { name: "Smaller text" })).toBeDisabled();
+    localStorage.clear();
+  });
+
+  it("keeps the screen on while the song is open, without autoscroll", async () => {
+    const release = vi.fn(async () => {});
+    const request = vi.fn(async () => ({ release }));
+    Object.defineProperty(navigator, "wakeLock", { configurable: true, value: { request } });
+    try {
+      const { unmount } = renderPage();
+      await screen.findByText("[Intro]");
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledWith("screen");
+      unmount();
+      expect(release).toHaveBeenCalled();
+    } finally {
+      delete (navigator as unknown as Record<string, unknown>).wakeLock;
+    }
   });
 
   it("shows an error when the song cannot be loaded", async () => {

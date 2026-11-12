@@ -1,9 +1,26 @@
+import type { Ref } from "react";
 import { parseSheet } from "../../shared/sheet";
 
-export default function ChordSheet({ content, onTap }: { content: string; onTap?: () => void }) {
+export default function ChordSheet({
+  content,
+  onTap,
+  fontSize,
+  sheetRef,
+}: {
+  content: string;
+  onTap?: () => void;
+  fontSize?: number;
+  sheetRef?: Ref<HTMLDivElement>;
+}) {
   const lines = parseSheet(content);
   return (
-    <div className="sheet sheet-full" onClick={onTap} data-testid="sheet">
+    <div
+      ref={sheetRef}
+      className="sheet sheet-full"
+      onClick={onTap}
+      data-testid="sheet"
+      style={fontSize ? { fontSize } : undefined}
+    >
       {lines.map((line, i) =>
         line.kind === "section" ? (
           <div key={i} className="sheet-line sheet-section">{`[${line.label}]`}</div>

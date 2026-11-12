@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
+import { clearSongCache } from "../songCache";
 import { KEYS } from "../../shared/transpose";
 import { markupFromPlainText, parseSheet } from "../../shared/sheet";
 import type { SongInput } from "../../shared/types";
@@ -39,7 +40,8 @@ export default function SongFormPage() {
 
   useEffect(() => {
     if (!id) return;
-    api.getSong(id).then(
+    // Fresh, not a saved offline copy: whatever loads here is sent back whole on Save.
+    api.getSong(id, { fresh: true }).then(
       (s) => {
         setTitle(s.title);
         setArtist(s.artist);
@@ -90,6 +92,7 @@ export default function SongFormPage() {
     };
     try {
       const song = id ? await api.updateSong(id, input) : await api.createSong(input);
+      clearSongCache();
       navigate(`/songs/${song.id}`);
     } catch (e) {
       setMessage((e as Error).message);
@@ -103,6 +106,7 @@ export default function SongFormPage() {
     setMessage("");
     try {
       await api.deleteSong(id);
+      clearSongCache();
       navigate("/songs");
     } catch (e) {
       setMessage((e as Error).message);

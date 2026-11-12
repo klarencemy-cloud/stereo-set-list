@@ -13,6 +13,7 @@ vi.mock("../../src/app/api", async () => {
 
 import { api, ApiError } from "../../src/app/api";
 import SongFormPage from "../../src/app/pages/SongFormPage";
+import { clearSongCache, peekSong, rememberSong } from "../../src/app/songCache";
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -46,6 +47,7 @@ const stored = {
 beforeEach(() => {
   Object.values(mocked).forEach((f) => f.mockReset());
   vi.restoreAllMocks();
+  clearSongCache();
 });
 
 describe("SongFormPage", () => {
@@ -122,6 +124,36 @@ describe("SongFormPage", () => {
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Stored"));
     expect(mocked.deleteSong).toHaveBeenCalledWith("s1");
     expect(await screen.findByText("songs list")).toBeInTheDocument();
+  });
+
+  it("asks for a fresh copy of the song to edit", async () => {
+    mocked.getSong.mockResolvedValue(stored);
+    renderEdit();
+    await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("Stored"));
+    expect(mocked.getSong).toHaveBeenCalledWith("s1", { fresh: true });
+  });
+
+  it("forgets the cached copy of a song after saving it", async () => {
+    mocked.getSong.mockResolvedValue(stored);
+    mocked.updateSong.mockResolvedValue({ ...stored, title: "New" });
+    rememberSong(stored);
+    renderEdit();
+    await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("Stored"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(peekSong("s1")).toBeUndefined());
+  });
+
+  it("forgets the cached copy of a song after deleting it", async () => {
+    mocked.getSong.mockResolvedValue(stored);
+    mocked.deleteSong.mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    rememberSong(stored);
+    renderEdit();
+    await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("Stored"));
+    fireEvent.click(screen.getByRole("button", { name: "Delete song" }));
+    expect(await screen.findByText("songs list")).toBeInTheDocument();
+    expect(peekSong("s1")).toBeUndefined();
   });
 
   it("does nothing when the delete is not confirmed", async () => {

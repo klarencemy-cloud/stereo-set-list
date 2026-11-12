@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../api";
+import { clearSongCache } from "../songCache";
+import { NOT_READY, canSaveOffline, saveGigForOffline } from "../offline";
 import { formatGigDate } from "../formatDate";
 import type { Gig, SongSummary } from "../../shared/types";
 
@@ -17,6 +19,8 @@ export default function GigPage() {
   const [editingDetails, setEditingDetails] = useState(false);
   const [name, setName] = useState("");
   const [date, setDate] = useState("");
+  const [savingOffline, setSavingOffline] = useState(false);
+  const [offline, setOffline] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -53,6 +57,7 @@ export default function GigPage() {
     setGig({ ...gig, songIds });
     try {
       await api.updateGig(gig.id, { songIds });
+      clearSongCache();
     } catch (e) {
       setGig(previous);
       setError(e instanceof ApiError ? e.message : "Could not save the setlist.");
@@ -88,6 +93,7 @@ export default function GigPage() {
     setSaving(true);
     try {
       const updated = await api.updateGig(gig.id, { name: name.trim(), date });
+      clearSongCache();
       setGig({ ...gig, name: updated.name, date: updated.date });
       setEditingDetails(false);
     } catch (err) {
@@ -97,10 +103,31 @@ export default function GigPage() {
     }
   }
 
+  async function saveOffline() {
+    if (!gig || savingOffline) return;
+    setSavingOffline(true);
+    setOffline(null);
+    try {
+      const { saved, total } = await saveGigForOffline(gig.id);
+      setOffline({
+        ok: true,
+        text:
+          saved === total
+            ? `Saved ${saved} ${saved === 1 ? "song" : "songs"} for offline.`
+            : `Saved ${saved} of ${total} songs. Try again with better signal.`,
+      });
+    } catch (e) {
+      setOffline({ ok: false, text: e instanceof Error && e.message === NOT_READY ? NOT_READY : "Could not save for offline." });
+    } finally {
+      setSavingOffline(false);
+    }
+  }
+
   async function removeGig() {
     if (!gig || !window.confirm(`Delete "${gig.name}"? This cannot be undone.`)) return;
     try {
       await api.deleteGig(gig.id);
+      clearSongCache();
       navigate("/");
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Could not delete the gig.");
@@ -112,7 +139,7 @@ export default function GigPage() {
     .sort((a, b) => a.title.localeCompare(b.title));
 
   return (
-    <main className="page">
+    <main className="page gig-page">
       {editingDetails ? (
         <form onSubmit={saveDetails}>
           <label className="field">
@@ -143,6 +170,26 @@ export default function GigPage() {
           {editing ? "Done" : "Edit setlist"}
         </button>
       </div>
+      {!editing && (canSaveOffline() || ids.length > 0) && (
+        <p className="actions">
+          {canSaveOffline() && (
+            <button type="button" className="btn" disabled={savingOffline} onClick={saveOffline}>
+              {savingOffline ? "Saving…" : "Save for offline"}
+            </button>
+          )}
+          {ids.length > 0 && (
+            <button type="button" className="btn" onClick={() => window.print()}>
+              Print setlist
+            </button>
+          )}
+        </p>
+      )}
+      {offline &&
+        (offline.ok ? (
+          <p role="status" className="muted">{offline.text}</p>
+        ) : (
+          <p role="alert" className="error">{offline.text}</p>
+        ))}
       {error && <p role="alert" className="error">{error}</p>}
       {ids.length === 0 && <p className="muted">No songs in the setlist yet.</p>}
       <ul className="list">
@@ -200,6 +247,14 @@ export default function GigPage() {
       <p>
         <button type="button" className="btn" onClick={removeGig}>Delete gig</button>
       </p>
+      {ids.length > 0 && (
+        // Floor sheet: invisible on screen, the only thing on paper (see @media print in styles.css).
+        <ol className="print-setlist" aria-hidden="true">
+          {ids.map((sid) => (
+            <li key={sid}>{byId.get(sid)!.title.toUpperCase()}</li>
+          ))}
+        </ol>
+      )}
     </main>
   );
 }

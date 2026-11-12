@@ -33,13 +33,19 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
   return (await request(path, init)).json() as Promise<T>;
 }
 
+// Tells the offline service worker to wait for the server rather than answer from its saved
+// copy after a timeout. Same value as FRESH_HEADER in src/sw/strategy.ts (not imported, so the
+// worker build stays a single file; tests/app/api.test.ts checks they match).
+const FRESH_HEADER = "X-Fresh";
+
 function send(method: string, body: unknown): RequestInit {
   return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }
 
 export const api = {
   listSongs: () => json<SongSummary[]>("/api/songs"),
-  getSong: (id: string) => json<Song>(`/api/songs/${id}`),
+  getSong: (id: string, opts?: { fresh?: boolean }) =>
+    json<Song>(`/api/songs/${id}`, opts?.fresh ? { headers: { [FRESH_HEADER]: "1" } } : undefined),
   createSong: (input: SongInput) => json<Song>("/api/songs", send("POST", input)),
   updateSong: (id: string, patch: Partial<SongInput>) => json<Song>(`/api/songs/${id}`, send("PUT", patch)),
   deleteSong: async (id: string): Promise<void> => {

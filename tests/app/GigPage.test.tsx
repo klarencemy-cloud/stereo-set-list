@@ -17,9 +17,16 @@ vi.mock("../../src/app/api", async () => {
   };
 });
 
+vi.mock("../../src/app/offline", async () => {
+  const actual = await vi.importActual<typeof import("../../src/app/offline")>("../../src/app/offline");
+  return { ...actual, canSaveOffline: vi.fn(() => false), saveGigForOffline: vi.fn() };
+});
+
 import { api, ApiError } from "../../src/app/api";
+import { NOT_READY, canSaveOffline, saveGigForOffline } from "../../src/app/offline";
 import GigPage from "../../src/app/pages/GigPage";
 import GigsPage from "../../src/app/pages/GigsPage";
+import { clearSongCache, loadSetlist } from "../../src/app/songCache";
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -42,10 +49,121 @@ function renderGig() {
 }
 
 beforeEach(() => {
+  clearSongCache();
   Object.values(mocked).forEach((f) => f.mockReset());
   mocked.getGig.mockResolvedValue({ ...gig });
   mocked.listSongs.mockResolvedValue(songs.map((s) => ({ ...s })));
   mocked.updateGig.mockImplementation(async (_id: string, patch: object) => ({ ...gig, ...patch }));
+});
+
+describe("GigPage offline saving", () => {
+  const canSave = canSaveOffline as unknown as ReturnType<typeof vi.fn>;
+  const save = saveGigForOffline as unknown as ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    canSave.mockReturnValue(true);
+    save.mockReset();
+  });
+  afterEach(() => canSave.mockReturnValue(false));
+
+  it("hides the button when the browser can't save offline", async () => {
+    canSave.mockReturnValue(false);
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    expect(screen.queryByRole("button", { name: "Save for offline" })).not.toBeInTheDocument();
+  });
+
+  it("is hidden while editing the setlist", async () => {
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Edit setlist" }));
+    expect(screen.queryByRole("button", { name: "Save for offline" })).not.toBeInTheDocument();
+  });
+
+  it("saves the gig and reports how many songs were saved", async () => {
+    let resolve!: (v: unknown) => void;
+    save.mockReturnValue(new Promise((r) => (resolve = r)));
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Save for offline" }));
+    expect(save).toHaveBeenCalledWith("g1");
+    expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
+    resolve({ saved: 3, total: 3 });
+    expect(await screen.findByRole("status")).toHaveTextContent("Saved 3 songs for offline.");
+    expect(screen.getByRole("button", { name: "Save for offline" })).toBeEnabled();
+  });
+
+  it("says when some songs could not be saved", async () => {
+    save.mockResolvedValue({ saved: 2, total: 3 });
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Save for offline" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Saved 2 of 3 songs. Try again with better signal.");
+  });
+
+  it("shows the not-ready message", async () => {
+    save.mockRejectedValue(new Error(NOT_READY));
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Save for offline" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(NOT_READY);
+  });
+
+  it("shows a general error for other failures", async () => {
+    save.mockRejectedValue(new ApiError(0, "Can't reach the server."));
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Save for offline" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not save for offline.");
+  });
+});
+
+describe("GigPage print setlist", () => {
+  const printTitles = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll(".print-setlist li")).map((li) => li.textContent);
+
+  it("opens the browser print dialog", async () => {
+    const print = vi.spyOn(window, "print").mockImplementation(() => {});
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Print setlist" }));
+    expect(print).toHaveBeenCalledTimes(1);
+    print.mockRestore();
+  });
+
+  it("prints only the titles, in capitals and setlist order", async () => {
+    mocked.getGig.mockResolvedValue({ ...gig, songIds: ["s2", "s1"] });
+    const { container } = renderGig();
+    await screen.findByText("1. Beta — Key: C");
+    expect(printTitles(container)).toEqual(["BETA", "ALPHA"]);
+  });
+
+  it("leaves deleted songs off the printed sheet", async () => {
+    mocked.getGig.mockResolvedValue({ ...gig, songIds: ["s1", "gone", "s3"] });
+    const { container } = renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    expect(printTitles(container)).toEqual(["ALPHA", "GAMMA"]);
+  });
+
+  it("keeps the printed list out of the on-screen setlist", async () => {
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("is hidden while editing the setlist", async () => {
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Edit setlist" }));
+    expect(screen.queryByRole("button", { name: "Print setlist" })).not.toBeInTheDocument();
+  });
+
+  it("is hidden when the setlist is empty", async () => {
+    mocked.getGig.mockResolvedValue({ ...gig, songIds: [] });
+    const { container } = renderGig();
+    await screen.findByText("No songs in the setlist yet.");
+    expect(screen.queryByRole("button", { name: "Print setlist" })).not.toBeInTheDocument();
+    expect(container.querySelector(".print-setlist")).toBeNull();
+  });
 });
 
 describe("GigPage", () => {
@@ -73,6 +191,18 @@ describe("GigPage", () => {
     fireEvent.click(within(rows[1]).getByRole("button", { name: "Move up" }));
     await waitFor(() => expect(mocked.updateGig).toHaveBeenCalledWith("g1", { songIds: ["s2", "s1"] }));
     expect(await screen.findByText("1. Beta — Key: C")).toBeInTheDocument();
+  });
+
+  it("forgets the cached setlist after the setlist is saved", async () => {
+    await loadSetlist("g1");
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Edit setlist" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Remove" })[0]);
+    await waitFor(() => expect(mocked.updateGig).toHaveBeenCalledTimes(1));
+    const before = mocked.getGig.mock.calls.length;
+    await loadSetlist("g1");
+    expect(mocked.getGig.mock.calls.length).toBe(before + 1);
   });
 
   it("Remove drops the row", async () => {
