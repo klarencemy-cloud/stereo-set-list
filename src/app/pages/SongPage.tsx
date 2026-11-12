@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../api";
 import type { Song } from "../../shared/types";
 import { transposeContent } from "../../shared/sheet";
@@ -13,6 +13,9 @@ const KEY_UNKNOWN = "Key unknown \u2014 fix it in Edit";
 
 export default function SongPage() {
   const { id = "" } = useParams();
+  const [searchParams] = useSearchParams();
+  const gigId = searchParams.get("gig");
+  const [neighbours, setNeighbours] = useState<{ prev: string | null; next: string | null }>({ prev: null, next: null });
   const [song, setSong] = useState<Song | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
@@ -22,6 +25,12 @@ export default function SongPage() {
 
   useEffect(() => {
     let alive = true;
+    // Moving between songs reuses this component: start each one fresh, at the top.
+    setSong(null);
+    setError(null);
+    setRunning(false);
+    setShowTranspose(false);
+    window.scrollTo?.(0, 0);
     api.getSong(id).then(
       (s) => alive && setSong(s),
       (e) => alive && setError(e instanceof ApiError ? e.message : "Could not load this song."),
@@ -30,6 +39,30 @@ export default function SongPage() {
       alive = false;
     };
   }, [id]);
+
+  // Opened from a gig's setlist: work out the neighbouring songs.
+  useEffect(() => {
+    setNeighbours({ prev: null, next: null });
+    if (!gigId) return;
+    let alive = true;
+    Promise.all([api.getGig(gigId), api.listSongs()]).then(
+      ([gig, all]) => {
+        if (!alive) return;
+        const exists = new Set(all.map((s) => s.id));
+        // Songs deleted after being added simply drop out of the setlist.
+        const ids = gig.songIds.filter((sid) => exists.has(sid));
+        const i = ids.indexOf(id);
+        if (i === -1) return;
+        setNeighbours({ prev: ids[i - 1] ?? null, next: ids[i + 1] ?? null });
+      },
+      () => {
+        // Navigation is a convenience; the song itself still works without it.
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [id, gigId]);
 
   useAutoscroll(SPEEDS[speedIdx], running);
 
@@ -109,6 +142,20 @@ export default function SongPage() {
       </p>
       {keyUnknown && <p className="muted key-note">{KEY_UNKNOWN}</p>}
       <ChordSheet content={content} onTap={() => setRunning(false)} />
+      {(neighbours.prev || neighbours.next) && (
+        <nav className="song-nav" aria-label="Setlist">
+          {neighbours.prev ? (
+            <Link className="pill" to={`/songs/${neighbours.prev}?gig=${gigId}`}>
+              <span aria-hidden="true">{"←"}</span> Previous song
+            </Link>
+          ) : <span />}
+          {neighbours.next ? (
+            <Link className="pill pill-yellow" to={`/songs/${neighbours.next}?gig=${gigId}`}>
+              Next song <span aria-hidden="true">{"→"}</span>
+            </Link>
+          ) : <span />}
+        </nav>
+      )}
     </main>
   );
 }

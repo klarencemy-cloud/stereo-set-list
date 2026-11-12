@@ -165,7 +165,7 @@ export default function GigPage() {
                   </button>
                 </div>
               ) : (
-                <Link className="list-row" to={`/songs/${s.id}`}>
+                <Link className="list-row" to={`/songs/${s.id}?gig=${gig.id}`}>
                   <span className="grow">{label}</span>
                 </Link>
               )}

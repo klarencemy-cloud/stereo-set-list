@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 vi.mock("../../src/app/api", async () => {
   const actual = await vi.importActual<typeof import("../../src/app/api")>("../../src/app/api");
-  return { ...actual, api: { getSong: vi.fn(), updateSong: vi.fn() } };
+  return { ...actual, api: { getSong: vi.fn(), updateSong: vi.fn(), getGig: vi.fn(), listSongs: vi.fn() } };
 });
 
 import { api, ApiError } from "../../src/app/api";
@@ -24,9 +24,9 @@ const song = {
   updatedAt: "x",
 };
 
-function renderPage() {
+function renderPage(path = "/songs/s1") {
   return render(
-    <MemoryRouter initialEntries={["/songs/s1"]}>
+    <MemoryRouter initialEntries={[path]}>
       <Routes>
         <Route path="/songs/:id" element={<SongPage />} />
         <Route path="/songs/:id/edit" element={<div>edit page</div>} />
@@ -36,6 +36,7 @@ function renderPage() {
 }
 
 beforeEach(() => {
+  window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
   Object.values(mocked).forEach((f) => f.mockReset());
   mocked.getSong.mockResolvedValue({ ...song });
 });
@@ -139,6 +140,47 @@ describe("SongPage", () => {
     renderPage();
     await screen.findByText("[Intro]");
     expect(screen.queryByRole("link", { name: "Source" })).not.toBeInTheDocument();
+  });
+
+  describe("setlist navigation", () => {
+    const summary = (id: string) => ({ ...song, id, content: undefined });
+    beforeEach(() => {
+      mocked.getGig.mockResolvedValue({ id: "g1", name: "Show", date: "2026-12-20", songIds: ["sA", "s1", "gone", "sC"] });
+      mocked.listSongs.mockResolvedValue([summary("sA"), summary("s1"), summary("sC")]);
+    });
+
+    it("links to the previous and next song in the gig, keeping the gig", async () => {
+      renderPage("/songs/s1?gig=g1");
+      const prev = await screen.findByRole("link", { name: /Previous song/ });
+      const next = screen.getByRole("link", { name: /Next song/ });
+      expect(prev).toHaveAttribute("href", "/songs/sA?gig=g1");
+      // "gone" no longer exists, so it is skipped.
+      expect(next).toHaveAttribute("href", "/songs/sC?gig=g1");
+    });
+
+    it("has no Previous button on the first song and no Next on the last", async () => {
+      renderPage("/songs/sA?gig=g1");
+      await screen.findByRole("link", { name: /Next song/ });
+      expect(screen.queryByRole("link", { name: /Previous song/ })).not.toBeInTheDocument();
+      cleanup();
+      renderPage("/songs/sC?gig=g1");
+      await screen.findByRole("link", { name: /Previous song/ });
+      expect(screen.queryByRole("link", { name: /Next song/ })).not.toBeInTheDocument();
+    });
+
+    it("shows no buttons when opened outside a gig, and does not fetch gigs", async () => {
+      renderPage("/songs/s1");
+      await screen.findByText("[Intro]");
+      expect(screen.queryByRole("link", { name: /Previous song|Next song/ })).not.toBeInTheDocument();
+      expect(mocked.getGig).not.toHaveBeenCalled();
+    });
+
+    it("still shows the song if the gig cannot be loaded", async () => {
+      mocked.getGig.mockRejectedValue(new ApiError(404, "Gig not found"));
+      renderPage("/songs/s1?gig=g1");
+      expect(await screen.findByText("[Intro]")).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /Next song/ })).not.toBeInTheDocument();
+    });
   });
 
   it("shows an error when the song cannot be loaded", async () => {

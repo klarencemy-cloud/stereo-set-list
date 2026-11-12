@@ -55,7 +55,7 @@ describe("GigPage", () => {
     expect(screen.getByText("Sun, 20 Dec 2026")).toBeInTheDocument();
     const first = await screen.findByText("1. Alpha — Key: A");
     expect(screen.getByText("2. Beta — Key: C")).toBeInTheDocument();
-    expect(first.closest("a")).toHaveAttribute("href", "/songs/s1");
+    expect(first.closest("a")).toHaveAttribute("href", "/songs/s1?gig=g1");
   });
 
   it("skips setlist ids whose song no longer exists", async () => {
