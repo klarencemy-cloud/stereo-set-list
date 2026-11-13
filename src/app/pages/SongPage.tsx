@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, ApiError } from "../api";
+import { api, ApiError, conflictOf } from "../api";
 import { loadSetlist, loadSong, peekSong, prefetchSong, rememberSong } from "../songCache";
 import type { Song } from "../../shared/types";
 import { transposeContent } from "../../shared/sheet";
@@ -8,6 +8,7 @@ import { transposeKey } from "../../shared/transpose";
 import ChordSheet from "../components/ChordSheet";
 import TrackPlayer from "../components/TrackPlayer";
 import TransposeControl from "../components/TransposeControl";
+import ConflictNotice from "../components/ConflictNotice";
 import { useAutoscroll } from "../components/useAutoscroll";
 import { useWakeLock } from "../components/useWakeLock";
 import { useSongSpeed } from "../components/useSongSpeed";
@@ -30,6 +31,8 @@ export default function SongPage() {
   const stage = useStageMode();
   const [showTranspose, setShowTranspose] = useState(false);
   const [saving, setSaving] = useState(false);
+  // A bandmate changed the song since this copy loaded: what is stored now, shown on Reload.
+  const [conflict, setConflict] = useState<Song | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -37,6 +40,7 @@ export default function SongPage() {
     // A song fetched ahead of time shows straight away, with no loading screen.
     setSong(peekSong(id) ?? null);
     setError(null);
+    setConflict(null);
     setRunning(false);
     setShowTranspose(false);
     window.scrollTo?.(0, 0);
@@ -100,13 +104,18 @@ export default function SongPage() {
       return;
     }
     setError(null);
+    setConflict(null);
     setSaving(true);
     setSong({ ...song, bandKey: next });
     try {
-      await api.updateSong(song.id, { bandKey: next });
-      rememberSong({ ...song, bandKey: next });
+      // Keep the saved copy: its new updatedAt is the version the next transpose sends.
+      const saved = await api.updateSong(song.id, { bandKey: next }, song.updatedAt);
+      // The user may have swiped to another song while this saved.
+      setSong((s) => (s && s.id === saved.id ? saved : s));
+      rememberSong(saved);
     } catch (e) {
       setSong((s) => (s ? { ...s, bandKey: previous } : s));
+      setConflict(conflictOf<Song>(e));
       setError(e instanceof ApiError ? e.message : "Could not save the new key.");
     } finally {
       setSaving(false);
@@ -172,7 +181,19 @@ export default function SongPage() {
         <Link className="pill" to={`/songs/${song.id}/edit`}>Edit</Link>
       </div>
       {showTranspose && <TransposeControl bandKey={song.bandKey || "?"} onChange={transpose} busy={saving} />}
-      {error && <p role="alert" className="error">{error}</p>}
+      {error && conflict?.id === song.id ? (
+        <ConflictNotice
+          message={error}
+          onReload={() => {
+            setSong(conflict!);
+            rememberSong(conflict!);
+            setConflict(null);
+            setError(null);
+          }}
+        />
+      ) : (
+        error && <p role="alert" className="error">{error}</p>
+      )}
       {setlistNote && <p className="setlist-note" role="note">{setlistNote}</p>}
       <p className="song-info">
         <span>Key: <strong>{song.bandKey || "?"}</strong></span>

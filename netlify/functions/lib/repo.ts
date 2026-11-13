@@ -1,5 +1,5 @@
 import { CHUNK_SIZE, MAX_AUDIO_BYTES } from "../../../src/shared/types";
-import type { Gig, GigInput, SetlistItem, Song, SongInput, SongSummary, Track } from "../../../src/shared/types";
+import type { BaseVersion, Gig, GigInput, SetlistItem, Song, SongInput, SongSummary, Track } from "../../../src/shared/types";
 import { fromSongIds, setlistOf, songIdsOf } from "../../../src/shared/setlist";
 import { toSongSummary } from "../../../src/shared/song";
 import { isValidKey } from "../../../src/shared/transpose";
@@ -17,6 +17,16 @@ export class NotFoundError extends Error {
   constructor(message = "not found") {
     super(message);
     this.name = "NotFoundError";
+  }
+}
+
+/** The record changed since the client loaded it. `current` is what is stored now. */
+export class ConflictError extends Error {
+  current: unknown;
+  constructor(message: string, current: unknown) {
+    super(message);
+    this.name = "ConflictError";
+    this.current = current;
   }
 }
 
@@ -169,6 +179,31 @@ function cleanGig(input: unknown, partial: boolean, current: SetlistItem[] = [])
   return out;
 }
 
+/** The version the client loaded (its `updatedAt`), if it sent one. Empty means it doesn't know one. */
+function checkBaseVersion(input: unknown): string | undefined {
+  const v = ((input ?? {}) as Record<string, unknown>).baseVersion;
+  if (v === undefined || v === null || v === "") return undefined;
+  if (typeof v !== "string") throw new ValidationError("baseVersion must be text");
+  return v;
+}
+
+/**
+ * Stops a save made from an out-of-date copy. A record stored before versions existed has no
+ * version yet, so any base matches it; a client that sends no base skips the check (older clients).
+ */
+function checkVersion(stored: string | undefined, base: string | undefined, what: string, current: unknown) {
+  if (base !== undefined && stored && stored !== base) {
+    throw new ConflictError(`Someone else changed this ${what}. Reload to see their changes.`, current);
+  }
+}
+
+/** A new updatedAt, always later than `prev`, so two saves in the same millisecond still differ. */
+function nextStamp(prev?: string): string {
+  const now = Date.now();
+  const p = prev ? Date.parse(prev) : NaN;
+  return new Date(Number.isFinite(p) && p >= now ? p + 1 : now).toISOString();
+}
+
 /** Checks a playlist's track list before anything is written. */
 function checkTracks(v: unknown): PlaylistTrack[] {
   if (!Array.isArray(v)) throw new ValidationError("tracks must be a list");
@@ -199,11 +234,26 @@ function blankSong({ id, title, artist, trackId }: { id: string; title: string; 
   };
 }
 
-type StoredGig = { id: string; name: string; date: string; setlist?: SetlistItem[]; songIds?: string[] };
+type StoredGig = {
+  id: string;
+  name: string;
+  date: string;
+  setlist?: SetlistItem[];
+  songIds?: string[];
+  /** Missing on gigs saved before versions existed. */
+  updatedAt?: string;
+};
 
 function toGig(stored: StoredGig): Gig {
   const setlist = setlistOf(stored);
-  return { id: stored.id, name: stored.name, date: stored.date, setlist, songIds: songIdsOf(setlist) };
+  return {
+    id: stored.id,
+    name: stored.name,
+    date: stored.date,
+    setlist,
+    songIds: songIdsOf(setlist),
+    ...(stored.updatedAt ? { updatedAt: stored.updatedAt } : {}),
+  };
 }
 
 export function makeRepo(kv: KV) {
@@ -220,23 +270,52 @@ export function makeRepo(kv: KV) {
     return all.filter((x) => x !== null) as T[];
   }
 
+  /**
+   * Read, change, write, without losing someone else's write in between: the write only lands if
+   * the record is unchanged since it was read (an atomic etag check in Blobs), otherwise it reads
+   * again and re-applies `change`. `change` returns null to leave the record alone, or throws to stop.
+   * Resolves null when the record doesn't exist.
+   */
+  async function modify<T>(key: string, change: (cur: T) => T | null): Promise<T | null> {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const got = await kv.getTextTagged(key);
+      if (!got) return null;
+      const cur = JSON.parse(got.value) as T;
+      const next = change(cur);
+      if (next === null) return cur;
+      if (await kv.setTextIfMatch(key, JSON.stringify(next), got.etag)) return next;
+    }
+    throw new Error(`${key} kept changing while saving`);
+  }
+
   const getSong = (id: string) => readJson<Song>(`songs/${id}`);
   const getTrack = (id: string) => readJson<Track>(`tracks/${id}`);
 
   /** Takes a song out of every setlist (the song record itself is deleted by the caller). */
   async function removeSongFromGigs(id: string) {
-    for (const g of await readAll<StoredGig>("gigs/")) {
-      const items = setlistOf(g);
-      if (songIdsOf(items).includes(id)) {
+    for (const found of await readAll<StoredGig>("gigs/")) {
+      if (!songIdsOf(setlistOf(found)).includes(id)) continue;
+      // Checked again inside modify: the gig may have been edited since the listing.
+      await modify<StoredGig>(`gigs/${found.id}`, (g) => {
+        const items = setlistOf(g);
+        if (!songIdsOf(items).includes(id)) return null;
         const setlist = items.filter((item) => item.type === "break" || item.songId !== id);
-        await writeJson(`gigs/${g.id}`, { id: g.id, name: g.name, date: g.date, setlist });
-      }
+        return { id: g.id, name: g.name, date: g.date, setlist, updatedAt: nextStamp(g.updatedAt) };
+      });
     }
   }
 
-  async function removeTrackData(id: string) {
-    for (const k of await kv.list(`audio/${id}/`)) await kv.delete(k);
-    await kv.delete(`tracks/${id}`);
+  /**
+   * Deletes a song and/or its recording. Everything that points at them goes first and the record
+   * named by `last` goes last, so a failure part-way leaves that record in place and deleting it
+   * again simply finishes the job (the caller looks it up again and gets the same ids).
+   */
+  async function deleteSongAndTrack(songId: string | null, trackId: string | null, last: "song" | "track") {
+    if (songId) await removeSongFromGigs(songId);
+    if (trackId) for (const k of await kv.list(`audio/${trackId}/`)) await kv.delete(k);
+    const song = songId ? [`songs/${songId}`] : [];
+    const track = trackId ? [`tracks/${trackId}`] : [];
+    for (const k of last === "song" ? [...track, ...song] : [...song, ...track]) await kv.delete(k);
   }
 
   /** The song page for a finished track; creates it on first use. Safe to call again. */
@@ -321,14 +400,17 @@ export function makeRepo(kv: KV) {
       }
       return out;
     },
-    async updateSong(id: string, patch: Partial<SongInput>): Promise<Song> {
-      const cur = await getSong(id);
-      if (!cur) throw new NotFoundError("song not found");
+    /** With `baseVersion` (the `updatedAt` the client loaded), refuses to save over someone else's change. */
+    async updateSong(id: string, patch: Partial<SongInput> & BaseVersion): Promise<Song> {
       const clean = cleanSong(patch, true);
-      const next: Song = withKeys({ ...cur, ...clean, id, updatedAt: new Date().toISOString() });
-      await writeJson(`songs/${id}`, next);
-      if (clean.title !== undefined && cur.trackId) {
-        const t = await getTrack(cur.trackId);
+      const base = checkBaseVersion(patch);
+      const next = await modify<Song>(`songs/${id}`, (cur) => {
+        checkVersion(cur.updatedAt, base, "song", cur);
+        return withKeys({ ...cur, ...clean, id, updatedAt: nextStamp(cur.updatedAt) });
+      });
+      if (!next) throw new NotFoundError("song not found");
+      if (clean.title !== undefined && next.trackId) {
+        const t = await getTrack(next.trackId);
         if (t) await writeJson(`tracks/${t.id}`, { ...t, title: clean.title });
       }
       return next;
@@ -336,14 +418,8 @@ export function makeRepo(kv: KV) {
     async deleteSong(id: string): Promise<void> {
       const cur = await getSong(id);
       if (!cur) throw new NotFoundError("song not found");
-      // Clean up everything that points at the song first and delete the record last, so a failure
-      // part-way leaves the song in place and deleting again simply finishes the job.
-      await removeSongFromGigs(id);
-      if (cur.trackId) {
-        const t = await getTrack(cur.trackId);
-        if (t && t.songId === id) await removeTrackData(t.id);
-      }
-      await kv.delete(`songs/${id}`);
+      const t = cur.trackId ? await getTrack(cur.trackId) : null;
+      await deleteSongAndTrack(id, t && t.songId === id ? t.id : null, "song");
     },
 
     async listGigs(): Promise<Gig[]> {
@@ -357,21 +433,38 @@ export function makeRepo(kv: KV) {
     getGig,
     async createGig(input: GigInput): Promise<Gig> {
       const clean = cleanGig(input, false);
-      const stored = { id: crypto.randomUUID(), name: clean.name!, date: clean.date!, setlist: clean.setlist! };
+      const stored: StoredGig = {
+        id: crypto.randomUUID(),
+        name: clean.name!,
+        date: clean.date!,
+        setlist: clean.setlist!,
+        updatedAt: nextStamp(),
+      };
       await writeJson(`gigs/${stored.id}`, stored);
       return toGig(stored);
     },
-    async updateGig(id: string, patch: Partial<GigInput>): Promise<Gig> {
-      const cur = await readJson<StoredGig>(`gigs/${id}`);
-      if (!cur) throw new NotFoundError("gig not found");
-      const clean = cleanGig(patch, true, setlistOf(cur));
-      const next = {
-        id,
-        name: clean.name ?? cur.name,
-        date: clean.date ?? cur.date,
-        setlist: clean.setlist ?? setlistOf(cur),
-      };
-      await writeJson(`gigs/${id}`, next);
+    /** With `baseVersion` (the `updatedAt` the client loaded), refuses to save over someone else's change. */
+    async updateGig(id: string, patch: Partial<GigInput> & BaseVersion): Promise<Gig> {
+      const base = checkBaseVersion(patch);
+      let next: StoredGig | null;
+      try {
+        next = await modify<StoredGig>(`gigs/${id}`, (cur) => {
+          checkVersion(cur.updatedAt, base, "gig", null);
+          const clean = cleanGig(patch, true, setlistOf(cur));
+          return {
+            id,
+            name: clean.name ?? cur.name,
+            date: clean.date ?? cur.date,
+            setlist: clean.setlist ?? setlistOf(cur),
+            updatedAt: nextStamp(cur.updatedAt),
+          };
+        });
+      } catch (e) {
+        // Send back the gig the way getGig shows it, so a reload and a conflict can't disagree.
+        if (e instanceof ConflictError) throw new ConflictError(e.message, await getGig(id));
+        throw e;
+      }
+      if (!next) throw new NotFoundError("gig not found");
       return toGig(next);
     },
     async deleteGig(id: string): Promise<void> {
@@ -408,8 +501,9 @@ export function makeRepo(kv: KV) {
       if (!t) throw new NotFoundError("track not found");
       const next: Track = { ...t, title: clean };
       // Song first: it's the title people see, so a failure after this still shows the right name.
-      const song = t.songId ? await getSong(t.songId) : null;
-      if (song) await writeJson(`songs/${song.id}`, { ...song, title: clean, updatedAt: new Date().toISOString() });
+      if (t.songId) {
+        await modify<Song>(`songs/${t.songId}`, (song) => ({ ...song, title: clean, updatedAt: nextStamp(song.updatedAt) }));
+      }
       await writeJson(`tracks/${id}`, next);
       return next;
     },
@@ -445,13 +539,8 @@ export function makeRepo(kv: KV) {
     async deleteTrack(id: string): Promise<void> {
       const t = await getTrack(id);
       if (!t) throw new NotFoundError("track not found");
-      // Like deleteSong: clean up what points at the track first and delete the record last,
-      // so a failure part-way leaves the track in place and deleting again finishes the job.
-      if (t.songId && (await getSong(t.songId))) {
-        await removeSongFromGigs(t.songId);
-        await kv.delete(`songs/${t.songId}`);
-      }
-      await removeTrackData(id);
+      const song = t.songId ? await getSong(t.songId) : null;
+      await deleteSongAndTrack(song ? song.id : null, id, "track");
     },
   };
 }

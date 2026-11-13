@@ -1,4 +1,4 @@
-import { NotFoundError, ValidationError } from "./repo";
+import { ConflictError, NotFoundError, ValidationError } from "./repo";
 
 export const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -34,6 +34,7 @@ export function guard(fn: (req: Request) => Promise<Response>) {
     } catch (e) {
       if (e instanceof ValidationError) return json({ message: e.message }, 400);
       if (e instanceof NotFoundError) return json({ message: e.message }, 404);
+      if (e instanceof ConflictError) return json({ message: e.message, current: e.current }, 409);
       console.error(e);
       return json({ message: "Something went wrong" }, 500);
     }

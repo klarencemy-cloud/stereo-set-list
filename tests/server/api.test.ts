@@ -214,3 +214,35 @@ describe("error handling", () => {
     spy.mockRestore();
   });
 });
+
+describe("version conflicts", () => {
+  it("PUT /api/songs/:id answers 409 with the stored song when baseVersion is out of date", async () => {
+    const { songs } = setup();
+    const song = await (await songs(jsonReq("POST", "/api/songs", songBody))).json();
+    const first = await songs(jsonReq("PUT", `/api/songs/${song.id}`, { bandKey: "A", baseVersion: song.updatedAt }));
+    expect(first.status).toBe(200);
+    const stale = await songs(jsonReq("PUT", `/api/songs/${song.id}`, { bandKey: "G", baseVersion: song.updatedAt }));
+    expect(stale.status).toBe(409);
+    const body = await stale.json();
+    expect(body.message).toMatch(/someone else changed/i);
+    expect(body.current).toMatchObject({ id: song.id, bandKey: "A" });
+    // No baseVersion (an older client): saved as before.
+    expect((await songs(jsonReq("PUT", `/api/songs/${song.id}`, { bandKey: "G" }))).status).toBe(200);
+  });
+
+  it("PUT /api/gigs/:id answers 409 with the stored gig when baseVersion is out of date", async () => {
+    const { gigs } = setup();
+    const g = await (await gigs(jsonReq("POST", "/api/gigs", { name: "G", date: "2026-01-01" }))).json();
+    expect(g.updatedAt).toBeTruthy();
+    expect((await gigs(jsonReq("PUT", `/api/gigs/${g.id}`, { name: "New", baseVersion: g.updatedAt }))).status).toBe(200);
+    const stale = await gigs(jsonReq("PUT", `/api/gigs/${g.id}`, { name: "Old", baseVersion: g.updatedAt }));
+    expect(stale.status).toBe(409);
+    expect((await stale.json()).current).toMatchObject({ id: g.id, name: "New", setlist: [], songIds: [] });
+  });
+
+  it("400 for a baseVersion that isn't text", async () => {
+    const { gigs } = setup();
+    const g = await (await gigs(jsonReq("POST", "/api/gigs", { name: "G", date: "2026-01-01" }))).json();
+    expect((await gigs(jsonReq("PUT", `/api/gigs/${g.id}`, { name: "N", baseVersion: 5 }))).status).toBe(400);
+  });
+});

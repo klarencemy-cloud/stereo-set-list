@@ -66,7 +66,8 @@ describe("SongPage", () => {
     await screen.findByText("[Intro]");
     fireEvent.click(screen.getByRole("button", { name: "Transpose" }));
     fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
-    expect(mocked.updateSong).toHaveBeenCalledWith("s1", { bandKey: "Bb" });
+    // Sends the version it loaded, so a bandmate's newer key isn't overwritten.
+    expect(mocked.updateSong).toHaveBeenCalledWith("s1", { bandKey: "Bb" }, "x");
     await waitFor(() => {
       const chords = Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent);
       expect(chords).toEqual(["Bb", "Eb"]);
@@ -83,6 +84,36 @@ describe("SongPage", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not save");
     const chords = Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent);
     expect(chords).toEqual(["A", "D"]);
+  });
+
+  it("sends the new version with the next transpose", async () => {
+    mocked.updateSong.mockResolvedValueOnce({ ...song, bandKey: "Bb", updatedAt: "y" });
+    mocked.updateSong.mockResolvedValueOnce({ ...song, bandKey: "B", updatedAt: "z" });
+    renderPage();
+    await screen.findByText("[Intro]");
+    fireEvent.click(screen.getByRole("button", { name: "Transpose" }));
+    fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Transpose up" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
+    await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(2));
+    expect(mocked.updateSong.mock.calls[1]).toEqual(["s1", { bandKey: "B" }, "y"]);
+  });
+
+  it("on a conflict, keeps the old key, says someone else changed it, and Reload shows their version", async () => {
+    const theirs = { ...song, bandKey: "C", updatedAt: "y" };
+    mocked.updateSong.mockRejectedValue(new ApiError(409, "Someone else changed this song. Reload to see their changes.", theirs));
+    renderPage();
+    await screen.findByText("[Intro]");
+    fireEvent.click(screen.getByRole("button", { name: "Transpose" }));
+    fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Someone else changed this song");
+    let chords = Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent);
+    expect(chords).toEqual(["A", "D"]);
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    chords = Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent);
+    expect(chords).toEqual(["C", "F"]);
+    expect(peekSong("s1")).toEqual(theirs);
   });
 
   it("disables the transpose buttons while a save is pending", async () => {

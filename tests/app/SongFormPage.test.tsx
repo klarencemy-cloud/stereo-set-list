@@ -14,7 +14,7 @@ vi.mock("../../src/app/api", async () => {
 import { api, ApiError } from "../../src/app/api";
 import SongFormPage from "../../src/app/pages/SongFormPage";
 import { UNSAVED_MESSAGE } from "../../src/app/components/useUnsavedChanges";
-import { clearSongCache, peekSong, rememberSong } from "../../src/app/songCache";
+import { clearSongCache } from "../../src/app/songCache";
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -148,7 +148,8 @@ describe("SongFormPage", () => {
     fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Renamed" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(1));
-    expect(mocked.updateSong.mock.calls[0][1]).toMatchObject({ title: "Renamed", originalKey: "", bandKey: "" });
+    // Only the changed field, plus the version the form loaded.
+    expect(mocked.updateSong.mock.calls[0]).toEqual(["s1", { title: "Renamed" }, "x"]);
   });
 
   it("clears the band key when an original song's key is removed", async () => {
@@ -170,7 +171,8 @@ describe("SongFormPage", () => {
     fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Renamed" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(1));
-    expect(mocked.updateSong.mock.calls[0][1]).toMatchObject({ title: "Renamed", originalKey: "", bandKey: "" });
+    // Only the changed field, plus the version the form loaded.
+    expect(mocked.updateSong.mock.calls[0]).toEqual(["s1", { title: "Renamed" }, "x"]);
   });
 
   it("asks for a fresh copy of the song to edit", async () => {
@@ -180,28 +182,7 @@ describe("SongFormPage", () => {
     expect(mocked.getSong).toHaveBeenCalledWith("s1", { fresh: true });
   });
 
-  it("forgets the cached copy of a song after saving it", async () => {
-    mocked.getSong.mockResolvedValue(stored);
-    mocked.updateSong.mockResolvedValue({ ...stored, title: "New" });
-    rememberSong(stored);
-    renderEdit();
-    await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("Stored"));
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(peekSong("s1")).toBeUndefined());
-  });
-
-  it("forgets the cached copy of a song after deleting it", async () => {
-    mocked.getSong.mockResolvedValue(stored);
-    mocked.deleteSong.mockResolvedValue(undefined);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-    rememberSong(stored);
-    renderEdit();
-    await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("Stored"));
-    fireEvent.click(screen.getByRole("button", { name: "Delete song" }));
-    expect(await screen.findByText("songs list")).toBeInTheDocument();
-    expect(peekSong("s1")).toBeUndefined();
-  });
+  // Forgetting cached copies after a save or delete is api.ts's job now: see tests/app/api.test.ts.
 
   it("does nothing when the delete is not confirmed", async () => {
     mocked.getSong.mockResolvedValue(stored);
@@ -231,15 +212,16 @@ describe("SongFormPage", () => {
       expect(screen.getByTestId("preview").querySelector(".chord")).toHaveTextContent("G");
     });
 
-    it("sends the stored content unchanged when Chords is not touched, even if it does not round-trip", async () => {
+    it("leaves the stored content alone when Chords is not touched, even if it does not round-trip", async () => {
       const odd = "[ch]Am[/ch] intro riff";
       mocked.getSong.mockResolvedValue({ ...stored, content: odd });
       mocked.updateSong.mockResolvedValue({ ...stored });
       renderEdit();
       await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("Stored"));
+      fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Renamed" } });
       fireEvent.click(screen.getByRole("button", { name: "Save" }));
       await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(1));
-      expect(mocked.updateSong.mock.calls[0][1].content).toBe(odd);
+      expect(mocked.updateSong.mock.calls[0][1]).not.toHaveProperty("content");
     });
 
     it("sends the edited chords as markup", async () => {
@@ -259,9 +241,10 @@ describe("SongFormPage", () => {
       renderEdit();
       await waitFor(() => expect(screen.getByLabelText("Chords")).toHaveValue("G"));
       fireEvent.change(screen.getByLabelText("Chords"), { target: { value: "" } });
+      fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Renamed" } });
       fireEvent.click(screen.getByRole("button", { name: "Save" }));
       await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(1));
-      expect(mocked.updateSong.mock.calls[0][1].content).toBe("[ch]G[/ch]");
+      expect(mocked.updateSong.mock.calls[0][1]).not.toHaveProperty("content");
     });
 
     it("uses the new placeholder in edit mode", async () => {
@@ -370,6 +353,54 @@ describe("SongFormPage", () => {
   });
 });
 
+describe("SongFormPage when a bandmate edits the song at the same time", () => {
+  it("doesn't send the band key back, so a transpose made while the form was open stays", async () => {
+    mocked.getSong.mockResolvedValue(stored);
+    mocked.updateSong.mockResolvedValue({ ...stored, content: "[ch]A[/ch]" });
+    renderEdit();
+    await waitFor(() => expect(screen.getByLabelText("Chords")).toHaveValue("G"));
+    fireEvent.change(screen.getByLabelText("Chords"), { target: { value: "A" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(1));
+    expect(mocked.updateSong.mock.calls[0]).toEqual(["s1", { content: "[ch]A[/ch]" }, "x"]);
+  });
+
+  it("saves nothing when nothing changed", async () => {
+    mocked.getSong.mockResolvedValue(stored);
+    renderEdit();
+    await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("Stored"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("song page")).toBeInTheDocument();
+    expect(mocked.updateSong).not.toHaveBeenCalled();
+  });
+
+  it("on a conflict, keeps what was typed and offers Reload, which loads their version", async () => {
+    const theirs = { ...stored, title: "Their title", bandKey: "A", updatedAt: "y" };
+    mocked.getSong.mockResolvedValue(stored);
+    mocked.updateSong.mockRejectedValue(
+      new ApiError(409, "Someone else changed this song. Reload to see their changes.", theirs),
+    );
+    renderEdit();
+    await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("Stored"));
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "My title" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Someone else changed this song");
+    expect(screen.getByLabelText("Title")).toHaveValue("My title");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    expect(screen.getByLabelText("Title")).toHaveValue("Their title");
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // Saving again sends the version it reloaded.
+    mocked.updateSong.mockResolvedValue({ ...theirs, title: "Again" });
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Again" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(2));
+    expect(mocked.updateSong.mock.calls[1]).toEqual(["s1", { title: "Again" }, "y"]);
+  });
+});
+
 describe("SongFormPage import while editing", () => {
   const UG = "https://tabs.ultimate-guitar.com/tab/coldplay/yellow-chords-1";
   const fromPlaylist = { ...stored, title: "Yellow", artist: "Coldplay", originalKey: "", bandKey: "", capo: 0, content: "" };
@@ -404,8 +435,9 @@ describe("SongFormPage import while editing", () => {
     await editAndImport(fromPlaylist);
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(1));
+    // Title and artist are unchanged, so they aren't sent.
     expect(mocked.updateSong.mock.calls[0][1]).toEqual({
-      title: "Yellow", artist: "Coldplay", originalKey: "B", bandKey: "B", capo: 2, sourceUrl: UG, content: imported.content,
+      originalKey: "B", bandKey: "B", capo: 2, sourceUrl: UG, content: imported.content,
     });
   });
 
@@ -413,7 +445,9 @@ describe("SongFormPage import while editing", () => {
     await editAndImport({ ...fromPlaylist, originalKey: "G", bandKey: "A" });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(1));
-    expect(mocked.updateSong.mock.calls[0][1]).toMatchObject({ originalKey: "B", bandKey: "A" });
+    const patch = mocked.updateSong.mock.calls[0][1];
+    expect(patch.originalKey).toBe("B");
+    expect(patch).not.toHaveProperty("bandKey"); // unchanged: the server keeps A
   });
 
   it("keeps both keys when the UG page has no key", async () => {
@@ -427,7 +461,10 @@ describe("SongFormPage import while editing", () => {
     await waitFor(() => expect(screen.getByLabelText("Capo")).toHaveValue(2));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(1));
-    expect(mocked.updateSong.mock.calls[0][1]).toMatchObject({ originalKey: "G", bandKey: "A", content: imported.content });
+    const patch = mocked.updateSong.mock.calls[0][1];
+    expect(patch.content).toBe(imported.content);
+    expect(patch).not.toHaveProperty("originalKey");
+    expect(patch).not.toHaveProperty("bandKey");
   });
 
   it("counts as unsaved until saved", async () => {

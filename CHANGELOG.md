@@ -2,6 +2,15 @@
 
 What's new on Stereo Set, newest first.
 
+## Unreleased: Safer edits
+
+### Fixed
+
+- **Two people editing at once no longer overwrite each other.** If a bandmate saved a song or a setlist after you opened it, your save stops and says "Someone else changed this". Tap Reload to see their version. What you typed stays until you tap Reload.
+- **Editing a song no longer undoes a transpose.** Saving the edit form only changes what you edited, so a key a bandmate picked in the meantime stays.
+- **Fewer out-of-date pages after a change.** Saving or deleting a song, gig or recording now always forgets the app's saved copy of exactly what changed, so the next page you open shows the change.
+- **Deleting an original song can always be finished.** If deleting a recording or its song fails part-way (for example on a bad connection), deleting it again cleans up everything that is left.
+
 ## Unreleased: Import a Spotify playlist
 
 ### Added

@@ -28,7 +28,7 @@ import { api, ApiError } from "../../src/app/api";
 import { NOT_READY, canSaveOffline, saveGigForOffline } from "../../src/app/offline";
 import GigPage from "../../src/app/pages/GigPage";
 import GigsPage from "../../src/app/pages/GigsPage";
-import { clearSongCache, loadSetlist } from "../../src/app/songCache";
+import { clearSongCache } from "../../src/app/songCache";
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -37,7 +37,9 @@ const mk = (id: string, title: string, bandKey: string) => ({
 });
 const sl = (...ids: string[]) => ids.map((songId) => ({ type: "song" as const, songId }));
 const songs = [mk("s1", "Alpha", "A"), mk("s2", "Beta", "C"), mk("s3", "Gamma", "E")];
-const gig = { id: "g1", name: "Winter Show", date: "2026-12-20", setlist: sl("s1", "s2"), songIds: ["s1", "s2"] };
+const gig = {
+  id: "g1", name: "Winter Show", date: "2026-12-20", setlist: sl("s1", "s2"), songIds: ["s1", "s2"], updatedAt: "v1",
+};
 
 /** An edit-mode row (a song or a break), found through its drag handle. */
 const rowOf = (dragLabel: string) => screen.getByRole("button", { name: dragLabel }).closest("li") as HTMLElement;
@@ -268,24 +270,14 @@ describe("GigPage", () => {
     expect(screen.getByRole("button", { name: "Drag Alpha" })).toBeInTheDocument();
   });
 
-  it("forgets the cached setlist after the setlist is saved", async () => {
-    await loadSetlist("g1");
-    renderGig();
-    await screen.findByText("1. Alpha — Key: A");
-    fireEvent.click(screen.getByRole("button", { name: "Edit setlist" }));
-    fireEvent.click(screen.getAllByRole("button", { name: "Remove" })[0]);
-    await waitFor(() => expect(mocked.updateGig).toHaveBeenCalledTimes(1));
-    const before = mocked.getGig.mock.calls.length;
-    await loadSetlist("g1");
-    expect(mocked.getGig.mock.calls.length).toBe(before + 1);
-  });
+  // Forgetting the cached setlist after a save is api.ts's job now: see tests/app/api.test.ts.
 
   it("Remove drops the row", async () => {
     renderGig();
     await screen.findByText("1. Alpha — Key: A");
     fireEvent.click(screen.getByRole("button", { name: "Edit setlist" }));
     fireEvent.click(within(rowOf("Drag Alpha")).getByRole("button", { name: "Remove" }));
-    await waitFor(() => expect(mocked.updateGig).toHaveBeenCalledWith("g1", { setlist: sl("s2") }));
+    await waitFor(() => expect(mocked.updateGig).toHaveBeenCalledWith("g1", { setlist: sl("s2") }, "v1"));
   });
 
   it("puts the add-songs box at the top of edit mode, under the Setlist heading and above the rows", async () => {
@@ -316,7 +308,7 @@ describe("GigPage", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Delta — D" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Gamma — E" }));
     fireEvent.click(screen.getByRole("button", { name: "Add 2 songs" }));
-    await waitFor(() => expect(mocked.updateGig).toHaveBeenCalledWith("g1", { setlist: sl("s1", "s2", "s4", "s3") }));
+    await waitFor(() => expect(mocked.updateGig).toHaveBeenCalledWith("g1", { setlist: sl("s1", "s2", "s4", "s3") }, "v1"));
     expect(await screen.findByText("3. Delta — Key: D")).toBeInTheDocument();
     expect(screen.getByText("4. Gamma — Key: E")).toBeInTheDocument();
   });
@@ -382,7 +374,7 @@ describe("GigPage", () => {
     fireEvent.change(screen.getByLabelText("Date"), { target: { value: "2027-03-05" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() =>
-      expect(mocked.updateGig).toHaveBeenCalledWith("g1", { name: "Spring Show", date: "2027-03-05" }),
+      expect(mocked.updateGig).toHaveBeenCalledWith("g1", { name: "Spring Show", date: "2027-03-05" }, "v1"),
     );
     expect(await screen.findByRole("heading", { name: "Spring Show" })).toBeInTheDocument();
     expect(screen.getByText("Fri, 5 Mar 2027")).toBeInTheDocument();
@@ -473,7 +465,7 @@ describe("GigPage setlist items", () => {
     await waitFor(() =>
       expect(mocked.updateGig).toHaveBeenCalledWith("g1", {
         setlist: [{ type: "song", songId: "s1", note: "Segue" }, { type: "song", songId: "s2" }],
-      }),
+      }, "v1"),
     );
     await waitFor(() => expect(screen.getByLabelText("Note for Alpha")).toHaveValue("Segue"));
     fireEvent.change(screen.getByLabelText("Note for Alpha"), { target: { value: "" } });
@@ -540,7 +532,7 @@ describe("GigPage setlist items", () => {
     await waitFor(() =>
       expect(mocked.updateGig).toHaveBeenCalledWith("g1", {
         setlist: [withBreak[0], { type: "break", id: "k1", label: "Second half" }, withBreak[2]],
-      }),
+      }, "v1"),
     );
     // The handle is named after the break, which has just been renamed.
     const row = await waitFor(() => rowOf("Drag Second half"));
@@ -554,7 +546,7 @@ describe("GigPage setlist items", () => {
     fireEvent.click(screen.getByRole("button", { name: "Edit setlist" }));
     fireEvent.click(within(rowOf("Drag Set 2")).getByRole("button", { name: "Remove" }));
     await waitFor(() =>
-      expect(mocked.updateGig).toHaveBeenCalledWith("g1", { setlist: [withBreak[0], withBreak[2]] }),
+      expect(mocked.updateGig).toHaveBeenCalledWith("g1", { setlist: [withBreak[0], withBreak[2]] }, "v1"),
     );
   });
 
@@ -692,5 +684,57 @@ describe("GigsPage", () => {
     fireEvent.change(screen.getByLabelText("Date"), { target: { value: "2026-12-31" } });
     fireEvent.click(screen.getByRole("button", { name: "Create gig" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("bad date");
+  });
+});
+
+describe("GigPage when a bandmate edits the gig at the same time", () => {
+  const conflict = (current: object) =>
+    new ApiError(409, "Someone else changed this gig. Reload to see their changes.", current);
+
+  it("sends the new version with the next save", async () => {
+    mocked.updateGig.mockImplementationOnce(async (_id: string, patch: object) => ({ ...gig, ...patch, updatedAt: "v2" }));
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Edit setlist" }));
+    fireEvent.click(within(rowOf("Drag Alpha")).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(mocked.updateGig).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(within(rowOf("Drag Beta")).getByRole("button", { name: "Remove" })).toBeEnabled());
+    fireEvent.click(within(rowOf("Drag Beta")).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(mocked.updateGig).toHaveBeenCalledTimes(2));
+    expect(mocked.updateGig.mock.calls[1]).toEqual(["g1", { setlist: [] }, "v2"]);
+  });
+
+  it("a setlist save that clashes keeps the old setlist, explains, and Reload shows theirs", async () => {
+    const theirs = { ...gig, setlist: sl("s3"), songIds: ["s3"], updatedAt: "v2" };
+    mocked.updateGig.mockRejectedValue(conflict(theirs));
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Edit setlist" }));
+    fireEvent.click(within(rowOf("Drag Alpha")).getByRole("button", { name: "Remove" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Someone else changed this gig");
+    expect(rowOf("Drag Alpha")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Drag Gamma" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Drag Alpha" })).toBeNull();
+    // Their setlist may hold songs this page hadn't loaded: the song list is fetched again.
+    await waitFor(() => expect(mocked.listSongs).toHaveBeenCalledTimes(2));
+
+    mocked.updateGig.mockImplementation(async (_id: string, patch: object) => ({ ...theirs, ...patch, updatedAt: "v3" }));
+    fireEvent.click(within(rowOf("Drag Gamma")).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(mocked.updateGig).toHaveBeenLastCalledWith("g1", { setlist: [] }, "v2"));
+  });
+
+  it("a details save that clashes keeps what was typed until Reload", async () => {
+    mocked.updateGig.mockRejectedValue(conflict({ ...gig, name: "Their Show", updatedAt: "v2" }));
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "My Show" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Someone else changed this gig");
+    expect(screen.getByLabelText("Name")).toHaveValue("My Show");
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    expect(screen.getByRole("heading", { name: "Their Show" })).toBeInTheDocument();
   });
 });

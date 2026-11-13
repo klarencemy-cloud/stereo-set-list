@@ -29,11 +29,21 @@ export interface Gig {
   setlist: SetlistItem[];
   /** Derived from `setlist`, read-only. Kept so offline copies and older clients keep working. */
   songIds: string[];
+  /** Changes on every save; what a client sends back as `baseVersion`. Missing on gigs saved before versions existed. */
+  updatedAt?: string;
 }
 export interface GigInput {
   name: string;
   date: string;
   setlist?: SetlistItem[];
+}
+
+/**
+ * Sent with an update: the `updatedAt` the client loaded. The server answers 409 instead of
+ * saving if the record changed since. Leave it out to save regardless (older clients).
+ */
+export interface BaseVersion {
+  baseVersion?: string;
 }
 
 export interface Track {

@@ -1,4 +1,4 @@
-import { api } from "./api";
+import { api, onChange } from "./api";
 import { setlistOf } from "../shared/setlist";
 import type { Song } from "../shared/types";
 
@@ -20,6 +20,18 @@ export interface LoadedSetlist {
 
 const songs = new Map<string, Entry<Song>>();
 const setlists = new Map<string, Entry<LoadedSetlist>>();
+
+// api.ts reports every successful change; forget exactly what it made stale. Pages don't clear
+// this cache themselves, so a new feature that saves through api.ts can't forget to.
+onChange((change) => {
+  forget(songs, change.songs);
+  forget(setlists, change.setlists);
+});
+
+function forget<T>(map: Map<string, Entry<T>>, keys: string[] | "all" | undefined) {
+  if (keys === "all") map.clear();
+  else for (const k of keys ?? []) map.delete(k);
+}
 
 function fresh<T>(entry: Entry<T> | undefined): entry is Entry<T> {
   return !!entry && Date.now() - entry.at <= CACHE_TTL_MS;

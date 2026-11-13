@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { memoryKV } from "../../netlify/functions/lib/kv";
-import { LIMITS, makeRepo, NotFoundError, ValidationError } from "../../netlify/functions/lib/repo";
+import { ConflictError, LIMITS, makeRepo, NotFoundError, ValidationError } from "../../netlify/functions/lib/repo";
 import type { SongInput } from "../../src/shared/types";
 import { songMatchKey, songsByMatchKey } from "../../src/shared/playlist";
 
@@ -161,7 +161,7 @@ describe("gigs", () => {
       await expect(repo.updateGig(g.id, over as never)).rejects.toBeInstanceOf(ValidationError);
     }
     const u = await repo.updateGig(g.id, { name: "Club", junk: 2 } as never);
-    expect(u).toEqual({ id: g.id, name: "Club", date: "2026-12-01", setlist: [], songIds: [] });
+    expect(u).toEqual({ id: g.id, name: "Club", date: "2026-12-01", setlist: [], songIds: [], updatedAt: expect.any(String) });
   });
 
   it("lists newest date first", async () => {
@@ -602,6 +602,50 @@ describe("original songs", () => {
     expect(stored.setlist).toEqual([]);
   });
 
+  // Fails the Nth write or delete once, then works again. Lets a test break a multi-step
+  // delete at every possible step, not just the one a hand-written failure happens to pick.
+  function failOnce(kv: ReturnType<typeof memoryKV>, n: number) {
+    let count = 0;
+    const tick = () => {
+      if (++count === n) throw new Error("timeout");
+    };
+    const kvFail = {
+      ...kv,
+      setText: async (k: string, v: string) => (tick(), kv.setText(k, v)),
+      setTextIfMatch: async (k: string, v: string, etag: string) => (tick(), kv.setTextIfMatch(k, v, etag)),
+      setBytes: async (k: string, v: ArrayBuffer) => (tick(), kv.setBytes(k, v)),
+      delete: async (k: string) => (tick(), kv.delete(k)),
+    };
+    return { kv: kvFail, steps: () => count };
+  }
+
+  for (const which of ["deleteTrack", "deleteSong"] as const) {
+    it(`${which}: a failure at any step can be finished by deleting again`, async () => {
+      for (let n = 1; ; n++) {
+        const kv = memoryKV();
+        const setup = makeRepo(kv);
+        const t = await upload(setup, "Demo", 3_145_728 + 10); // two audio parts
+        const gig = await setup.createGig({ name: "G", date: "2026-01-01", setlist: [{ type: "song", songId: t.songId! }] });
+        const flaky = failOnce(kv, n);
+        const repo = makeRepo(flaky.kv);
+        const del = () => (which === "deleteTrack" ? repo.deleteTrack(t.id) : repo.deleteSong(t.songId!));
+        let failed = false;
+        try {
+          await del();
+        } catch {
+          failed = true;
+        }
+        if (!failed) break; // n is past the last step: every step has been tried
+        await del();
+        expect(await kv.getText(`songs/${t.songId}`)).toBeNull();
+        expect(await kv.getText(`tracks/${t.id}`)).toBeNull();
+        expect(await kv.list(`audio/${t.id}/`)).toEqual([]);
+        expect(JSON.parse((await kv.getText(`gigs/${gig.id}`))!).setlist).toEqual([]);
+        expect(n).toBeLessThan(20);
+      }
+    });
+  }
+
   it("deleting an original song deletes its track and audio", async () => {
     const kv = memoryKV();
     const repo = makeRepo(kv);
@@ -682,5 +726,116 @@ describe("importSongs", () => {
       await expect(repo.importSongs(bad)).rejects.toThrow(ValidationError);
     }
     expect(await repo.listSongs()).toHaveLength(0);
+  });
+});
+
+describe("versions (lost-update protection)", () => {
+  /** Runs `meanwhile` once, right after the next tagged read of `key`: a bandmate saving in between. */
+  function interleave(kv: ReturnType<typeof memoryKV>, key: string, meanwhile: () => Promise<unknown>) {
+    let armed = true;
+    return {
+      ...kv,
+      getTextTagged: async (k: string) => {
+        const got = await kv.getTextTagged(k);
+        if (armed && k === key) {
+          armed = false;
+          await meanwhile();
+        }
+        return got;
+      },
+    };
+  }
+
+  it("updateSong saves when baseVersion matches and moves the version on", async () => {
+    const repo = makeRepo(memoryKV());
+    const s = await repo.createSong(song());
+    const u = await repo.updateSong(s.id, { bandKey: "Gm", baseVersion: s.updatedAt });
+    expect(u.bandKey).toBe("Gm");
+    expect(u.updatedAt > s.updatedAt).toBe(true);
+  });
+
+  it("two saves in the same millisecond still get different versions", async () => {
+    const repo = makeRepo(memoryKV());
+    const s = await repo.createSong(song());
+    const a = await repo.updateSong(s.id, { capo: 1 });
+    const b = await repo.updateSong(s.id, { capo: 2 });
+    expect(new Set([s.updatedAt, a.updatedAt, b.updatedAt]).size).toBe(3);
+  });
+
+  it("updateSong refuses an out-of-date baseVersion and keeps the newer save", async () => {
+    const repo = makeRepo(memoryKV());
+    const s = await repo.createSong(song());
+    await repo.updateSong(s.id, { bandKey: "Am", baseVersion: s.updatedAt }); // a bandmate transposes
+    const err = await repo.updateSong(s.id, { title: "Mine", bandKey: "Em", baseVersion: s.updatedAt }).catch((e) => e);
+    expect(err).toBeInstanceOf(ConflictError);
+    expect((err as ConflictError).current).toMatchObject({ id: s.id, bandKey: "Am", title: "Wonderwall" });
+    expect((await repo.getSong(s.id))!.bandKey).toBe("Am");
+  });
+
+  it("a record stored before versions existed matches any baseVersion", async () => {
+    const kv = memoryKV();
+    const repo = makeRepo(kv);
+    await kv.setText("gigs/old", JSON.stringify({ id: "old", name: "Old", date: "2025-01-01", songIds: [] }));
+    expect((await repo.getGig("old"))!.updatedAt).toBeUndefined();
+    const u = await repo.updateGig("old", { name: "Renamed", baseVersion: "anything" });
+    expect(u.name).toBe("Renamed");
+    expect(u.updatedAt).toBeTruthy();
+  });
+
+  it("updateGig refuses an out-of-date baseVersion; current is the gig as getGig shows it", async () => {
+    const repo = makeRepo(memoryKV());
+    const a = await repo.createSong(song({ title: "A" }));
+    const g = await repo.createGig({ name: "G", date: "2026-01-01", setlist: [{ type: "song", songId: a.id }] });
+    await repo.updateGig(g.id, { setlist: [], baseVersion: g.updatedAt });
+    const err = await repo
+      .updateGig(g.id, { setlist: [{ type: "song", songId: a.id }], baseVersion: g.updatedAt })
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(ConflictError);
+    expect((err as ConflictError).current).toEqual(await repo.getGig(g.id));
+    expect((await repo.getGig(g.id))!.setlist).toEqual([]);
+  });
+
+  it("a save that lands between our read and write is not lost (no baseVersion: re-applied on top)", async () => {
+    const base = memoryKV();
+    const setup = makeRepo(base);
+    const s = await setup.createSong(song());
+    const kv = interleave(base, `songs/${s.id}`, () => setup.updateSong(s.id, { bandKey: "Am" }));
+    await makeRepo(kv).updateSong(s.id, { capo: 3 });
+    expect(await setup.getSong(s.id)).toMatchObject({ bandKey: "Am", capo: 3 });
+  });
+
+  it("a save that lands between our read and write is a conflict when we sent a baseVersion", async () => {
+    const base = memoryKV();
+    const setup = makeRepo(base);
+    const g = await setup.createGig({ name: "G", date: "2026-01-01" });
+    const kv = interleave(base, `gigs/${g.id}`, () => setup.updateGig(g.id, { name: "Theirs" }));
+    await expect(makeRepo(kv).updateGig(g.id, { name: "Mine", baseVersion: g.updatedAt })).rejects.toBeInstanceOf(
+      ConflictError,
+    );
+    expect((await setup.getGig(g.id))!.name).toBe("Theirs");
+  });
+
+  it("deleting a song from setlists doesn't undo a setlist edit made at the same moment", async () => {
+    const base = memoryKV();
+    const setup = makeRepo(base);
+    const a = await setup.createSong(song({ title: "A" }));
+    const b = await setup.createSong(song({ title: "B" }));
+    const g = await setup.createGig({ name: "G", date: "2026-01-01", setlist: [{ type: "song", songId: a.id }] });
+    const kv = interleave(base, `gigs/${g.id}`, () =>
+      setup.updateGig(g.id, { setlist: [{ type: "song", songId: a.id }, { type: "song", songId: b.id }] }),
+    );
+    await makeRepo(kv).deleteSong(a.id);
+    expect((await setup.getGig(g.id))!.songIds).toEqual([b.id]);
+  });
+
+  it("renaming a track doesn't undo a song edit made at the same moment", async () => {
+    const base = memoryKV();
+    const setup = makeRepo(base);
+    const t = await setup.createTrack({ title: "Demo", size: 5 });
+    await setup.putTrackPart(t.id, 0, bytes(5));
+    const songId = (await setup.getTrack(t.id))!.songId!;
+    const kv = interleave(base, `songs/${songId}`, () => setup.updateSong(songId, { content: "[C]la" }));
+    await makeRepo(kv).renameTrack(t.id, "New");
+    expect(await setup.getSong(songId)).toMatchObject({ title: "New", content: "[C]la" });
   });
 });

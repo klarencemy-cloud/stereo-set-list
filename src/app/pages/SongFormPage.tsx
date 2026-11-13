@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { api } from "../api";
-import { clearSongCache } from "../songCache";
+import { api, conflictOf } from "../api";
 import { useUnsavedChanges } from "../components/useUnsavedChanges";
 import { KEYS } from "../../shared/transpose";
 import { markupFromPlainText, mergeEditedText, plainTextFromMarkup } from "../../shared/sheet";
 import ChordSheet from "../components/ChordSheet";
-import type { SongInput } from "../../shared/types";
+import ConflictNotice from "../components/ConflictNotice";
+import type { Song, SongInput } from "../../shared/types";
 
 const ALL_KEYS = KEYS.flatMap((k) => [k, `${k}m`]);
 
@@ -18,6 +18,18 @@ interface FormValues {
   bandKey: string;
   capo: number;
   pasted: string;
+}
+
+const SONG_FIELDS = ["title", "artist", "sourceUrl", "originalKey", "bandKey", "capo", "content"] as const;
+
+/**
+ * Only the fields the user changed since the song loaded. Sending the rest would put back what
+ * this form loaded, e.g. undo a bandmate's transpose made while the form was open.
+ */
+function changedFields(input: SongInput, loaded: Song): Partial<SongInput> {
+  const out: Partial<Record<keyof SongInput, unknown>> = {};
+  for (const f of SONG_FIELDS) if (input[f] !== loaded[f]) out[f] = input[f];
+  return out as Partial<SongInput>;
 }
 
 const BLANK: FormValues = { title: "", artist: "", link: "", originalKey: "", bandKey: "", capo: 0, pasted: "" };
@@ -46,6 +58,10 @@ export default function SongFormPage() {
   const [deleting, setDeleting] = useState(false);
   const [isOriginal, setIsOriginal] = useState(false);
   const [message, setMessage] = useState("");
+  // The song as it was loaded: what Save compares against, and the version it sends.
+  const [loaded, setLoaded] = useState<Song | null>(null);
+  // A bandmate saved the song first: what is stored now, loaded into the form on Reload.
+  const [conflict, setConflict] = useState<Song | null>(null);
   // What the form looked like when it was loaded (edit) or empty (new); null until an edit has loaded.
   const [baseline, setBaseline] = useState<string | null>(() => (id ? null : snapshotOf(BLANK)));
 
@@ -55,35 +71,35 @@ export default function SongFormPage() {
       return;
     }
     setBaseline(null);
-    // Fresh, not a saved offline copy: whatever loads here is sent back whole on Save.
-    api.getSong(id, { fresh: true }).then(
-      (s) => {
-        setTitle(s.title);
-        setIsOriginal(Boolean(s.trackId));
-        setArtist(s.artist);
-        setOriginalKey(s.originalKey);
-        setBandKey(s.bandKey);
-        setCapo(s.capo);
-        setLink(s.sourceUrl ?? "");
-        setExisting(s.content);
-        const plain = plainTextFromMarkup(s.content);
-        setPasted(plain);
-        setInitialPlain(plain);
-        setBaseline(
-          snapshotOf({
-            title: s.title,
-            artist: s.artist,
-            link: s.sourceUrl ?? "",
-            originalKey: s.originalKey,
-            bandKey: s.bandKey,
-            capo: s.capo,
-            pasted: plain,
-          }),
-        );
-      },
-      (e: Error) => setMessage(e.message),
-    );
+    // Fresh, not a saved offline copy: Save compares against it and sends its version.
+    api.getSong(id, { fresh: true }).then(fill, (e: Error) => setMessage(e.message));
   }, [id]);
+
+  function fill(s: Song) {
+    setLoaded(s);
+    setTitle(s.title);
+    setIsOriginal(Boolean(s.trackId));
+    setArtist(s.artist);
+    setOriginalKey(s.originalKey);
+    setBandKey(s.bandKey);
+    setCapo(s.capo);
+    setLink(s.sourceUrl ?? "");
+    setExisting(s.content);
+    const plain = plainTextFromMarkup(s.content);
+    setPasted(plain);
+    setInitialPlain(plain);
+    setBaseline(
+      snapshotOf({
+        title: s.title,
+        artist: s.artist,
+        link: s.sourceUrl ?? "",
+        originalKey: s.originalKey,
+        bandKey: s.bandKey,
+        capo: s.capo,
+        pasted: plain,
+      }),
+    );
+  }
 
   async function doImport() {
     setImporting(true);
@@ -138,6 +154,7 @@ export default function SongFormPage() {
   async function save() {
     setSaving(true);
     setMessage("");
+    setConflict(null);
     const input: SongInput = {
       title: title.trim(),
       artist: artist.trim(),
@@ -148,12 +165,20 @@ export default function SongFormPage() {
       capo,
       content,
     };
+    const patch = loaded ? changedFields(input, loaded) : input;
+    if (id && Object.keys(patch).length === 0) {
+      // Nothing changed: nothing to save (and nothing that could clash with a bandmate's edit).
+      allowNavigation();
+      navigate(`/songs/${id}`);
+      return;
+    }
     try {
-      const song = id ? await api.updateSong(id, input) : await api.createSong(input);
-      clearSongCache();
+      const song = id ? await api.updateSong(id, patch, loaded?.updatedAt) : await api.createSong(input);
       allowNavigation();
       navigate(`/songs/${song.id}`);
     } catch (e) {
+      // Everything typed stays in the form; Reload is the user's choice.
+      setConflict(conflictOf<Song>(e));
       setMessage((e as Error).message);
       setSaving(false);
     }
@@ -167,7 +192,6 @@ export default function SongFormPage() {
     setMessage("");
     try {
       await api.deleteSong(id);
-      clearSongCache();
       allowNavigation();
       navigate(isOriginal ? "/tracks" : "/songs");
     } catch (e) {
@@ -191,7 +215,18 @@ export default function SongFormPage() {
         </div>
       )}
 
-      {message && <p className="error" role="alert">{message}</p>}
+      {message && conflict ? (
+        <ConflictNotice
+          message={`${message} Reloading replaces what you typed here.`}
+          onReload={() => {
+            fill(conflict);
+            setConflict(null);
+            setMessage("");
+          }}
+        />
+      ) : (
+        message && <p className="error" role="alert">{message}</p>
+      )}
 
       <label className="field">
         Link
