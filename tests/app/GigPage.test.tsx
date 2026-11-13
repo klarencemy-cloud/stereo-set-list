@@ -13,6 +13,8 @@ vi.mock("../../src/app/api", async () => {
       updateGig: vi.fn(),
       deleteGig: vi.fn(),
       listSongs: vi.fn(),
+      importSongs: vi.fn(),
+      readPlaylist: vi.fn(),
     },
   };
 });
@@ -58,6 +60,61 @@ beforeEach(() => {
   mocked.getGig.mockResolvedValue({ ...gig });
   mocked.listSongs.mockResolvedValue(songs.map((s) => ({ ...s })));
   mocked.updateGig.mockImplementation(async (_id: string, patch: object) => ({ ...gig, ...patch }));
+});
+
+describe("GigPage playlist import", () => {
+  const newSong = { ...mk("s9", "Yellow", ""), artist: "Coldplay" };
+
+  async function openAndLoad(tracks: { title: string; artist: string }[]) {
+    mocked.readPlaylist.mockResolvedValue({ name: "Friday", tracks, truncated: false });
+    renderGig();
+    fireEvent.click(await screen.findByRole("button", { name: "Import Playlist" }));
+    fireEvent.change(screen.getByLabelText("Spotify playlist"), { target: { value: "https://open.spotify.com/playlist/x" } });
+    fireEvent.click(screen.getByRole("button", { name: "Load" }));
+    await screen.findByText("Friday");
+  }
+
+  it("marks tracks already in the setlist and adds the rest to the end, in order", async () => {
+    mocked.importSongs.mockResolvedValue([songs[2], newSong]);
+    await openAndLoad([
+      { title: "Alpha", artist: "A" },
+      { title: "Gamma", artist: "A" },
+      { title: "Yellow", artist: "Coldplay" },
+    ]);
+    const alpha = screen.getByText("Alpha — A").closest("label")!;
+    expect(within(alpha).getByText("in setlist")).toBeInTheDocument();
+    expect(within(alpha).getByRole("checkbox")).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Add 2 songs" }));
+    await waitFor(() => expect(mocked.updateGig).toHaveBeenCalledTimes(1));
+    expect(mocked.importSongs).toHaveBeenCalledWith([{ title: "Gamma", artist: "A" }, { title: "Yellow", artist: "Coldplay" }]);
+    expect(mocked.updateGig.mock.calls[0][1]).toEqual({ setlist: sl("s1", "s2", "s3", "s9") });
+    expect(await screen.findByText("4. Yellow")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Spotify playlist")).not.toBeInTheDocument();
+  });
+
+  it("can't add when nothing is ticked", async () => {
+    await openAndLoad([{ title: "Alpha", artist: "A" }]);
+    expect(screen.getByRole("button", { name: "Add songs" })).toBeDisabled();
+  });
+
+  it("keeps the panel and its ticks when the setlist can't be saved", async () => {
+    mocked.importSongs.mockResolvedValue([newSong]);
+    mocked.updateGig.mockRejectedValue(new ApiError(400, "a setlist can hold at most 100 songs"));
+    await openAndLoad([{ title: "Yellow", artist: "Coldplay" }]);
+    fireEvent.click(screen.getByRole("button", { name: "Add 1 song" }));
+    expect(await screen.findByText("a setlist can hold at most 100 songs")).toBeInTheDocument();
+    expect(within(screen.getByText("Yellow — Coldplay").closest("label")!).getByRole("checkbox")).toBeChecked();
+    expect(screen.getByRole("button", { name: "Add 1 song" })).toBeEnabled();
+  });
+
+  it("keeps the panel when the songs can't be imported", async () => {
+    mocked.importSongs.mockRejectedValue(new ApiError(0, "Can't reach the server. Check your connection."));
+    await openAndLoad([{ title: "Yellow", artist: "Coldplay" }]);
+    fireEvent.click(screen.getByRole("button", { name: "Add 1 song" }));
+    expect(await screen.findByText("Can't reach the server. Check your connection.")).toBeInTheDocument();
+    expect(mocked.updateGig).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Spotify playlist")).toBeInTheDocument();
+  });
 });
 
 describe("GigPage no-chords tag", () => {

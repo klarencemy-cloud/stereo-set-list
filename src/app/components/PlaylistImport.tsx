@@ -46,12 +46,14 @@ export default function PlaylistImport({ songs, inSetlist, onTicked, disabled = 
     [tracks, statusOf, unticked],
   );
 
-  // The parent may pass a new function on every render; only the ticked list should trigger a call.
+  // Parents pass new functions and sets on every render, so report only when the ticked tracks
+  // themselves change; otherwise a parent that stores them would re-render us forever.
   const onTickedRef = useRef(onTicked);
   onTickedRef.current = onTicked;
+  const tickedSignature = JSON.stringify(ticked);
   useEffect(() => {
-    onTickedRef.current(ticked);
-  }, [ticked]);
+    onTickedRef.current(JSON.parse(tickedSignature) as PlaylistTrack[]);
+  }, [tickedSignature]);
 
   async function load() {
     if (!link.trim() || loading) return;

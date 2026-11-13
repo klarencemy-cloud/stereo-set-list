@@ -6,8 +6,12 @@ import { clearSongCache } from "../songCache";
 import { NOT_READY, canSaveOffline, saveGigForOffline } from "../offline";
 import { formatGigDate } from "../formatDate";
 import SetlistEditor from "../components/SetlistEditor";
+import PlaylistImport from "../components/PlaylistImport";
 import { setlistOf, songIdsOf } from "../../shared/setlist";
-import type { Gig, SetlistItem, SongSummary } from "../../shared/types";
+import type { PlaylistTrack } from "../../shared/playlist";
+import type { Gig, SetlistItem, Song, SongSummary } from "../../shared/types";
+
+const summaryOf = ({ content, ...rest }: Song): SongSummary => ({ ...rest, hasChords: content.trim() !== "" });
 
 export default function GigPage() {
   const { id = "" } = useParams();
@@ -22,6 +26,9 @@ export default function GigPage() {
   const [date, setDate] = useState("");
   const [savingOffline, setSavingOffline] = useState(false);
   const [offline, setOffline] = useState<{ ok: boolean; text: string } | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importBusy, setImportBusy] = useState(false);
+  const [ticked, setTicked] = useState<PlaylistTrack[]>([]);
 
   useEffect(() => {
     let alive = true;
@@ -68,6 +75,34 @@ export default function GigPage() {
       return false;
     } finally {
       setSaving(false);
+    }
+  }
+
+  /** Adds the ticked playlist tracks to the end of the setlist; the panel stays open until it saved. */
+  async function addFromPlaylist() {
+    if (ticked.length === 0 || importBusy || saving) return;
+    setImportBusy(true);
+    setError("");
+    try {
+      let added: Song[];
+      try {
+        added = await api.importSongs(ticked);
+      } catch (e) {
+        setError(e instanceof ApiError ? e.message : "Could not import the playlist.");
+        return;
+      }
+      setSongs((prev) => {
+        const known = new Set(prev.map((s) => s.id));
+        return [...prev, ...added.filter((s) => !known.has(s.id)).map(summaryOf)];
+      });
+      const fresh = added.filter((s) => !ids.includes(s.id));
+      const next: SetlistItem[] = [...items, ...fresh.map((s) => ({ type: "song" as const, songId: s.id }))];
+      if (await save(next)) {
+        setImporting(false);
+        setTicked([]);
+      }
+    } finally {
+      setImportBusy(false);
     }
   }
 
@@ -162,7 +197,35 @@ export default function GigPage() {
         <button type="button" className="btn" onClick={() => setEditing((v) => !v)}>
           {editing ? "Done" : "Edit setlist"}
         </button>
+        {!editing && !importing && (
+          <button type="button" className="btn" onClick={() => setImporting(true)}>
+            Import Playlist
+          </button>
+        )}
       </div>
+      {!editing && importing && (
+        <section className="playlist-panel" aria-label="Import Playlist">
+          <PlaylistImport
+            songs={songs}
+            inSetlist={new Set(ids)}
+            onTicked={setTicked}
+            disabled={importBusy || saving}
+          />
+          <div className="row">
+            <button type="button" className="btn" disabled={importBusy} onClick={() => setImporting(false)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn primary"
+              disabled={importBusy || saving || ticked.length === 0}
+              onClick={addFromPlaylist}
+            >
+              {ticked.length === 0 ? "Add songs" : `Add ${ticked.length} ${ticked.length === 1 ? "song" : "songs"}`}
+            </button>
+          </div>
+        </section>
+      )}
       {!editing && (canSaveOffline() || ids.length > 0) && (
         <p className="actions">
           {canSaveOffline() && (

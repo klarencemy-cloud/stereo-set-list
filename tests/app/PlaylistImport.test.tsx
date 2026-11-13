@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { useState } from "react";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 
 vi.mock("../../src/app/api", async () => {
@@ -90,6 +91,30 @@ describe("PlaylistImport", () => {
     expect(within(rowOf("Yellow — Coldplay")).getByText("new")).toBeInTheDocument();
     expect(within(rowOf("Creep — Radiohead")).getByText("in Songs")).toBeInTheDocument();
     expect(last()).toEqual([{ title: "Yellow", artist: "Coldplay" }, { title: "Creep", artist: "Radiohead" }]);
+  });
+
+  it("settles when the parent keeps the ticked list in state and passes a new setlist set each render", async () => {
+    let calls = 0;
+    function Parent() {
+      const [t, setT] = useState<PlaylistTrack[]>([]);
+      return (
+        <>
+          <PlaylistImport
+            songs={songs}
+            inSetlist={new Set(["s2"])}
+            onTicked={(x) => {
+              calls++;
+              setT(x);
+            }}
+          />
+          <p>{`ticked ${t.length}`}</p>
+        </>
+      );
+    }
+    render(<Parent />);
+    await load([{ title: "Yellow", artist: "Coldplay" }]);
+    expect(await screen.findByText("ticked 1")).toBeInTheDocument();
+    expect(calls).toBeLessThan(5);
   });
 
   it("can paste a list without loading a link first", () => {
