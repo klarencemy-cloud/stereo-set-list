@@ -69,6 +69,23 @@ describe("songs API", () => {
   });
 });
 
+describe("songs batch import API", () => {
+  it("creates songs from a track list", async () => {
+    const { songs } = setup();
+    const res = await songs(jsonReq("POST", "/api/songs/batch", { tracks: [{ title: "Yellow", artist: "Coldplay" }] }));
+    expect(res.status).toBe(200);
+    const out = await res.json();
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ title: "Yellow", artist: "Coldplay", originalKey: "" });
+  });
+
+  it("rejects a bad body and has no other batch routes", async () => {
+    const { songs } = setup();
+    expect((await songs(jsonReq("POST", "/api/songs/batch", { tracks: "x" }))).status).toBe(400);
+    expect((await songs(jsonReq("GET", "/api/songs/batch"))).status).toBe(404);
+  });
+});
+
 describe("gigs API", () => {
   it("creates and gets a gig", async () => {
     const { gigs } = setup();

@@ -53,6 +53,14 @@ describe("SongsPage original songs", () => {
     expect(within(other).getByText("C")).toHaveClass("pill");
   });
 
+  it("marks songs that have no chords yet", async () => {
+    mocked.listSongs.mockResolvedValue([{ ...regular, hasChords: false }, { ...original, hasChords: true }]);
+    renderPage();
+    const row = (await screen.findByText("Wonderwall")).closest("a")!;
+    expect(within(row).getByText("No chords yet")).toBeInTheDocument();
+    expect(screen.getAllByText("No chords yet")).toHaveLength(1);
+  });
+
   it("does not render an empty artist line", async () => {
     renderPage();
     const row = (await screen.findByText("My Demo")).closest("a")!;

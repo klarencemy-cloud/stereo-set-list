@@ -7,6 +7,9 @@ import { makeRepo, type Repo } from "./lib/repo";
 export function makeSongsHandler(repo: Repo) {
   return guard(async (req) => {
     const [id, extra] = routeParts(req);
+    if (id === "batch" && extra === undefined && req.method === "POST") {
+      return json(await repo.importSongs((await readBody<{ tracks?: unknown }>(req))?.tracks));
+    }
     if (extra !== undefined) return notFound();
     if (id === undefined) {
       if (req.method === "GET") return json(await repo.listSongs());

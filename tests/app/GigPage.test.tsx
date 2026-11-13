@@ -60,6 +60,20 @@ beforeEach(() => {
   mocked.updateGig.mockImplementation(async (_id: string, patch: object) => ({ ...gig, ...patch }));
 });
 
+describe("GigPage no-chords tag", () => {
+  it("marks setlist songs that have no chords yet", async () => {
+    mocked.listSongs.mockResolvedValue([
+      { ...songs[0], hasChords: false },
+      { ...songs[1], hasChords: true },
+      { ...songs[2], hasChords: true },
+    ]);
+    renderGig();
+    const row = (await screen.findByText("1. Alpha — Key: A")).closest("a")!;
+    expect(within(row).getByText("No chords yet")).toBeInTheDocument();
+    expect(screen.getAllByText("No chords yet")).toHaveLength(1);
+  });
+});
+
 describe("GigPage offline saving", () => {
   const canSave = canSaveOffline as unknown as ReturnType<typeof vi.fn>;
   const save = saveGigForOffline as unknown as ReturnType<typeof vi.fn>;

@@ -1,3 +1,4 @@
+import type { PlaylistResult, PlaylistTrack } from "../shared/playlist";
 import type { Gig, GigInput, ImportedSong, Song, SongInput, SongSummary, Track } from "../shared/types";
 
 export class ApiError extends Error {
@@ -47,6 +48,7 @@ export const api = {
   getSong: (id: string, opts?: { fresh?: boolean }) =>
     json<Song>(`/api/songs/${id}`, opts?.fresh ? { headers: { [FRESH_HEADER]: "1" } } : undefined),
   createSong: (input: SongInput) => json<Song>("/api/songs", send("POST", input)),
+  importSongs: (tracks: PlaylistTrack[]) => json<Song[]>("/api/songs/batch", send("POST", { tracks })),
   updateSong: (id: string, patch: Partial<SongInput>) => json<Song>(`/api/songs/${id}`, send("PUT", patch)),
   deleteSong: async (id: string): Promise<void> => {
     await request(`/api/songs/${id}`, { method: "DELETE" });
@@ -79,4 +81,5 @@ export const api = {
   },
 
   importSong: (url: string) => json<ImportedSong>("/api/import", send("POST", { url })),
+  readPlaylist: (url: string) => json<PlaylistResult>("/api/playlist", send("POST", { url })),
 };

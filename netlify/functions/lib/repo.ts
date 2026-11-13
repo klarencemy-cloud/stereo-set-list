@@ -2,6 +2,7 @@ import { CHUNK_SIZE, MAX_AUDIO_BYTES } from "../../../src/shared/types";
 import type { Gig, GigInput, SetlistItem, Song, SongInput, SongSummary, Track } from "../../../src/shared/types";
 import { fromSongIds, setlistOf, songIdsOf } from "../../../src/shared/setlist";
 import { isValidKey } from "../../../src/shared/transpose";
+import { songMatchKey, uniqueTracks, type PlaylistTrack } from "../../../src/shared/playlist";
 import type { KV } from "./kv";
 
 export class ValidationError extends Error {
@@ -167,6 +168,19 @@ function cleanGig(input: unknown, partial: boolean, current: SetlistItem[] = [])
   return out;
 }
 
+/** Checks a playlist's track list before anything is written. */
+function checkTracks(v: unknown): PlaylistTrack[] {
+  if (!Array.isArray(v)) throw new ValidationError("tracks must be a list");
+  if (v.length > LIMITS.gigSongs) throw new ValidationError(`a playlist import can hold at most ${LIMITS.gigSongs} songs`);
+  return v.map((t) => {
+    if (!t || typeof t !== "object") throw new ValidationError("each track needs a title and an artist");
+    const { title, artist } = t as Record<string, unknown>;
+    const cleanTitle = checkString("title", title, LIMITS.title).trim();
+    if (!cleanTitle) throw new ValidationError("title is required");
+    return { title: cleanTitle, artist: checkString("artist", artist, LIMITS.artist).trim() };
+  });
+}
+
 type StoredGig = { id: string; name: string; date: string; setlist?: SetlistItem[]; songIds?: string[] };
 
 function toGig(stored: StoredGig): Gig {
@@ -268,7 +282,7 @@ export function makeRepo(kv: KV) {
     async listSongs(): Promise<SongSummary[]> {
       const songs = await readAll<Song>("songs/");
       return songs
-        .map(({ content: _content, ...summary }) => summary)
+        .map(({ content, ...summary }) => ({ ...summary, hasChords: content.trim() !== "" }))
         .sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
     },
     getSong,
@@ -279,6 +293,41 @@ export function makeRepo(kv: KV) {
       const song: Song = withKeys({ ...clean, id: crypto.randomUUID(), updatedAt: new Date().toISOString() });
       await writeJson(`songs/${song.id}`, song);
       return song;
+    },
+    /**
+     * Turns a playlist into songs: a track matching an existing song (same title and artist,
+     * ignoring case and spacing) reuses it; the rest become songs with no key or chords yet.
+     * Returns one song per distinct track, in playlist order. Safe to repeat.
+     */
+    async importSongs(input: unknown): Promise<Song[]> {
+      const tracks = uniqueTracks(checkTracks(input));
+      const byKey = new Map<string, Song>();
+      for (const s of await readAll<Song>("songs/")) {
+        const k = songMatchKey(s.title, s.artist);
+        if (!byKey.has(k)) byKey.set(k, s);
+      }
+      const out: Song[] = [];
+      for (const t of tracks) {
+        const found = byKey.get(songMatchKey(t.title, t.artist));
+        if (found) {
+          out.push(found);
+          continue;
+        }
+        const song: Song = {
+          id: crypto.randomUUID(),
+          title: t.title,
+          artist: t.artist,
+          sourceUrl: null,
+          originalKey: "",
+          bandKey: "",
+          capo: 0,
+          content: "",
+          updatedAt: new Date().toISOString(),
+        };
+        await writeJson(`songs/${song.id}`, song);
+        out.push(song);
+      }
+      return out;
     },
     async updateSong(id: string, patch: Partial<SongInput>): Promise<Song> {
       const cur = await getSong(id);

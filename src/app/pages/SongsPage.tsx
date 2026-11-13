@@ -44,6 +44,7 @@ export default function SongsPage() {
                 <strong>{s.title}</strong>
                 {s.artist && <span className="muted block">{s.artist}</span>}
                 {s.trackId && <span className="badge">Original</span>}
+                {s.hasChords === false && <span className="badge muted">No chords yet</span>}
               </span>
               {s.bandKey && <span className="pill">{s.bandKey}</span>}
             </Link>

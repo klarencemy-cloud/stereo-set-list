@@ -45,6 +45,14 @@ describe("songs", () => {
     expect(s).toMatchObject({ title: "Wonderwall", artist: "Oasis", bandKey: "Em" });
   });
 
+  it("listSongs says whether each song has chords yet", async () => {
+    const repo = makeRepo(memoryKV());
+    await repo.createSong(song({ title: "Empty", content: "  \n " }));
+    await repo.createSong(song({ title: "Full" }));
+    const list = await repo.listSongs();
+    expect(list.map((s) => [s.title, s.hasChords])).toEqual([["Empty", false], ["Full", true]]);
+  });
+
   it("keeps only known fields", async () => {
     const repo = makeRepo(memoryKV());
     const s = await repo.createSong({ ...song(), extra: "x", id: "forced" } as unknown as SongInput);
@@ -585,5 +593,56 @@ describe("original songs", () => {
     expect(s.trackId).toBeUndefined();
     const u = await repo.updateSong(s.id, { trackId: "y" } as unknown as Partial<SongInput>);
     expect(u.trackId).toBeUndefined();
+  });
+});
+
+describe("importSongs", () => {
+  it("reuses matching songs, creates the rest empty, and keeps playlist order", async () => {
+    const repo = makeRepo(memoryKV());
+    const existing = await repo.createSong(song());
+    const out = await repo.importSongs([
+      { title: "wonderwall ", artist: "OASIS" },
+      { title: "Yellow", artist: "Coldplay" },
+      { title: "Yellow", artist: "coldplay" },
+    ]);
+    expect(out).toHaveLength(2);
+    expect(out[0].id).toBe(existing.id);
+    expect(out[0].content).toBe(existing.content);
+    expect(out[1]).toMatchObject({
+      title: "Yellow", artist: "Coldplay", originalKey: "", bandKey: "", capo: 0, content: "", sourceUrl: null,
+    });
+    expect(await repo.listSongs()).toHaveLength(2);
+  });
+
+  it("is safe to call again: the second call reuses the songs the first one made", async () => {
+    const repo = makeRepo(memoryKV());
+    const tracks = [{ title: "Yellow", artist: "Coldplay" }, { title: "Creep", artist: "Radiohead" }];
+    const first = await repo.importSongs(tracks);
+    const second = await repo.importSongs(tracks);
+    expect(second.map((s) => s.id)).toEqual(first.map((s) => s.id));
+    expect(await repo.listSongs()).toHaveLength(2);
+  });
+
+  it("trims titles and artists", async () => {
+    const repo = makeRepo(memoryKV());
+    const [s] = await repo.importSongs([{ title: "  Yellow ", artist: " Coldplay  " }]);
+    expect(s).toMatchObject({ title: "Yellow", artist: "Coldplay" });
+  });
+
+  it("rejects bad input", async () => {
+    const repo = makeRepo(memoryKV());
+    const many = Array.from({ length: LIMITS.gigSongs + 1 }, (_, i) => ({ title: `Song ${i}`, artist: "" }));
+    for (const bad of [
+      "x",
+      undefined,
+      many,
+      [{ title: "  ", artist: "" }],
+      [{ title: "x".repeat(LIMITS.title + 1), artist: "" }],
+      [{ title: "A", artist: 5 }],
+      [null],
+    ]) {
+      await expect(repo.importSongs(bad)).rejects.toThrow(ValidationError);
+    }
+    expect(await repo.listSongs()).toHaveLength(0);
   });
 });

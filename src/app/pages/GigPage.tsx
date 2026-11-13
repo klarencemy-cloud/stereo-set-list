@@ -207,6 +207,7 @@ export default function GigPage() {
                     <Link className="list-row" to={`/songs/${s.id}?gig=${gig.id}`}>
                       <span className="grow">
                         <span>{`${n}. ${s.title}${s.bandKey ? ` — Key: ${s.bandKey}` : ""}`}</span>
+                        {s.hasChords === false && <span className="badge muted">No chords yet</span>}
                         {item.note && <span className="setlist-note muted block">{item.note}</span>}
                       </span>
                     </Link>

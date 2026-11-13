@@ -12,8 +12,11 @@ export interface Song {
   updatedAt: string;
 }
 export type SongInput = Omit<Song, "id" | "updatedAt" | "trackId">;
-/** What the song list returns: everything except the chord sheet. */
-export type SongSummary = Omit<Song, "content">;
+/** What the song list returns: everything except the chord sheet, plus whether it has one. */
+export type SongSummary = Omit<Song, "content"> & {
+  /** False when the chord sheet is empty. Missing on copies saved before this field existed. */
+  hasChords?: boolean;
+};
 
 export type SetlistItem =
   | { type: "song"; songId: string; note?: string }
