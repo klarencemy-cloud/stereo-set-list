@@ -93,9 +93,12 @@ export default function SongFormPage() {
       if (editing) {
         // The song already has its title and artist (often from a playlist): keep them, and keep
         // a band key the band already chose. Nothing is stored until Save.
-        setOriginalKey(song.originalKey);
+        // Some UG pages have no key: then keep the keys the song already has.
+        if (song.originalKey) {
+          setOriginalKey(song.originalKey);
+          if (bandKey === "") setBandKey(song.originalKey);
+        }
         setCapo(song.capo);
-        if (bandKey === "") setBandKey(song.originalKey);
         const plain = plainTextFromMarkup(song.content);
         setExisting(song.content);
         setPasted(plain);

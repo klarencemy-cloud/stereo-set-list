@@ -416,6 +416,20 @@ describe("SongFormPage import while editing", () => {
     expect(mocked.updateSong.mock.calls[0][1]).toMatchObject({ originalKey: "B", bandKey: "A" });
   });
 
+  it("keeps both keys when the UG page has no key", async () => {
+    mocked.getSong.mockResolvedValue({ ...fromPlaylist, originalKey: "G", bandKey: "A" });
+    mocked.importSong.mockResolvedValue({ ...imported, originalKey: "" });
+    mocked.updateSong.mockResolvedValue({ ...stored, id: "s1" });
+    renderEdit();
+    await waitFor(() => expect(screen.getByLabelText("Original key")).toHaveValue("G"));
+    fireEvent.change(screen.getByLabelText("Link"), { target: { value: UG } });
+    fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    await waitFor(() => expect(screen.getByLabelText("Capo")).toHaveValue(2));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(1));
+    expect(mocked.updateSong.mock.calls[0][1]).toMatchObject({ originalKey: "G", bandKey: "A", content: imported.content });
+  });
+
   it("counts as unsaved until saved", async () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const router = await editAndImport(fromPlaylist);
