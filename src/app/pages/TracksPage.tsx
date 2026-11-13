@@ -160,7 +160,7 @@ export default function TracksPage() {
             }}
           />
         </label>
-        {uploading && <progress value={progress} max={1} aria-label="Upload progress" style={{ width: "100%" }} />}
+        {uploading && <progress value={progress} max={1} aria-label="Upload progress" className="audio-full" />}
         {uploadError && <p className="error" role="alert">{uploadError}</p>}
         <button className="btn primary" type="submit" disabled={uploading || !file || !title.trim()}>
           {uploading ? "Uploading…" : uploadError ? "Retry upload" : "Upload"}
@@ -172,11 +172,10 @@ export default function TracksPage() {
       {tracks !== null && tracks.length === 0 && <p className="muted">No songs yet. Upload the first one.</p>}
       <ul className="list">
         {(tracks ?? []).map((t) => (
-          <li key={t.id} className="list-row" style={{ flexWrap: "wrap" }}>
+          <li key={t.id} className="list-row track-row">
             {renamingId === t.id ? (
               <form
-                className="grow"
-                style={{ display: "flex", gap: 8, flexWrap: "wrap" }}
+                className="grow track-rename-form"
                 onSubmit={(e) => {
                   e.preventDefault();
                   void onRename(t);
@@ -225,7 +224,7 @@ export default function TracksPage() {
             </button>
             <button className="btn" onClick={() => onDelete(t)} aria-label={`Delete ${t.title}`}>Delete</button>
             {playing?.id === t.id && (
-              <audio controls autoPlay src={playing.url} style={{ width: "100%" }} />
+              <audio className="audio-full" controls autoPlay src={playing.url} />
             )}
           </li>
         ))}

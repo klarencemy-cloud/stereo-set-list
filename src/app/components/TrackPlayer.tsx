@@ -74,7 +74,7 @@ export default function TrackPlayer({ trackId }: { trackId: string }) {
         </button>
       </div>
       {error && <p role="alert" className="error">{error}</p>}
-      {url && <audio controls autoPlay src={url} style={{ width: "100%" }} />}
+      {url && <audio className="audio-full" controls autoPlay src={url} />}
     </div>
   );
 }

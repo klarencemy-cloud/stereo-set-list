@@ -1,153 +1,171 @@
+/* ==========================================================================
+   Stereo Set — design tokens
+   Style: Swiss minimal, stage-ready. Colours come from the Stereobloc logo:
+   a yellow bolt on a cyan-blue halftone. Blue leads in light mode, yellow in dark.
+   ========================================================================== */
 :root {
-  --bg: #fafaf7;
-  --surface: #ffffff;
-  --text: #1c1c1e;
-  --muted: #6b6b70;
-  --border: #dcdcd4;
   /* Stereobloc brand colours, exact from the band's palette. */
   --brand-yellow: #fff200;
   --brand-blue: #00a2e8;
+
+  /* Neutrals, cooled slightly towards the brand blue. */
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --surface-2: #eaeef2;
+  --text: #15191d;
+  --muted: #59636d;          /* 5.9:1 on --bg, 6.3:1 on --surface */
+  --border: #d5dce2;
+  --border-strong: #8a95a0;   /* 3:1 on --surface: control boundaries */
+
   /* Filled buttons: blue with dark text (5.9:1). White on this blue is only 2.9:1. */
   --accent: var(--brand-blue);
-  --accent-text: #1c1c1e;
+  --accent-text: #15191d;
+  --accent-hover: #1ab0f0;
   /* Accent used as text/lines on the page: a deeper shade of the brand blue (5.3:1 on white). */
   --accent-ink: #0072a3;
+  /* Soft tint behind the active nav item / selected things. */
+  --accent-soft: color-mix(in srgb, var(--brand-blue) 12%, var(--surface));
   --chord: var(--accent-ink);
+  --chord-bg: color-mix(in srgb, var(--brand-blue) 16%, var(--surface));
+  --pill-yellow: var(--brand-yellow);
+  --pill-yellow-text: #15191d;
+  --pill-yellow-border: #c9bd00;
   --error: #b00020;
+
+  /* Type */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.5rem;
+  --text-2xl: 1.75rem;
+
+  /* Spacing (4/8 rhythm) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* Shape & depth */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-full: 999px;
+  --shadow-sm: 0 1px 2px rgb(16 24 32 / 0.06);
+  --shadow-md: 0 2px 8px rgb(16 24 32 / 0.08);
+
+  /* Motion */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast: 120ms;
+  --dur: 200ms;
+
+  --nav-height: 60px;
+
   color-scheme: light dark;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #141416;
-    --surface: #1e1e22;
-    --text: #f1f1ee;
-    --muted: #9c9ca3;
-    --border: #34343a;
+    --bg: #0d1013;
+    --surface: #161a1f;
+    --surface-2: #1f252b;
+    --text: #eef1f3;
+    --muted: #9ba5ae;        /* 7:1 on --surface */
+    --border: #2a3239;
+    --border-strong: #5f6a75; /* 3.2:1 on --surface */
     /* On dark, the yellow carries the actions (15.7:1 with dark text), like the logo's bolt. */
     --accent: var(--brand-yellow);
-    --accent-text: #141416;
+    --accent-text: #0d1013;
+    --accent-hover: #fff56b;
     --accent-ink: var(--brand-yellow);
+    --accent-soft: color-mix(in srgb, var(--brand-yellow) 12%, var(--surface));
     --chord: var(--brand-blue);
+    --chord-bg: color-mix(in srgb, var(--brand-blue) 26%, var(--surface));
+    --pill-yellow-border: var(--brand-yellow);
     --error: #ff8a9b;
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+    --shadow-md: 0 2px 10px rgb(0 0 0 / 0.45);
   }
 }
 
+/* ==========================================================================
+   Base
+   ========================================================================== */
 * { box-sizing: border-box; }
 
 html, body { margin: 0; overflow-x: hidden; }
 
+html { -webkit-text-size-adjust: 100%; }
+
 body {
   background: var(--bg);
   color: var(--text);
-  font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  padding-bottom: 72px;
+  font: 16px/1.5 var(--font-sans);
+  padding-bottom: calc(var(--nav-height) + 12px + env(safe-area-inset-bottom, 0px));
+  -webkit-font-smoothing: antialiased;
 }
 
-h1 { font-size: 1.5rem; margin: 0.5rem 0; }
-h2 { font-size: 1.1rem; margin: 1rem 0 0.5rem; }
+h1 {
+  font-size: var(--text-2xl);
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  margin: var(--space-4) 0 var(--space-2);
+  text-wrap: balance;
+}
+h2 {
+  font-size: var(--text-lg);
+  font-weight: 700;
+  line-height: 1.3;
+  margin: var(--space-5) 0 var(--space-2);
+}
 
+a { color: var(--accent-ink); }
+
+button, a, input, select, textarea, label { touch-action: manipulation; }
+
+:focus-visible { outline: 3px solid var(--accent-ink); outline-offset: 2px; }
+
+::selection { background: color-mix(in srgb, var(--brand-blue) 30%, transparent); }
+
+/* ==========================================================================
+   App chrome: top bar & bottom nav
+   ========================================================================== */
 .topbar {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  font-weight: 700;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
+  gap: 10px;
+  padding: calc(12px + env(safe-area-inset-top, 0px)) 16px 14px;
+  font-weight: 800;
+  font-size: var(--text-lg);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   background: var(--surface);
-}
-
-.topbar-logo { width: 28px; height: 28px; border-radius: 50%; flex: none; }
-
-.page { max-width: 720px; margin: 0 auto; padding: 8px 16px 24px; }
-
-.row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.grow { flex: 1; min-width: 0; }
-.block { display: block; }
-.muted { color: var(--muted); }
-.error { color: var(--error); font-weight: 600; }
-
-.input {
-  width: 100%;
-  min-height: 44px;
-  padding: 10px 12px;
-  font: inherit;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-
-.field { display: block; margin: 12px 0; font-weight: 600; }
-.field .input { margin-top: 4px; font-weight: 400; }
-
-.sheet-input, .sheet {
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 15px;
-}
-
-.sheet {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px;
-  margin: 0;
-}
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 44px;
-  padding: 0 18px;
-  font: inherit;
-  font-weight: 600;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  text-decoration: none;
-  cursor: pointer;
-}
-.btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-.seg { display: flex; gap: 8px; margin: 8px 0; }
-.seg button {
-  flex: 1;
-  min-height: 44px;
-  font: inherit;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  cursor: pointer;
-}
-.seg button.active { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
-
-.list { list-style: none; margin: 12px 0; padding: 0; }
-.list-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 56px;
-  padding: 8px 4px;
-  color: inherit;
-  text-decoration: none;
   border-bottom: 1px solid var(--border);
 }
+/* Two-tone brand stripe: the logo's yellow and blue. */
+.topbar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 3px;
+  background: linear-gradient(90deg, var(--brand-yellow) 0 50%, var(--brand-blue) 50% 100%);
+}
 
-.pill {
-  min-width: 44px;
-  text-align: center;
-  padding: 6px 12px;
-  font-weight: 700;
-  color: var(--accent-text);
-  background: var(--accent);
-  border-radius: 999px;
+.topbar-logo {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  flex: none;
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--border);
 }
 
 .bottom-nav {
@@ -155,82 +173,457 @@ h2 { font-size: 1.1rem; margin: 1rem 0 0.5rem; }
   left: 0;
   right: 0;
   bottom: 0;
+  z-index: 40;
   display: flex;
-  background: var(--surface);
+  gap: var(--space-1);
+  padding: 6px max(8px, env(safe-area-inset-left, 0px)) calc(6px + env(safe-area-inset-bottom, 0px)) max(8px, env(safe-area-inset-right, 0px));
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  backdrop-filter: saturate(1.4) blur(10px);
+  -webkit-backdrop-filter: saturate(1.4) blur(10px);
   border-top: 1px solid var(--border);
 }
 .bottom-nav a {
+  position: relative;
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 56px;
+  min-height: 48px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-md);
   color: var(--muted);
   font-weight: 600;
+  font-size: var(--text-sm);
+  text-align: center;
+  line-height: 1.2;
   text-decoration: none;
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.bottom-nav a.active { color: var(--accent-ink); box-shadow: inset 0 3px 0 var(--accent); }
+.bottom-nav a.active {
+  color: var(--accent-ink);
+  font-weight: 800;
+  background: var(--accent-soft);
+}
+/* Indicator bar, so the active tab isn't shown by colour alone. */
+.bottom-nav a.active::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  width: 24px;
+  height: 3px;
+  margin-left: -12px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+@media (hover: hover) {
+  .bottom-nav a:not(.active):hover { color: var(--text); background: var(--surface-2); }
+}
+@media (min-width: 720px) {
+  .bottom-nav { justify-content: center; }
+  .bottom-nav a { flex: 0 1 200px; font-size: var(--text-md); }
+}
 
-:focus-visible { outline: 3px solid var(--accent-ink); outline-offset: 2px; }
+/* ==========================================================================
+   Layout helpers
+   ========================================================================== */
+.page { max-width: 760px; margin: 0 auto; padding: var(--space-2) var(--space-4) var(--space-5); }
+@media (min-width: 1024px) {
+  .page { max-width: 880px; padding-left: var(--space-5); padding-right: var(--space-5); }
+}
 
-/* Chord view */
-:root { --chord-bg: #e9e9e9; --pill-yellow: var(--brand-yellow); --pill-yellow-text: #1c1c1e; }
-@media (prefers-color-scheme: dark) { :root { --chord-bg: #3a3a3a; } }
+.row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
+.row > h1, .row > h2 { margin-right: auto; }
+.grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.block { display: block; }
+.muted { color: var(--muted); }
+.error { color: var(--error); font-weight: 600; }
 
-.song-title { font-size: 28px; font-weight: 800; line-height: 1.15; margin: 12px 0 4px; }
-.song-by { margin: 0 0 12px; font-size: 16px; }
-.pill-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.actions { display: flex; flex-wrap: wrap; gap: var(--space-3); }
+
+/* ==========================================================================
+   Forms
+   ========================================================================== */
+.input {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.input::placeholder { color: var(--muted); opacity: 1; }
+.input:focus { border-color: var(--accent-ink); }
+.input:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-ink) 35%, transparent); border-color: var(--accent-ink); }
+
+.field { display: block; margin: var(--space-4) 0; font-weight: 600; font-size: var(--text-sm); }
+.field .input { margin-top: 6px; font-weight: 400; font-size: var(--text-md); }
+
+.sheet-input {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+/* ==========================================================================
+   Buttons, segmented control, pills
+   ========================================================================== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 18px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.btn:active:not(:disabled) { transform: scale(0.97); }
+.btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 700; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
+.btn.danger { color: var(--error); border-color: var(--error); }
+@media (hover: hover) {
+  .btn:hover:not(:disabled) { background: var(--surface-2); }
+  .btn.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+  .btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--error) 10%, var(--surface)); }
+}
+
+.seg {
+  display: flex;
+  gap: var(--space-1);
+  margin: var(--space-2) 0;
+  padding: var(--space-1);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.seg button {
+  flex: 1;
+  min-height: 44px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.seg button.active {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent);
+  font-weight: 700;
+  box-shadow: var(--shadow-sm);
+}
+@media (hover: hover) {
+  .seg button:not(.active):hover { color: var(--text); background: var(--surface); }
+}
+
 .pill {
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  min-height: 44px; padding: 0 18px; border-radius: 999px;
-  font: inherit; font-weight: 600; text-decoration: none; cursor: pointer;
-  color: var(--text); background: var(--surface); border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 18px;
+  text-align: center;
+  border-radius: var(--radius-full);
+  font: inherit;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-decoration: none;
+  cursor: pointer;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  transition: background-color var(--dur) var(--ease), transform var(--dur-fast) var(--ease);
 }
+button.pill:active:not(:disabled), a.pill:active { transform: scale(0.97); }
+button.pill:disabled { opacity: 0.5; cursor: not-allowed; }
+@media (hover: hover) {
+  button.pill:hover:not(:disabled), a.pill:hover { background: var(--surface-2); }
+}
+.pill-row { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-2); }
 .pill-split { padding: 0; gap: 0; }
 .pill-split button {
   min-height: 44px; min-width: 48px; padding: 0 12px;
-  background: none; border: 0; font: inherit; font-weight: 700; color: inherit; cursor: pointer;
+  background: none; border: 0; border-radius: var(--radius-full);
+  font: inherit; font-weight: 700; color: inherit; cursor: pointer;
 }
 .pill-split button:disabled { opacity: 0.35; cursor: default; }
-.pill-yellow { background: var(--pill-yellow); color: var(--pill-yellow-text); border-color: #c9bd00; }
-@media (prefers-color-scheme: dark) { .pill-yellow { border-color: var(--pill-yellow); } }
-.transpose-bar { margin: 4px 0 8px; }
-.transpose-row { display: flex; align-items: center; gap: 12px; }
-.transpose-key { min-width: 48px; text-align: center; font-weight: 800; font-size: 20px; }
-.transpose-note { margin: 4px 0 0; font-size: 14px; }
-.song-info { margin: 8px 0 12px; }
+.pill-yellow { background: var(--pill-yellow); color: var(--pill-yellow-text); border-color: var(--pill-yellow-border); font-weight: 700; }
+@media (hover: hover) {
+  button.pill-yellow:hover:not(:disabled), a.pill-yellow:hover { background: color-mix(in srgb, var(--pill-yellow) 85%, var(--text)); }
+}
+
+.badge {
+  display: inline-block;
+  margin-top: var(--space-1);
+  margin-right: var(--space-1);
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--accent-ink);
+  background: var(--surface);
+}
+.badge.muted { color: var(--muted); }
+
+/* ==========================================================================
+   Lists: grouped "inset" card with separators
+   ========================================================================== */
+.list {
+  list-style: none;
+  margin: var(--space-3) 0;
+  padding: 0 var(--space-1);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+.list:empty { border: 0; box-shadow: none; padding: 0; }
+.list > li + li { border-top: 1px solid var(--border); }
+
+.list-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 60px;
+  padding: 10px 10px;
+  margin: 2px 0;
+  color: inherit;
+  text-decoration: none;
+  border-radius: var(--radius-md);
+  transition: background-color var(--dur) var(--ease);
+}
+.list-row strong { font-weight: 700; }
+.list-row .muted.block { font-size: var(--text-sm); }
+a.list-row:active { background: var(--surface-2); }
+@media (hover: hover) {
+  a.list-row:hover { background: var(--surface-2); }
+}
+
+.list-row.editing { flex-wrap: wrap; }
+.list-row.editing .grow { flex-basis: 100%; }
+
+/* Tracks page row: buttons wrap under the title on phones. */
+.track-row { flex-wrap: wrap; }
+.track-rename-form { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.audio-full { width: 100%; }
+
+/* ==========================================================================
+   Setlist: set breaks and notes
+   ========================================================================== */
+li.setlist-break {
+  padding: 16px 10px 6px;
+  font-size: var(--text-sm);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+  border-bottom: 2px solid var(--accent);
+}
+.list-row.editing.setlist-break { color: inherit; border-bottom: 0; padding: 10px; text-transform: none; letter-spacing: 0; font-size: var(--text-md); }
+.setlist-note { font-size: 0.95rem; }
+.setlist-note-edit { flex-basis: 100%; }
+
+.song-page .setlist-note {
+  margin: var(--space-2) 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 4px solid var(--brand-yellow);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--surface);
+  font-weight: 600;
+}
+
+/* Add several songs at once */
+.add-songs-heading { margin: var(--space-2) 0; font-size: var(--text-md); }
+.add-songs-list {
+  list-style: none;
+  margin: var(--space-2) 0;
+  padding: var(--space-1) 0;
+  max-height: 50vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.add-songs-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 48px;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease);
+}
+.add-songs-row input { width: 22px; height: 22px; flex: none; accent-color: var(--accent-ink); }
+@media (hover: hover) {
+  .add-songs-row:hover { background: var(--surface-2); }
+}
+
+/* Drag to reorder (touch-action: none lets the handle drag while the rest of the page still scrolls) */
+.drag-handle {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 22px;
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  touch-action: none;
+  cursor: grab;
+}
+.drag-handle:active { cursor: grabbing; }
+.drag-handle:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ==========================================================================
+   Song / chord view
+   ========================================================================== */
+.song-title {
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+  margin: var(--space-4) 0 var(--space-1);
+  text-wrap: balance;
+}
+.song-by { margin: 0 0 var(--space-3); font-size: var(--text-md); }
+@media (min-width: 720px) { .song-title { font-size: 40px; } }
+
+.transpose-bar { margin: var(--space-1) 0 var(--space-2); }
+.transpose-row { display: flex; align-items: center; gap: var(--space-3); }
+.transpose-key {
+  min-width: 48px;
+  text-align: center;
+  font-weight: 800;
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+.transpose-note { margin: var(--space-1) 0 0; font-size: var(--text-sm); }
+.song-info { margin: var(--space-2) 0 var(--space-3); }
 .source-link { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent-ink); font-weight: 600; }
 @media (prefers-color-scheme: dark) { .source-link { color: var(--brand-blue); } }
-.key-note { margin: 0 0 12px; font-weight: 600; }
-.danger-zone { margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border); }
-.btn.danger { color: var(--error); border-color: var(--error); }
+.key-note { margin: 0 0 var(--space-3); font-weight: 600; }
+.danger-zone { margin-top: var(--space-6); padding-top: var(--space-4); border-top: 1px solid var(--border); }
+
+/* ChordSheet measures one monospace character to wrap tabs: keep this monospace. */
 .sheet {
   position: relative;
-  overflow-x: auto; max-width: 100%;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-  font-size: 15px; line-height: 1.5;
+  margin: 0;
+  padding: 12px;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  line-height: 1.5;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
 }
-/* Song view: run edge to edge, cancelling .page's 16px side padding */
+/* Song view: run edge to edge, cancelling .page's side padding */
 .sheet-full {
   margin: 0 -16px; max-width: none;
   padding: 12px 8px;
   border-left: 0; border-right: 0; border-radius: 0;
 }
-.song-nav { display: flex; justify-content: space-between; gap: 8px; margin: 16px 0 8px; }
-.sheet-line { white-space: pre; min-height: 1.5em; }
-.sheet-section { font-weight: 700; margin-top: 12px; }
-.chord {
-  display: inline-block; background: var(--chord-bg); border-radius: 4px;
-  font-weight: 700; padding: 0; color: var(--text);
+@media (min-width: 1024px) {
+  .sheet-full { margin: 0; padding: 16px 20px; border: 1px solid var(--border); border-radius: var(--radius-lg); }
 }
-@media (min-width: 720px) { .song-title { font-size: 40px; } }
+.sheet-line { white-space: pre; min-height: 1.5em; }
+.sheet-section { font-weight: 700; margin-top: 12px; color: var(--accent-ink); }
+.chord {
+  display: inline-block;
+  background: var(--chord-bg);
+  border-radius: 4px;
+  font-weight: 700;
+  padding: 0;
+  color: var(--text);
+}
 
-.list-row.editing { flex-wrap: wrap; }
-.list-row.editing .grow { flex-basis: 100%; }
+.song-nav { display: flex; justify-content: space-between; gap: var(--space-2); margin: var(--space-4) 0 var(--space-2); }
 
-.actions { display: flex; flex-wrap: wrap; gap: 12px; }
+/* Stage mode: nothing but the song */
+body.stage .topbar, body.stage .bottom-nav { display: none; }
+body.stage { padding-bottom: 0; }
+.stage-exit {
+  position: fixed;
+  top: calc(8px + env(safe-area-inset-top, 0px));
+  right: calc(8px + env(safe-area-inset-right, 0px));
+  z-index: 50;
+  min-height: 44px;
+  padding: 0 16px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+}
 
-/* Gig floor sheet: only the song titles, huge, black on white. Hidden on screen. */
+/* ==========================================================================
+   Misc
+   ========================================================================== */
+.link-button {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.link-button:disabled { cursor: progress; opacity: 0.6; }
+
+/* Looks like plain text: no link colour, no underline, before or after a visit. */
+.plain-link,
+.plain-link:visited {
+  color: inherit;
+  text-decoration: none;
+}
+
+progress { accent-color: var(--accent-ink); }
+
+/* Respect reduced motion: no transitions or press scaling. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+  .btn:active:not(:disabled), button.pill:active:not(:disabled), a.pill:active { transform: none; }
+}
+
+/* ==========================================================================
+   Print: gig floor sheet — only the song titles, huge, black on white.
+   ========================================================================== */
 .print-setlist { display: none; }
 
 @media print {
@@ -252,96 +645,4 @@ h2 { font-size: 1.1rem; margin: 1rem 0 0.5rem; }
     font: 900 34pt/1.15 "Arial Black", Arial, Helvetica, sans-serif;
   }
   .print-setlist li { margin: 0 0 0.35em; break-inside: avoid; page-break-inside: avoid; }
-}
-
-/* Setlist: set breaks and notes */
-li.setlist-break {
-  padding: 12px 4px 6px;
-  font-weight: 700;
-  color: var(--accent-ink);
-  border-bottom: 2px solid var(--accent);
-}
-.list-row.editing.setlist-break { color: inherit; border-bottom: 1px solid var(--border); padding: 8px 4px; }
-.setlist-note { font-size: 0.95rem; }
-.setlist-note-edit { flex-basis: 100%; }
-
-
-.song-page .setlist-note {
-  margin: 8px 0;
-  padding: 8px 12px;
-  border-left: 4px solid var(--brand-yellow);
-  background: var(--surface);
-  font-weight: 600;
-}
-
-/* Add several songs at once */
-.add-songs-heading { margin: 0.5rem 0 0.5rem; font-size: 1rem; }
-.add-songs-list { list-style: none; margin: 8px 0; padding: 0; max-height: 50vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
-.add-songs-row { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 4px 12px; cursor: pointer; }
-.add-songs-row input { width: 22px; height: 22px; flex: none; }
-
-/* Drag to reorder (touch-action: none lets the handle drag while the rest of the page still scrolls) */
-.drag-handle {
-  flex: none;
-  width: 44px;
-  height: 44px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  font-size: 22px;
-  color: var(--muted);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  touch-action: none;
-  cursor: grab;
-}
-.drag-handle:active { cursor: grabbing; }
-.drag-handle:disabled { opacity: 0.4; cursor: not-allowed; }
-
-/* Stage mode: nothing but the song */
-body.stage .topbar, body.stage .bottom-nav { display: none; }
-body.stage { padding-bottom: 0; }
-.stage-exit {
-  position: fixed;
-  top: 8px;
-  right: 8px;
-  z-index: 50;
-  min-height: 44px;
-  padding: 0 16px;
-  font: inherit;
-  font-weight: 600;
-  color: var(--text);
-  background: color-mix(in srgb, var(--surface) 80%, transparent);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  cursor: pointer;
-}
-
-.link-button {
-  background: none;
-  border: 0;
-  padding: 0;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.badge {
-  display: inline-block;
-  margin-top: 4px;
-  padding: 1px 8px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 0.75rem;
-  color: var(--accent-ink);
-}
-
-/* Looks like plain text: no link colour, no underline, before or after a visit. */
-.plain-link,
-.plain-link:visited {
-  color: inherit;
-  text-decoration: none;
 }
