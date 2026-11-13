@@ -1,8 +1,9 @@
 import { CHUNK_SIZE, MAX_AUDIO_BYTES } from "../../../src/shared/types";
 import type { Gig, GigInput, SetlistItem, Song, SongInput, SongSummary, Track } from "../../../src/shared/types";
 import { fromSongIds, setlistOf, songIdsOf } from "../../../src/shared/setlist";
+import { toSongSummary } from "../../../src/shared/song";
 import { isValidKey } from "../../../src/shared/transpose";
-import { songMatchKey, uniqueTracks, type PlaylistTrack } from "../../../src/shared/playlist";
+import { songMatchKey, songsByMatchKey, uniqueTracks, type PlaylistTrack } from "../../../src/shared/playlist";
 import type { KV } from "./kv";
 
 export class ValidationError extends Error {
@@ -181,6 +182,23 @@ function checkTracks(v: unknown): PlaylistTrack[] {
   });
 }
 
+/** A new song nobody has filled in yet. */
+function blankSong({ id, title, artist, trackId }: { id: string; title: string; artist: string; trackId?: string }): Song {
+  return {
+    id,
+    title,
+    artist,
+    sourceUrl: null,
+    // Nobody has said what key it is in yet: leave it empty rather than invent one.
+    originalKey: "",
+    bandKey: "",
+    capo: 0,
+    content: "",
+    ...(trackId !== undefined ? { trackId } : {}),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 type StoredGig = { id: string; name: string; date: string; setlist?: SetlistItem[]; songIds?: string[] };
 
 function toGig(stored: StoredGig): Gig {
@@ -241,19 +259,7 @@ export function makeRepo(kv: KV) {
         return existing;
       }
     }
-    const song: Song = {
-      id: t.songId ? crypto.randomUUID() : t.id,
-      title: t.title,
-      artist: "",
-      sourceUrl: null,
-      // Nobody has said what key the recording is in yet.
-      originalKey: "",
-      bandKey: "",
-      capo: 0,
-      content: "",
-      trackId: t.id,
-      updatedAt: new Date().toISOString(),
-    };
+    const song = blankSong({ id: t.songId ? crypto.randomUUID() : t.id, title: t.title, artist: "", trackId: t.id });
     await writeJson(`songs/${song.id}`, song);
     // Re-read so a concurrent part upload's newer fields aren't overwritten with our stale copy.
     const latest = (await getTrack(t.id)) ?? t;
@@ -282,7 +288,7 @@ export function makeRepo(kv: KV) {
     async listSongs(): Promise<SongSummary[]> {
       const songs = await readAll<Song>("songs/");
       return songs
-        .map(({ content, ...summary }) => ({ ...summary, hasChords: content.trim() !== "" }))
+        .map(toSongSummary)
         .sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
     },
     getSong,
@@ -301,11 +307,7 @@ export function makeRepo(kv: KV) {
      */
     async importSongs(input: unknown): Promise<Song[]> {
       const tracks = uniqueTracks(checkTracks(input));
-      const byKey = new Map<string, Song>();
-      for (const s of await readAll<Song>("songs/")) {
-        const k = songMatchKey(s.title, s.artist);
-        if (!byKey.has(k)) byKey.set(k, s);
-      }
+      const byKey = songsByMatchKey(await readAll<Song>("songs/"));
       const out: Song[] = [];
       for (const t of tracks) {
         const found = byKey.get(songMatchKey(t.title, t.artist));
@@ -313,17 +315,7 @@ export function makeRepo(kv: KV) {
           out.push(found);
           continue;
         }
-        const song: Song = {
-          id: crypto.randomUUID(),
-          title: t.title,
-          artist: t.artist,
-          sourceUrl: null,
-          originalKey: "",
-          bandKey: "",
-          capo: 0,
-          content: "",
-          updatedAt: new Date().toISOString(),
-        };
+        const song = blankSong({ id: crypto.randomUUID(), title: t.title, artist: t.artist });
         await writeJson(`songs/${song.id}`, song);
         out.push(song);
       }
@@ -453,11 +445,13 @@ export function makeRepo(kv: KV) {
     async deleteTrack(id: string): Promise<void> {
       const t = await getTrack(id);
       if (!t) throw new NotFoundError("track not found");
-      await removeTrackData(id);
+      // Like deleteSong: clean up what points at the track first and delete the record last,
+      // so a failure part-way leaves the track in place and deleting again finishes the job.
       if (t.songId && (await getSong(t.songId))) {
-        await kv.delete(`songs/${t.songId}`);
         await removeSongFromGigs(t.songId);
+        await kv.delete(`songs/${t.songId}`);
       }
+      await removeTrackData(id);
     },
   };
 }

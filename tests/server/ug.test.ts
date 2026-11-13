@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { ImportError, importFromUg, isUgUrl, parseUgHtml } from "../../netlify/functions/lib/ug";
+import handler from "../../netlify/functions/import";
 
 const URL_OK = "https://tabs.ultimate-guitar.com/tab/the-made-up-band/garden-path-song-chords-123";
 const fixture = readFileSync("tests/fixtures/ug-chords.html", "utf8");
@@ -122,5 +123,26 @@ describe("importFromUg", () => {
     const init = f.mock.calls[0][1] as RequestInit;
     expect((init.headers as Record<string, string>)["User-Agent"]).toMatch(/Mozilla/);
     expect(init.redirect).toBe("manual");
+  });
+});
+
+describe("POST /api/import", () => {
+  const post = (body: unknown) =>
+    new Request("http://localhost/api/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  it("explains a link that is not a UG chords page", async () => {
+    const res = await handler(post({ url: "https://example.com" }));
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ code: "not_ug", message: "That link isn't an Ultimate Guitar chords page" });
+  });
+
+  it("only takes POST", async () => {
+    const res = await handler(new Request("http://localhost/api/import"));
+    expect(res.status).toBe(405);
+    expect(await res.json()).toEqual({ code: "method", message: "Method not allowed" });
   });
 });

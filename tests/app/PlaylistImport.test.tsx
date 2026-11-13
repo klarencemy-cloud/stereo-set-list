@@ -123,4 +123,12 @@ describe("PlaylistImport", () => {
     fireEvent.change(screen.getByLabelText("Paste track list"), { target: { value: "Yellow - Coldplay" } });
     expect(last()).toEqual([{ title: "Yellow", artist: "Coldplay" }]);
   });
+  it("marks a track by the same copy of a duplicate song the server picks (smallest id)", async () => {
+    // Title-sorted list with the larger id last: a "last one wins" lookup would pick dup-b.
+    const dupes = [summary("dup-a", "Wonderwall", "Oasis"), summary("dup-b", "Wonderwall", "Oasis")];
+    render(<PlaylistImport songs={dupes} inSetlist={new Set(["dup-a"])} onTicked={(t) => ticked.push(t)} />);
+    await load([{ title: "Wonderwall", artist: "Oasis" }]);
+    expect(within(rowOf("Wonderwall — Oasis")).getByText("in setlist")).toBeInTheDocument();
+    expect(last()).toEqual([]);
+  });
 });

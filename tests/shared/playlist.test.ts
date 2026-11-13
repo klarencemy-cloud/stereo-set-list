@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseTrackList, songMatchKey, uniqueTracks } from "../../src/shared/playlist";
+import { parseTrackList, songMatchKey, songsByMatchKey, uniqueTracks } from "../../src/shared/playlist";
 
 describe("songMatchKey", () => {
   it("matches ignoring case and extra spaces", () => {
@@ -7,6 +7,19 @@ describe("songMatchKey", () => {
   });
   it("does not confuse title and artist", () => {
     expect(songMatchKey("A", "B")).not.toBe(songMatchKey("A B", ""));
+  });
+});
+
+describe("songsByMatchKey", () => {
+  it("picks the same song for duplicates whatever the input order", () => {
+    const a = { id: "a", title: "Wonderwall", artist: "Oasis" };
+    const b = { id: "b", title: "wonderwall ", artist: "OASIS" };
+    const c = { id: "c", title: "Creep", artist: "Radiohead" };
+    const k = songMatchKey("Wonderwall", "Oasis");
+    expect(songsByMatchKey([a, b, c]).get(k)).toBe(a);
+    expect(songsByMatchKey([c, b, a]).get(k)).toBe(a);
+    expect(songsByMatchKey([b, a]).get(k)).toBe(a);
+    expect(songsByMatchKey([a, b, c]).get(songMatchKey("creep", "radiohead"))).toBe(c);
   });
 });
 

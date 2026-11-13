@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { memoryKV } from "../../netlify/functions/lib/kv";
 import { LIMITS, makeRepo, NotFoundError, ValidationError } from "../../netlify/functions/lib/repo";
 import type { SongInput } from "../../src/shared/types";
+import { songMatchKey, songsByMatchKey } from "../../src/shared/playlist";
 
 const song = (over: Partial<SongInput> = {}): SongInput => ({
   title: "Wonderwall",
@@ -577,6 +578,30 @@ describe("original songs", () => {
     expect(await kv.list(`audio/${t.id}/`)).toEqual([]);
   });
 
+  it("deleteTrack keeps the track if cleanup fails, so deleting again finishes", async () => {
+    const kv = memoryKV();
+    let failSong = true;
+    const flaky = {
+      ...kv,
+      delete: async (k: string) => {
+        if (failSong && k.startsWith("songs/")) throw new Error("timeout");
+        return kv.delete(k);
+      },
+    };
+    const repo = makeRepo(flaky);
+    const t = await upload(repo);
+    const gig = await repo.createGig({ name: "G", date: "2026-01-01", setlist: [{ type: "song", songId: t.songId! }] });
+    await expect(repo.deleteTrack(t.id)).rejects.toThrow("timeout");
+    expect(await repo.getTrack(t.id)).not.toBeNull();
+    failSong = false;
+    await repo.deleteTrack(t.id);
+    expect(await repo.getTrack(t.id)).toBeNull();
+    expect(await repo.getSong(t.songId!)).toBeNull();
+    expect(await kv.list(`audio/${t.id}/`)).toEqual([]);
+    const stored = JSON.parse((await kv.getText(`gigs/${gig.id}`))!);
+    expect(stored.setlist).toEqual([]);
+  });
+
   it("deleting an original song deletes its track and audio", async () => {
     const kv = memoryKV();
     const repo = makeRepo(kv);
@@ -621,6 +646,19 @@ describe("importSongs", () => {
     const second = await repo.importSongs(tracks);
     expect(second.map((s) => s.id)).toEqual(first.map((s) => s.id));
     expect(await repo.listSongs()).toHaveLength(2);
+  });
+
+  it("picks the same copy of a duplicate song as songsByMatchKey, whatever the storage order", async () => {
+    const kv = memoryKV();
+    const repo = makeRepo(kv);
+    const base = { ...song(), id: "", updatedAt: "x" };
+    // Stored so the larger id comes first in storage order.
+    await kv.setText("songs/b", JSON.stringify({ ...base, id: "b" }));
+    await kv.setText("songs/a", JSON.stringify({ ...base, id: "a" }));
+    const listed = await repo.listSongs();
+    const [picked] = await repo.importSongs([{ title: "Wonderwall", artist: "Oasis" }]);
+    expect(picked.id).toBe("a");
+    expect(picked.id).toBe(songsByMatchKey(listed).get(songMatchKey("Wonderwall", "Oasis"))!.id);
   });
 
   it("trims titles and artists", async () => {

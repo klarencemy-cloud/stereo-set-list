@@ -23,6 +23,7 @@ What's new on Stereo Set, newest first.
 - **Original songs have a page.** In Original Songs, tap a title to open it. Play the recording, edit the song, and add lyrics and chords like any other song. Songs uploaded earlier get their page the first time you open them.
 - **Original songs show up in Songs.** They are in the list (marked "Original"), can be searched, and can go in a setlist.
 - **The title fills in from the file.** Pick an mp3 and the title becomes the file name, as long as the title is empty. A title you typed first is kept.
+- **Guitar tabs fit the phone screen.** A tab too wide for the screen is wrapped the way Ultimate Guitar does it: the first piece of all six strings, then the next piece, so the strings stay lined up under their chords instead of each one wrapping on its own.
 
 ### Changed
 

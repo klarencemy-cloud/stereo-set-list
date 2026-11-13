@@ -15,14 +15,29 @@ export interface PlaylistResult {
 /** Most tracks Spotify's public playlist page shows. */
 export const SPOTIFY_PAGE_TRACKS = 100;
 
-const norm = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
+const normaliseForMatch = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
 
 /**
  * Two songs are "the same" when their titles and artists match ignoring case and extra spaces.
- * Used by both the server (reuse-or-create) and the client (the "in Songs" marker), so they agree.
+ * Look songs up by this key through `songsByMatchKey`, so the server and client pick the same song.
  */
 export function songMatchKey(title: string, artist: string): string {
-  return `${norm(title)}\u0000${norm(artist)}`;
+  return `${normaliseForMatch(title)}\u0000${normaliseForMatch(artist)}`;
+}
+
+/**
+ * Songs by match key. When several songs share a key, the one with the smallest id wins, whatever
+ * order they come in. Used by both the server (reuse-or-create) and the client (the "in Songs"
+ * marker), so the two always agree on which song a track matches.
+ */
+export function songsByMatchKey<T extends { id: string; title: string; artist: string }>(songs: T[]): Map<string, T> {
+  const byKey = new Map<string, T>();
+  for (const s of songs) {
+    const k = songMatchKey(s.title, s.artist);
+    const cur = byKey.get(k);
+    if (!cur || s.id < cur.id) byKey.set(k, s);
+  }
+  return byKey;
 }
 
 /** Keeps the first of any tracks that match each other. */

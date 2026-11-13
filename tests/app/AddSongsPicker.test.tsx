@@ -89,4 +89,15 @@ describe("AddSongsPicker", () => {
     render(<AddSongsPicker songs={[]} busy={false} onAdd={async () => true} />);
     expect(screen.getByText("Every song is already in the setlist.")).toBeInTheDocument();
   });
+  it("marks songs with no chords yet, but not older copies that don't say", () => {
+    render(
+      <AddSongsPicker
+        songs={[{ ...mk("a", "Empty"), hasChords: false }, { ...mk("b", "Full"), hasChords: true }, mk("c", "Old")]}
+        busy={false}
+        onAdd={vi.fn(async () => true)}
+      />,
+    );
+    expect(screen.getAllByText("No chords yet")).toHaveLength(1);
+    expect(screen.getByText("No chords yet").closest("label")).toHaveTextContent("Empty — A");
+  });
 });

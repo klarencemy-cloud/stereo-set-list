@@ -9,9 +9,8 @@ import SetlistEditor from "../components/SetlistEditor";
 import PlaylistImport from "../components/PlaylistImport";
 import { setlistOf, songIdsOf } from "../../shared/setlist";
 import type { PlaylistTrack } from "../../shared/playlist";
+import { toSongSummary } from "../../shared/song";
 import type { Gig, SetlistItem, Song, SongSummary } from "../../shared/types";
-
-const summaryOf = ({ content, ...rest }: Song): SongSummary => ({ ...rest, hasChords: content.trim() !== "" });
 
 export default function GigPage() {
   const { id = "" } = useParams();
@@ -93,7 +92,7 @@ export default function GigPage() {
       }
       setSongs((prev) => {
         const known = new Set(prev.map((s) => s.id));
-        return [...prev, ...added.filter((s) => !known.has(s.id)).map(summaryOf)];
+        return [...prev, ...added.filter((s) => !known.has(s.id)).map(toSongSummary)];
       });
       const fresh = added.filter((s) => !ids.includes(s.id));
       const next: SetlistItem[] = [...items, ...fresh.map((s) => ({ type: "song" as const, songId: s.id }))];

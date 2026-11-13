@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { parseTrackList, songMatchKey, uniqueTracks, type PlaylistTrack } from "../../shared/playlist";
+import { SPOTIFY_PAGE_TRACKS, parseTrackList, songMatchKey, songsByMatchKey, uniqueTracks, type PlaylistTrack } from "../../shared/playlist";
 import type { SongSummary } from "../../shared/types";
 
 interface Props {
@@ -34,9 +34,9 @@ export default function PlaylistImport({ songs, inSetlist, onTicked, disabled = 
     [pasting, pasted, loaded],
   );
   const statusOf = useMemo(() => {
-    const byKey = new Map(songs.map((s) => [songMatchKey(s.title, s.artist), s.id]));
+    const byKey = songsByMatchKey(songs);
     return (t: PlaylistTrack): Status => {
-      const id = byKey.get(songMatchKey(t.title, t.artist));
+      const id = byKey.get(songMatchKey(t.title, t.artist))?.id;
       if (id === undefined) return "new";
       return inSetlist?.has(id) ? "in setlist" : "in Songs";
     };
@@ -118,7 +118,7 @@ export default function PlaylistImport({ songs, inSetlist, onTicked, disabled = 
         </label>
       )}
       {!pasting && loaded && <h3>{loaded.name}</h3>}
-      {!pasting && loaded?.truncated && <p className="muted">Spotify only shows the first 100 tracks.</p>}
+      {!pasting && loaded?.truncated && <p className="muted">Spotify only shows the first {SPOTIFY_PAGE_TRACKS} tracks.</p>}
       {tracks.length > 0 && (
         <ul className="add-songs-list">
           {tracks.map((t) => {

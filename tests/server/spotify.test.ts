@@ -129,6 +129,8 @@ describe("POST /api/playlist", () => {
   });
 
   it("only takes POST", async () => {
-    expect((await handler(new Request("http://localhost/api/playlist"))).status).toBe(405);
+    const res = await handler(new Request("http://localhost/api/playlist"));
+    expect(res.status).toBe(405);
+    expect(await res.json()).toEqual({ code: "method", message: "Method not allowed" });
   });
 });
