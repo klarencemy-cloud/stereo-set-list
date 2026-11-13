@@ -117,8 +117,8 @@ export default function SongFormPage() {
   const dirty =
     baseline !== null && snapshotOf({ title, artist, link, originalKey, bandKey, capo, pasted }) !== baseline;
   const { allowNavigation } = useUnsavedChanges(dirty);
-  // An original song may have no key yet: nobody has worked out what key the recording is in.
-  const canSave = title.trim() !== "" && (originalKey !== "" || isOriginal) && !saving;
+  // A song may have no key yet (an original nobody has worked out, or a song imported from a playlist).
+  const canSave = title.trim() !== "" && !saving;
 
   async function save() {
     setSaving(true);

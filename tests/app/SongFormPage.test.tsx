@@ -90,7 +90,7 @@ describe("SongFormPage", () => {
     expect(mocked.createSong.mock.calls[0][0].sourceUrl).toBe(link);
   });
 
-  it("saves pasted text as markup, defaults band key, and disables Save until title and key are set", async () => {
+  it("saves pasted text as markup, defaults band key, and disables Save until there is a title", async () => {
     mocked.createSong.mockResolvedValue({ id: "s2" });
     renderForm();
     fireEvent.click(screen.getByRole("button", { name: "Paste chords" }));
@@ -98,9 +98,9 @@ describe("SongFormPage", () => {
     expect(save).toBeDisabled();
     const text = "G       C\nHello there";
     fireEvent.change(screen.getByLabelText("Chords"), { target: { value: text } });
-    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Hello" } });
-    expect(save).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Original key"), { target: { value: "G" } });
+    expect(save).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Hello" } });
     expect(save).toBeEnabled();
     fireEvent.click(save);
     await waitFor(() => expect(mocked.createSong).toHaveBeenCalledTimes(1));
@@ -162,11 +162,15 @@ describe("SongFormPage", () => {
     expect(mocked.updateSong.mock.calls[0][1]).toMatchObject({ originalKey: "", bandKey: "" });
   });
 
-  it("still needs a key to save a song that is not an original", async () => {
+  it("saves a song that is not an original with no key yet", async () => {
     mocked.getSong.mockResolvedValue({ ...stored, originalKey: "", bandKey: "" });
+    mocked.updateSong.mockResolvedValue({ ...stored, id: "s1" });
     renderEdit();
     await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("Stored"));
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Renamed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(1));
+    expect(mocked.updateSong.mock.calls[0][1]).toMatchObject({ title: "Renamed", originalKey: "", bandKey: "" });
   });
 
   it("asks for a fresh copy of the song to edit", async () => {

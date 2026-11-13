@@ -55,12 +55,19 @@ describe("songs", () => {
     expect(u.bandKey).toBe("Am");
   });
 
+  it("saves a song with no key yet, and then it has no band key either", async () => {
+    const repo = makeRepo(memoryKV());
+    const s = await repo.createSong(song({ originalKey: "", bandKey: "Em" }));
+    expect(s).toMatchObject({ originalKey: "", bandKey: "" });
+    const u = await repo.updateSong(s.id, { title: "Renamed" });
+    expect(u).toMatchObject({ title: "Renamed", originalKey: "", bandKey: "" });
+  });
+
   it("rejects bad keys, types and sizes", async () => {
     const repo = makeRepo(memoryKV());
     const bad: Partial<Record<keyof SongInput, unknown>>[] = [
       { originalKey: "H" },
       { bandKey: "Emaj" },
-      { originalKey: "" },
       { capo: 13 },
       { capo: 1.5 },
       { capo: "2" },
@@ -447,11 +454,10 @@ describe("original songs", () => {
     expect(s).toMatchObject({ originalKey: "", bandKey: "" });
   });
 
-  it("still requires a key for a song that is not an original", async () => {
+  it("lets a song that is not an original drop its key too", async () => {
     const repo = makeRepo(memoryKV());
-    await expect(repo.createSong(song({ originalKey: "", bandKey: "" }))).rejects.toThrow(ValidationError);
     const s = await repo.createSong(song());
-    await expect(repo.updateSong(s.id, { originalKey: "", bandKey: "" })).rejects.toThrow(ValidationError);
+    expect(await repo.updateSong(s.id, { originalKey: "" })).toMatchObject({ originalKey: "", bandKey: "" });
   });
 
   it("does not create a song while the upload is unfinished", async () => {

@@ -79,15 +79,12 @@ function cleanSong(input: unknown, partial: boolean): Partial<SongInput> {
 }
 
 /**
- * Makes the two keys agree. Only an original song (one with a track) may have no key, since nobody
- * has worked it out yet; then the band key is empty too. A song that gets a key but no band key
- * starts in its original key.
+ * Makes the two keys agree. A song may have no key yet (an original nobody has worked out, or a
+ * song imported from a playlist before its chords); then the band key is empty too. A song that
+ * gets a key but no band key starts in its original key.
  */
-function withKeys<T extends Pick<Song, "originalKey" | "bandKey" | "trackId">>(song: T): T {
-  if (song.originalKey === "") {
-    if (!song.trackId) throw new ValidationError("originalKey must be a key like C, F#m or Bb");
-    return { ...song, bandKey: "" };
-  }
+function withKeys<T extends Pick<Song, "originalKey" | "bandKey">>(song: T): T {
+  if (song.originalKey === "") return { ...song, bandKey: "" };
   return song.bandKey === "" ? { ...song, bandKey: song.originalKey } : song;
 }
 
