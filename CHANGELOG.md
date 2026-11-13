@@ -2,6 +2,16 @@
 
 What's new on Stereo Set, newest first.
 
+## Unreleased: Lyrics and band tools
+
+### Added
+
+- **Lyrics mode.** On a song, tap "Chords: on" to switch the chords off and see only the lyrics. The gaps the chord lines leave close up, and section labels such as [Verse 1], [Chorus] and [Instrumental] stay. Your phone remembers the choice for every song. Tap again to bring the chords back, in the current key.
+- **Print lyrics.** A song's page and a gig's page each have a "Print lyrics" button. Choose "Lyrics + chords" or "Lyrics only", then print. A gig prints every song in setlist order, each on a new page; set breaks and notes are left off. Chords print in the band key.
+- **Tools page.** A new Tools tab in the bottom bar.
+- **Tuner.** On Tools, pick Guitar (E A D G B E) or Bass (E A D G), tap Start tuner and play a string. It shows the note, how many cents sharp or flat, and which string is nearest. Green means in tune (within 5 cents). Uses the microphone; the screen stays on while it listens.
+- **Metronome.** On Tools: 30-300 BPM with - / + and a slider, tap tempo, 2 to 7 beats per bar with an accented first beat, and a big flashing beat you can see on stage. Your phone remembers the tempo and beats per bar.
+
 ## Unreleased: Safer edits
 
 ### Fixed

@@ -13,6 +13,7 @@ vi.mock("../../src/app/api", async () => {
       updateGig: vi.fn(),
       deleteGig: vi.fn(),
       listSongs: vi.fn(),
+      getSong: vi.fn(),
       importSongs: vi.fn(),
       readPlaylist: vi.fn(),
     },
@@ -240,6 +241,90 @@ describe("GigPage print setlist", () => {
     await screen.findByText("No songs in the setlist yet.");
     expect(screen.queryByRole("button", { name: "Print setlist" })).not.toBeInTheDocument();
     expect(container.querySelector(".print-setlist")).toBeNull();
+  });
+});
+
+describe("GigPage print lyrics", () => {
+  const full: Record<string, ReturnType<typeof mk>> = {
+    s1: { ...mk("s1", "Alpha", "A"), content: "[Verse]\n[ch]A[/ch]\nalpha words" },
+    s2: { ...mk("s2", "Beta", "C"), content: "" },
+    s3: { ...mk("s3", "Gamma", "E"), content: "gamma words" },
+  };
+
+  beforeEach(() => {
+    mocked.getSong.mockImplementation(async (id: string) => ({ ...full[id] }));
+  });
+
+  const printedTitles = () =>
+    Array.from(document.querySelectorAll(".print-lyrics .print-song-title")).map((h) => h.textContent);
+
+  it("prints every song in setlist order, skipping breaks and notes, with no setlist sheet alongside", async () => {
+    const print = vi.spyOn(window, "print").mockImplementation(() => {});
+    mocked.getGig.mockResolvedValue({
+      ...gig,
+      setlist: [
+        { type: "song", songId: "s3" },
+        { type: "break", id: "b1", label: "Set 2" },
+        { type: "song", songId: "s1", note: "slow" },
+        { type: "song", songId: "s2" },
+      ],
+    });
+    renderGig();
+    await screen.findByText("1. Gamma — Key: E");
+    fireEvent.click(screen.getByRole("button", { name: "Print lyrics" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lyrics only" }));
+    await waitFor(() => expect(print).toHaveBeenCalledTimes(1));
+    expect(printedTitles()).toEqual(["Gamma", "Alpha", "Beta"]);
+    const block = document.querySelector(".print-lyrics")!;
+    expect(block).not.toHaveTextContent("Set 2");
+    expect(block).not.toHaveTextContent("slow");
+    expect(block.querySelectorAll(".chord")).toHaveLength(0);
+    expect(block).toHaveTextContent("No lyrics yet");
+    // Only one print block at a time.
+    expect(document.querySelector(".print-setlist")).toBeNull();
+    print.mockRestore();
+  });
+
+  it("brings back the setlist sheet for Print setlist after printing lyrics", async () => {
+    const print = vi.spyOn(window, "print").mockImplementation(() => {});
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Print lyrics" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lyrics + chords" }));
+    await waitFor(() => expect(document.querySelector(".print-lyrics")).not.toBeNull());
+    expect(document.querySelectorAll(".print-lyrics .chord")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Print setlist" }));
+    expect(document.querySelector(".print-lyrics")).toBeNull();
+    expect(document.querySelector(".print-setlist")).not.toBeNull();
+    expect(print).toHaveBeenCalledTimes(2);
+    print.mockRestore();
+  });
+
+  it("shows an error and keeps the choice open when a song can't load", async () => {
+    const print = vi.spyOn(window, "print").mockImplementation(() => {});
+    mocked.getSong.mockRejectedValue(new ApiError(500, "down"));
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Print lyrics" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lyrics only" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load the lyrics to print");
+    expect(print).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Lyrics only" })).toBeInTheDocument();
+    print.mockRestore();
+  });
+
+  it("is hidden while editing the setlist", async () => {
+    renderGig();
+    await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Edit setlist" }));
+    expect(screen.queryByRole("button", { name: "Print lyrics" })).not.toBeInTheDocument();
+  });
+
+  it("is hidden when the setlist is empty", async () => {
+    mocked.getGig.mockResolvedValue({ ...gig, setlist: [] });
+    renderGig();
+    await screen.findByText("No songs in the setlist yet.");
+    expect(screen.queryByRole("button", { name: "Print lyrics" })).not.toBeInTheDocument();
   });
 });
 

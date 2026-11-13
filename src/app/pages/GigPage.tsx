@@ -7,6 +7,8 @@ import { formatGigDate } from "../formatDate";
 import SetlistEditor from "../components/SetlistEditor";
 import PlaylistImport from "../components/PlaylistImport";
 import ConflictNotice from "../components/ConflictNotice";
+import PrintLyrics, { PrintLyricsChoice, usePrintLyrics } from "../components/PrintLyrics";
+import { loadSong } from "../songCache";
 import { setlistOf, songIdsOf } from "../../shared/setlist";
 import type { PlaylistTrack } from "../../shared/playlist";
 import { toSongSummary } from "../../shared/song";
@@ -30,6 +32,8 @@ export default function GigPage() {
   const [ticked, setTicked] = useState<PlaylistTrack[]>([]);
   // A bandmate saved this gig first: the gig as stored now, shown on Reload.
   const [conflict, setConflict] = useState<Gig | null>(null);
+  const printer = usePrintLyrics();
+  const [choosingLyrics, setChoosingLyrics] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -249,12 +253,39 @@ export default function GigPage() {
             </button>
           )}
           {ids.length > 0 && (
-            <button type="button" className="btn" onClick={() => window.print()}>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                // Drop any lyrics left from an earlier print, so only the setlist goes on paper.
+                printer.clear();
+                window.print();
+              }}
+            >
               Print setlist
+            </button>
+          )}
+          {ids.length > 0 && (
+            <button type="button" className="btn" aria-expanded={choosingLyrics} onClick={() => setChoosingLyrics((v) => !v)}>
+              Print lyrics
             </button>
           )}
         </p>
       )}
+      {!editing && ids.length > 0 && choosingLyrics && (
+        <PrintLyricsChoice
+          busy={printer.busy}
+          onCancel={() => setChoosingLyrics(false)}
+          onPick={async (withChords) => {
+            // Songs only, in setlist order: breaks and notes don't print.
+            const order = [...ids];
+            if (await printer.print(() => Promise.all(order.map((sid) => loadSong(sid))), withChords)) {
+              setChoosingLyrics(false);
+            }
+          }}
+        />
+      )}
+      {printer.error && <p role="alert" className="error">{printer.error}</p>}
       {offline &&
         (offline.ok ? (
           <p role="status" className="muted">{offline.text}</p>
@@ -303,7 +334,8 @@ export default function GigPage() {
       <p>
         <button type="button" className="btn" onClick={removeGig}>Delete gig</button>
       </p>
-      {ids.length > 0 && (
+      {printer.songs && <PrintLyrics songs={printer.songs} />}
+      {ids.length > 0 && !printer.songs && (
         // Floor sheet: invisible on screen, the only thing on paper (see @media print in styles.css).
         <ol className="print-setlist" aria-hidden="true">
           {ids.map((sid) => (

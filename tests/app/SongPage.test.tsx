@@ -467,3 +467,112 @@ describe("SongPage original songs", () => {
     expect(screen.queryByText("by")).not.toBeInTheDocument();
   });
 });
+
+describe("SongPage lyrics mode", () => {
+  const sheetText = () =>
+    Array.from(document.querySelectorAll("[data-testid=sheet] .sheet-line")).map((l) => l.textContent);
+
+  it("hides the chords and closes the gaps they leave, keeping section labels", async () => {
+    mocked.getSong.mockResolvedValue({
+      ...song,
+      content: "[Verse 1]\n[ch]G[/ch]   [ch]C[/ch]\nla la\n[ch]D[/ch]\nlo lo\n\n[Instrumental]\n[ch]G[/ch] [ch]C[/ch]",
+    });
+    renderPage();
+    await screen.findByText("[Verse 1]");
+    fireEvent.click(screen.getByRole("button", { name: "Chords: on" }));
+    expect(document.querySelectorAll(".chord")).toHaveLength(0);
+    expect(sheetText()).toEqual(["[Verse 1]", "la la", "lo lo", "", "[Instrumental]"]);
+    expect(screen.getByRole("button", { name: "Chords: off" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("brings the chords back in the current band key", async () => {
+    mocked.updateSong.mockResolvedValue({ ...song, bandKey: "Bb" });
+    renderPage();
+    await screen.findByText("[Intro]");
+    fireEvent.click(screen.getByRole("button", { name: "Chords: on" }));
+    fireEvent.click(screen.getByRole("button", { name: "Transpose" }));
+    fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
+    await waitFor(() => expect(mocked.updateSong).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Chords: off" }));
+    await waitFor(() =>
+      expect(Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent)).toEqual(["Bb", "Eb"]),
+    );
+  });
+
+  it("remembers the choice on this device for every song", async () => {
+    const first = renderPage();
+    await screen.findByText("[Intro]");
+    fireEvent.click(screen.getByRole("button", { name: "Chords: on" }));
+    first.unmount();
+    clearSongCache();
+    mocked.getSong.mockResolvedValue({ ...song, id: "s2" });
+    renderPage("/songs/s2");
+    expect(await screen.findByRole("button", { name: "Chords: off" })).toBeInTheDocument();
+    expect(document.querySelectorAll(".chord")).toHaveLength(0);
+  });
+
+  it("still shows the empty-song hint with chords off", async () => {
+    localStorage.setItem("stereo-set:show-chords", "off");
+    mocked.getSong.mockResolvedValue({ ...song, content: "" });
+    renderPage();
+    expect(await screen.findByText("No lyrics or chords yet — tap Edit to add them.")).toBeInTheDocument();
+  });
+});
+
+describe("SongPage print lyrics", () => {
+  const printed = () => document.querySelector(".print-lyrics");
+
+  it("asks which version, then prints that one song in the band key", async () => {
+    const print = vi.spyOn(window, "print").mockImplementation(() => {});
+    renderPage();
+    await screen.findByText("[Intro]");
+    expect(printed()).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Print lyrics" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lyrics + chords" }));
+    await waitFor(() => expect(print).toHaveBeenCalledTimes(1));
+    const block = printed()!;
+    expect(block.querySelector(".print-song-title")).toHaveTextContent("Test Song");
+    expect(block.querySelector(".print-song-meta")).toHaveTextContent("The Band · Key: A");
+    expect(Array.from(block.querySelectorAll(".chord")).map((c) => c.textContent)).toEqual(["A", "D"]);
+    // The choice closes once printing started.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Lyrics only" })).not.toBeInTheDocument());
+    print.mockRestore();
+  });
+
+  it("prints lyrics only without chords", async () => {
+    const print = vi.spyOn(window, "print").mockImplementation(() => {});
+    renderPage();
+    await screen.findByText("[Intro]");
+    fireEvent.click(screen.getByRole("button", { name: "Print lyrics" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lyrics only" }));
+    await waitFor(() => expect(print).toHaveBeenCalled());
+    expect(printed()!.querySelectorAll(".chord")).toHaveLength(0);
+    expect(printed()).toHaveTextContent("[Intro]");
+    expect(printed()).toHaveTextContent("la la");
+    print.mockRestore();
+  });
+
+  it("removes the print block once printing is done", async () => {
+    const print = vi.spyOn(window, "print").mockImplementation(() => {});
+    renderPage();
+    await screen.findByText("[Intro]");
+    fireEvent.click(screen.getByRole("button", { name: "Print lyrics" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lyrics only" }));
+    await waitFor(() => expect(printed()).not.toBeNull());
+    fireEvent(window, new Event("afterprint"));
+    await waitFor(() => expect(printed()).toBeNull());
+    print.mockRestore();
+  });
+
+  it("prints the title and a no-lyrics note for an empty song", async () => {
+    const print = vi.spyOn(window, "print").mockImplementation(() => {});
+    mocked.getSong.mockResolvedValue({ ...song, content: "" });
+    renderPage();
+    await screen.findByText("Test Song");
+    fireEvent.click(screen.getByRole("button", { name: "Print lyrics" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lyrics + chords" }));
+    await waitFor(() => expect(print).toHaveBeenCalled());
+    expect(printed()).toHaveTextContent("No lyrics yet");
+    print.mockRestore();
+  });
+});

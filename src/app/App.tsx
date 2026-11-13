@@ -8,6 +8,7 @@ import SongPage from "./pages/SongPage";
 import GigsPage from "./pages/GigsPage";
 import GigPage from "./pages/GigPage";
 import TracksPage from "./pages/TracksPage";
+import ToolsPage from "./pages/ToolsPage";
 import "./styles.css";
 
 function Placeholder({ title }: { title: string }) {
@@ -36,6 +37,7 @@ export function AppRoutes() {
           <Route path="/songs/:id/edit" element={<SongFormPage />} />
           <Route path="/songs/:id" element={<SongPage />} />
           <Route path="/tracks" element={<TracksPage />} />
+          <Route path="/tools" element={<ToolsPage />} />
           <Route path="*" element={<Placeholder title="Not found" />} />
         </Routes>
       </ErrorBoundary>
@@ -43,6 +45,7 @@ export function AppRoutes() {
         <NavLink to="/" end>Gigs</NavLink>
         <NavLink to="/songs">Songs</NavLink>
         <NavLink to="/tracks">Original Songs</NavLink>
+        <NavLink to="/tools">Tools</NavLink>
       </nav>
     </>
   );

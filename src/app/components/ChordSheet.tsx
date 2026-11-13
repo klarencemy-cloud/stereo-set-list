@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { MutableRefObject, Ref } from "react";
-import { parseSheet } from "../../shared/sheet";
+import { lyricsOnly, parseSheet } from "../../shared/sheet";
 import { layoutTabs } from "./tabLayout";
 
 export default function ChordSheet({
@@ -9,8 +9,11 @@ export default function ChordSheet({
   fontSize,
   sheetRef,
   full = true,
+  chords = true,
 }: {
   content: string;
+  /** False shows lyrics only: chord lines dropped and the gaps closed up, section labels kept. */
+  chords?: boolean;
   /** Run edge to edge (song view). False keeps it inside the page padding, e.g. the form preview. */
   full?: boolean;
   onTap?: () => void;
@@ -45,11 +48,12 @@ export default function ChordSheet({
     if (typeof sheetRef === "function") sheetRef(node);
     else if (sheetRef) (sheetRef as MutableRefObject<HTMLDivElement | null>).current = node;
   };
-  const lines = layoutTabs(parseSheet(content), cols);
+  const parsed = parseSheet(content);
+  const lines = chords ? layoutTabs(parsed, cols) : lyricsOnly(parsed);
   return (
     <div
       ref={setRefs}
-      className={full ? "sheet sheet-full" : "sheet"}
+      className={`${full ? "sheet sheet-full" : "sheet"}${chords ? "" : " sheet-lyrics"}`}
       onClick={onTap}
       data-testid="sheet"
       style={fontSize ? { fontSize } : undefined}

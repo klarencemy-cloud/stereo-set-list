@@ -15,6 +15,8 @@ import { useSongSpeed } from "../components/useSongSpeed";
 import { useStageMode } from "../components/useStageMode";
 import { useFontSize } from "../components/useFontSize";
 import { useSwipe } from "../components/useSwipe";
+import { useShowChords } from "../components/useShowChords";
+import PrintLyrics, { PrintLyricsChoice, usePrintLyrics } from "../components/PrintLyrics";
 
 const KEY_UNKNOWN = "Key unknown \u2014 fix it in Edit";
 
@@ -30,6 +32,9 @@ export default function SongPage() {
   const speed = useSongSpeed(id);
   const stage = useStageMode();
   const [showTranspose, setShowTranspose] = useState(false);
+  const chords = useShowChords();
+  const printer = usePrintLyrics();
+  const [choosingPrint, setChoosingPrint] = useState(false);
   const [saving, setSaving] = useState(false);
   // A bandmate changed the song since this copy loaded: what is stored now, shown on Reload.
   const [conflict, setConflict] = useState<Song | null>(null);
@@ -43,6 +48,7 @@ export default function SongPage() {
     setConflict(null);
     setRunning(false);
     setShowTranspose(false);
+    setChoosingPrint(false);
     window.scrollTo?.(0, 0);
     loadSong(id).then(
       (s) => alive && setSong(s),
@@ -175,11 +181,28 @@ export default function SongPage() {
         <button type="button" className="pill" aria-expanded={showTranspose} onClick={() => setShowTranspose((v) => !v)}>
           Transpose
         </button>
+        <button type="button" className="pill" aria-pressed={!chords.on} onClick={chords.toggle}>
+          {chords.on ? "Chords: on" : "Chords: off"}
+        </button>
         <button type="button" className="pill" aria-pressed={stage.on} onClick={stage.toggle}>
           Stage
         </button>
+        <button type="button" className="pill" aria-expanded={choosingPrint} onClick={() => setChoosingPrint((v) => !v)}>
+          Print lyrics
+        </button>
         <Link className="pill" to={`/songs/${song.id}/edit`}>Edit</Link>
       </div>
+      {choosingPrint && (
+        <PrintLyricsChoice
+          busy={printer.busy}
+          onCancel={() => setChoosingPrint(false)}
+          onPick={async (withChords) => {
+            const current = song;
+            if (await printer.print(async () => [current], withChords)) setChoosingPrint(false);
+          }}
+        />
+      )}
+      {printer.error && <p role="alert" className="error">{printer.error}</p>}
       {showTranspose && <TransposeControl bandKey={song.bandKey || "?"} onChange={transpose} busy={saving} />}
       {error && conflict?.id === song.id ? (
         <ConflictNotice
@@ -213,7 +236,13 @@ export default function SongPage() {
       {song.content.trim() === "" ? (
         <p className="muted">No lyrics or chords yet {"—"} tap Edit to add them.</p>
       ) : (
-        <ChordSheet content={content} sheetRef={sheetRef} fontSize={font.size} onTap={() => setRunning(false)} />
+        <ChordSheet
+          content={content}
+          chords={chords.on}
+          sheetRef={sheetRef}
+          fontSize={font.size}
+          onTap={() => setRunning(false)}
+        />
       )}
       {(neighbours.prev || neighbours.next) && (
         <nav className="song-nav" aria-label="Setlist">
@@ -229,6 +258,7 @@ export default function SongPage() {
           ) : <span />}
         </nav>
       )}
+      {printer.songs && <PrintLyrics songs={printer.songs} />}
     </main>
   );
 }

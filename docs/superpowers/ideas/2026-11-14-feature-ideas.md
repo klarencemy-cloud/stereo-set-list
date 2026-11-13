@@ -14,14 +14,16 @@ Five feature ideas for the band site, collected in one place. Each idea has four
 
 ## Suggested build order
 
-| # | Feature | Why this order |
-|---|---------|----------------|
-| 1 | Lyrics Mode | Adds the shared "lyrics only" helper that Printable Lyrics also needs. |
-| 2 | Printable Lyrics | Reuses that helper and the existing print-setlist CSS pattern. |
-| 3 | Metronome v1 (one phone) | Adds the Tools page and the first Web Audio code. |
-| 4 | Guitar Tuner | Lives on the same Tools page and reuses its audio setup. |
-| 5 | Playable Audio | Needs research first, and adds new Song fields. |
-| 6 | Synced Metronome v2 | Builds on v1 and adds a server clock and shared state. |
+| # | Feature | Why this order | Status |
+|---|---------|----------------|--------|
+| 1 | Lyrics Mode | Adds the shared "lyrics only" helper that Printable Lyrics also needs. | ✅ Done (2026-11-14), awaiting review |
+| 2 | Printable Lyrics | Reuses that helper and the existing print-setlist CSS pattern. | ✅ Done (2026-11-14), awaiting review |
+| 3 | Metronome v1 (one phone) | Adds the Tools page and the first Web Audio code. | ✅ Done (2026-11-14), awaiting review |
+| 4 | Guitar Tuner | Lives on the same Tools page and reuses its audio setup. | ✅ Done (2026-11-14), awaiting review |
+| 5 | Playable Audio | Needs research first, and adds new Song fields. | Not started |
+| 6 | Synced Metronome v2 | Builds on v1 and adds a server clock and shared state. | Not started |
+
+Features 1-4 were built together on branch `feat/lyrics-and-tools` (not committed). The open questions were settled with the recommended or simplest option; each feature's **Built** note says how, so they can be changed in review.
 
 ## Rules that apply to every feature
 
@@ -37,6 +39,10 @@ These come from `CLAUDE.md`. Every prompt below repeats them.
 ---
 
 ## 1. Lyrics Mode
+
+> **Status: ✅ Done (2026-11-14), awaiting review.**
+> **Built:** `lyricsOnly()` in `src/shared/sheet.ts`; "Chords: on/off" pill on SongPage; `useShowChords` hook; `chords` prop on `ChordSheet`.
+> **Open questions settled:** the choice is remembered **per device, for all songs**. A chords-only section (e.g. Instrumental) **keeps its label** with nothing under it. Lyrics-only lines wrap instead of scrolling sideways. There is no blank line straight after a label, so an emptied section sits right above the next label.
 
 ### Idea (as given)
 A song page shows lyrics and chords together. Add a button that turns the chords off so only the lyrics show. In lyrics-only view, remove the gaps the chord lines leave behind. Where possible, keep the song structure labels such as "Verse 1", "Verse 2", "Chorus", "Break" and "Instrumental".
@@ -94,6 +100,11 @@ Follow CLAUDE.md. Run npm run build and npm test before saying it works. Don't c
 ---
 
 ## 2. Printable Lyrics
+
+> **Status: ✅ Done (2026-11-14), awaiting review.**
+> **Built:** `printableSong()` in `src/shared/print.ts`; `PrintLyrics`, `PrintLyricsChoice` and `usePrintLyrics` in `src/app/components/PrintLyrics.tsx`; "Print lyrics" on SongPage and GigPage; print CSS in `styles.css`.
+> **Open questions settled:** song titles print as a **22pt heading**. Under each title is one line with the artist, **key and capo** when known (nothing made up when unknown). The print block is only added after an option is picked, and Print setlist removes it first, so the two can't print together.
+> **Not yet done:** the by-hand Chrome print-preview check.
 
 ### Idea (as given)
 This works like Print setlist, but it prints the lyrics. Every song page gets a print-lyrics button. Inside a gig there is a "Print lyrics" button that prints every song's lyrics. The text is smaller than the setlist titles. When printing, you choose between lyrics with chords and lyrics only.
@@ -230,6 +241,11 @@ Build test-first. Follow CLAUDE.md. Run npm run build and npm test before saying
 
 ## 4. Guitar Tuner
 
+> **Status: ✅ Done (2026-11-14), awaiting review.**
+> **Built:** `/tools` page with a "Tools" nav link; YIN pitch detection in `src/app/tuner/pitch.ts`; microphone handling in `src/app/tuner/useTuner.ts`; UI in `src/app/components/Tuner.tsx`.
+> **Open questions settled:** **standard tuning only** (no drop D or 5-string bass yet). **A4 fixed at 440 Hz.** A **needle meter** with a green ±5-cent zone. The display shows the nearest chromatic note and its cents, and highlights the nearest string.
+> **Not yet done:** testing on a real iPhone (Safari) and Android (Chrome).
+
 ### Idea (as given)
 A simple guitar tuner tool, with two instrument options: guitar and bass.
 
@@ -290,6 +306,10 @@ Follow CLAUDE.md. Run npm run build and npm test before saying it works. Don't c
 ---
 
 ## 5. Metronome
+
+> **Status: v1 ✅ Done (2026-11-14), awaiting review. v2 not started.**
+> **Built (v1):** pure look-ahead scheduler and tap tempo in `src/app/metronome/schedule.ts` (works on any clock, ready for v2); Web Audio in `src/app/metronome/useMetronome.ts`; UI in `src/app/components/Metronome.tsx` on the Tools page.
+> **Open questions settled (v1):** **no `bpm`/time-signature fields on Song yet**, so there is **no SongPage launcher**; that needs your answer to "should Song get bpm?". One click sound: a high click on beat 1, a lower click on the other beats. **No subdivisions.** Beats per bar: 2-7. Tempo and beats per bar are remembered per device.
 
 Split into two parts: **v1** is a metronome on one phone. **v2** keeps several phones in time with each other, based on the research you pasted, summarised below.
 

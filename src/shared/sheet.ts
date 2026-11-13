@@ -106,6 +106,66 @@ export function mergeEditedText(originalMarkup: string, editedPlain: string): st
   return out.join("\n");
 }
 
+type Line = Extract<SheetLine, { kind: "line" }>;
+
+const TAB_LINE_RE = /^[a-gA-G][#b]?\|.*-/;
+/** Repeat marks and bar lines that sit on a chord line: x2, (x4), |, ||, -, /, %. */
+const CHORD_FILLER_RE = /^(\(?x\d+\)?|\|+|-+|\/+|%)$/i;
+
+function plainOfLine(line: Line): string {
+  return line.parts.map((p) => (p.type === "chord" ? p.chord : p.text)).join("");
+}
+
+/** A guitar-string row such as `e|--0--2--|`. Chord rows and lyrics never match. */
+export function isTabLine(line: SheetLine): line is Line {
+  return line.kind === "line" && isTabRow(line);
+}
+
+function isTabRow(line: Line): boolean {
+  return line.parts.every((p) => p.type === "text") && TAB_LINE_RE.test(plainOfLine(line));
+}
+
+function isBlank(line: SheetLine): boolean {
+  return line.kind === "line" && line.parts.every((p) => p.type === "text" && p.text.trim() === "");
+}
+
+/**
+ * The sheet with the chords taken out, for singing from or printing. Chord-only lines and tab rows go, inline
+ * chords are cut from mixed lines, and the blank space left behind closes up: at most one blank line in a row,
+ * none at the start or end, none straight after a section label. Every section label stays, even one whose body
+ * was all chords, so "[Instrumental]" still shows.
+ */
+export function lyricsOnly(lines: SheetLine[]): SheetLine[] {
+  const kept: SheetLine[] = [];
+  for (const line of lines) {
+    if (line.kind === "section") {
+      kept.push(line);
+      continue;
+    }
+    if (isTabRow(line)) continue;
+    if (!line.parts.some((p) => p.type === "chord")) {
+      kept.push(line);
+      continue;
+    }
+    const text = line.parts.map((p) => (p.type === "text" ? p.text : " ")).join("");
+    const words = text.split(/\s+/).filter((w) => w.length > 0);
+    if (words.every((w) => CHORD_FILLER_RE.test(w))) continue;
+    kept.push({ kind: "line", parts: [{ type: "text", text: words.join(" ") }] });
+  }
+  const out: SheetLine[] = [];
+  for (const line of kept) {
+    if (isBlank(line)) {
+      const prev = out[out.length - 1];
+      if (!prev || prev.kind === "section" || isBlank(prev)) continue;
+      out.push({ kind: "line", parts: [] });
+    } else {
+      out.push(line);
+    }
+  }
+  while (out.length > 0 && isBlank(out[out.length - 1])) out.pop();
+  return out;
+}
+
 /** The reverse of markupFromPlainText: strips [ch]/[tab] tags, leaves [Section] lines alone. */
 export function plainTextFromMarkup(markup: string): string {
   return markup

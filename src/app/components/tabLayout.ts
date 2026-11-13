@@ -1,16 +1,12 @@
+import { isTabLine } from "../../shared/sheet";
 import type { SheetLine, SheetPart } from "../../shared/sheet";
+
+export { isTabLine };
 
 type Line = Extract<SheetLine, { kind: "line" }>;
 
-const TAB_LINE_RE = /^[a-gA-G][#b]?\|.*-/;
-
 function plainOf(line: Line): string {
   return line.parts.map((p) => (p.type === "chord" ? p.chord : p.text)).join("");
-}
-
-/** A guitar-string row such as `e|--0--2--|`. Chord rows and lyrics never match. */
-export function isTabLine(line: SheetLine): line is Line {
-  return line.kind === "line" && line.parts.every((p) => p.type === "text") && TAB_LINE_RE.test(plainOf(line));
 }
 
 /** The parts that fall in columns [start, end). A chord belongs to the piece it starts in. */
