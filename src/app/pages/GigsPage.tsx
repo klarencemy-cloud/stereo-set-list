@@ -4,7 +4,9 @@ import { Link, useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api";
 import { formatGigDate, todayISO } from "../formatDate";
 import { splitGigs } from "../gigList";
-import type { Gig } from "../../shared/types";
+import PlaylistImport from "../components/PlaylistImport";
+import type { PlaylistTrack } from "../../shared/playlist";
+import type { Gig, SongSummary } from "../../shared/types";
 
 export default function GigsPage() {
   const navigate = useNavigate();
@@ -15,10 +17,24 @@ export default function GigsPage() {
   const [date, setDate] = useState("");
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
+  // The optional playlist: null until "Import Playlist" is opened.
+  const [allSongs, setAllSongs] = useState<SongSummary[] | null>(null);
+  const [showPlaylist, setShowPlaylist] = useState(false);
+  const [ticked, setTicked] = useState<PlaylistTrack[]>([]);
 
   useEffect(() => {
     api.listGigs().then(setGigs, (e: Error) => setError(e.message));
   }, []);
+
+  function openPlaylist() {
+    setShowPlaylist(true);
+    if (allSongs === null) {
+      setAllSongs([]);
+      api.listSongs().then(setAllSongs, () => {
+        // Only the "in Songs" markers need it; the import itself still works and reuses songs.
+      });
+    }
+  }
 
   async function create(e: FormEvent) {
     e.preventDefault();
@@ -34,7 +50,11 @@ export default function GigsPage() {
     setFormError("");
     setSaving(true);
     try {
-      const gig = await api.createGig({ name: name.trim(), date, setlist: [] });
+      const tracks = showPlaylist ? ticked : [];
+      // Reuses songs that already exist, so trying again after a failed save makes no copies.
+      const songs = tracks.length > 0 ? await api.importSongs(tracks) : [];
+      const setlist = songs.map((s) => ({ type: "song" as const, songId: s.id }));
+      const gig = await api.createGig({ name: name.trim(), date, setlist });
       navigate(`/gigs/${gig.id}`);
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : "Could not create the gig.");
@@ -62,6 +82,11 @@ export default function GigsPage() {
             Date
             <input className="input" type="date" min={todayISO()} value={date} onChange={(e) => setDate(e.target.value)} />
           </label>
+          {showPlaylist ? (
+            <PlaylistImport songs={allSongs ?? []} onTicked={setTicked} disabled={saving} />
+          ) : (
+            <button type="button" className="btn" onClick={openPlaylist}>Import Playlist</button>
+          )}
           {formError && <p className="error" role="alert">{formError}</p>}
           <div className="row">
             <button type="button" className="btn" onClick={() => setCreating(false)}>Cancel</button>
