@@ -369,3 +369,69 @@ describe("SongFormPage", () => {
     });
   });
 });
+
+describe("SongFormPage import while editing", () => {
+  const UG = "https://tabs.ultimate-guitar.com/tab/coldplay/yellow-chords-1";
+  const fromPlaylist = { ...stored, title: "Yellow", artist: "Coldplay", originalKey: "", bandKey: "", capo: 0, content: "" };
+  const imported = {
+    title: "Yellow (Acoustic)", artist: "Cold Play", originalKey: "B", capo: 2,
+    content: markupFromPlainText("B\nLook at the stars"), sourceUrl: UG,
+  };
+
+  async function editAndImport(song: object) {
+    mocked.getSong.mockResolvedValue(song);
+    mocked.importSong.mockResolvedValue(imported);
+    mocked.updateSong.mockResolvedValue({ ...stored, id: "s1" });
+    const router = renderEdit();
+    await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue((song as { title: string }).title));
+    fireEvent.change(screen.getByLabelText("Link"), { target: { value: UG } });
+    fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    await waitFor(() => expect(screen.getByLabelText("Original key")).toHaveValue("B"));
+    return router;
+  }
+
+  it("fills the key, capo and chords but keeps the title and artist, and saves nothing yet", async () => {
+    await editAndImport(fromPlaylist);
+    expect(mocked.importSong).toHaveBeenCalledWith(UG);
+    expect(screen.getByLabelText("Title")).toHaveValue("Yellow");
+    expect(screen.getByLabelText("Artist")).toHaveValue("Coldplay");
+    expect(screen.getByLabelText("Capo")).toHaveValue(2);
+    expect((screen.getByLabelText("Chords") as HTMLTextAreaElement).value).toContain("Look at the stars");
+    expect(mocked.updateSong).not.toHaveBeenCalled();
+  });
+
+  it("saves the imported chords with the band key set to the new key", async () => {
+    await editAndImport(fromPlaylist);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(1));
+    expect(mocked.updateSong.mock.calls[0][1]).toEqual({
+      title: "Yellow", artist: "Coldplay", originalKey: "B", bandKey: "B", capo: 2, sourceUrl: UG, content: imported.content,
+    });
+  });
+
+  it("keeps a band key the band already chose", async () => {
+    await editAndImport({ ...fromPlaylist, originalKey: "G", bandKey: "A" });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(1));
+    expect(mocked.updateSong.mock.calls[0][1]).toMatchObject({ originalKey: "B", bandKey: "A" });
+  });
+
+  it("counts as unsaved until saved", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const router = await editAndImport(fromPlaylist);
+    await act(() => router.navigate("/songs"));
+    expect(confirm).toHaveBeenCalledWith(UNSAVED_MESSAGE);
+  });
+
+  it("leaves everything as it was when the import fails", async () => {
+    mocked.getSong.mockResolvedValue({ ...stored });
+    mocked.importSong.mockRejectedValue(new ApiError(422, "Couldn't read that page. Paste the chords instead."));
+    renderEdit();
+    await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("Stored"));
+    fireEvent.change(screen.getByLabelText("Link"), { target: { value: UG } });
+    fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    expect(await screen.findByText("Couldn't read that page. Paste the chords instead.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Original key")).toHaveValue("G");
+    expect((screen.getByLabelText("Chords") as HTMLTextAreaElement).value).toContain("G");
+  });
+});

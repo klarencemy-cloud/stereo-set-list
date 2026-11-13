@@ -90,6 +90,18 @@ export default function SongFormPage() {
     setMessage("");
     try {
       const song = await api.importSong(link.trim());
+      if (editing) {
+        // The song already has its title and artist (often from a playlist): keep them, and keep
+        // a band key the band already chose. Nothing is stored until Save.
+        setOriginalKey(song.originalKey);
+        setCapo(song.capo);
+        if (bandKey === "") setBandKey(song.originalKey);
+        const plain = plainTextFromMarkup(song.content);
+        setExisting(song.content);
+        setPasted(plain);
+        setInitialPlain(plain);
+        return;
+      }
       setTitle(song.title);
       setArtist(song.artist);
       setOriginalKey(song.originalKey);
@@ -99,7 +111,7 @@ export default function SongFormPage() {
       setPasted("");
     } catch (e) {
       setMessage((e as Error).message);
-      setMode("paste");
+      if (!editing) setMode("paste");
     } finally {
       setImporting(false);
     }
@@ -188,7 +200,7 @@ export default function SongFormPage() {
           placeholder="https://tabs.ultimate-guitar.com/..."
         />
       </label>
-      {mode === "link" && (
+      {(mode === "link" || editing) && (
         <button type="button" className="btn" onClick={doImport} disabled={!link.trim() || importing}>
           {importing ? "Importing..." : "Import"}
         </button>
