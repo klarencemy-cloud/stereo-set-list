@@ -1,3 +1,4 @@
+import type { PlaylistResult, PlaylistTrack } from "../shared/playlist";
 import type { Gig, GigInput, ImportedSong, Song, SongInput, SongSummary, Track } from "../shared/types";
 
 export class ApiError extends Error {
@@ -33,14 +34,21 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
   return (await request(path, init)).json() as Promise<T>;
 }
 
+// Tells the offline service worker to wait for the server rather than answer from its saved
+// copy after a timeout. Same value as FRESH_HEADER in src/sw/strategy.ts (not imported, so the
+// worker build stays a single file; tests/app/api.test.ts checks they match).
+const FRESH_HEADER = "X-Fresh";
+
 function send(method: string, body: unknown): RequestInit {
   return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }
 
 export const api = {
   listSongs: () => json<SongSummary[]>("/api/songs"),
-  getSong: (id: string) => json<Song>(`/api/songs/${id}`),
+  getSong: (id: string, opts?: { fresh?: boolean }) =>
+    json<Song>(`/api/songs/${id}`, opts?.fresh ? { headers: { [FRESH_HEADER]: "1" } } : undefined),
   createSong: (input: SongInput) => json<Song>("/api/songs", send("POST", input)),
+  importSongs: (tracks: PlaylistTrack[]) => json<Song[]>("/api/songs/batch", send("POST", { tracks })),
   updateSong: (id: string, patch: Partial<SongInput>) => json<Song>(`/api/songs/${id}`, send("PUT", patch)),
   deleteSong: async (id: string): Promise<void> => {
     await request(`/api/songs/${id}`, { method: "DELETE" });
@@ -55,6 +63,8 @@ export const api = {
   },
 
   listTracks: () => json<Track[]>("/api/tracks"),
+  getTrack: (id: string) => json<Track>(`/api/tracks/${id}`),
+  linkTrackSong: (id: string) => json<Song>(`/api/tracks/${id}/song`, { method: "POST" }),
   createTrack: (title: string, size: number) => json<Track>("/api/tracks", send("POST", { title, size })),
   updateTrack: (id: string, title: string) => json<Track>(`/api/tracks/${id}`, send("PUT", { title })),
   putTrackPart: async (id: string, n: number, bytes: Blob | ArrayBuffer): Promise<void> => {
@@ -71,4 +81,5 @@ export const api = {
   },
 
   importSong: (url: string) => json<ImportedSong>("/api/import", send("POST", { url })),
+  readPlaylist: (url: string) => json<PlaylistResult>("/api/playlist", send("POST", { url })),
 };

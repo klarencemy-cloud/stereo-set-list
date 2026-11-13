@@ -1,21 +1,29 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
+import { clearSongCache } from "../songCache";
+import { useUnsavedChanges } from "../components/useUnsavedChanges";
 import { KEYS } from "../../shared/transpose";
-import { markupFromPlainText, parseSheet } from "../../shared/sheet";
+import { markupFromPlainText, mergeEditedText, plainTextFromMarkup } from "../../shared/sheet";
+import ChordSheet from "../components/ChordSheet";
 import type { SongInput } from "../../shared/types";
 
 const ALL_KEYS = KEYS.flatMap((k) => [k, `${k}m`]);
 
-function previewOf(markup: string): string {
-  return parseSheet(markup)
-    .map((l) =>
-      l.kind === "section"
-        ? `[${l.label}]`
-        : l.parts.map((p) => (p.type === "chord" ? `[${p.chord}]` : p.text)).join(""),
-    )
-    .join("\n");
+interface FormValues {
+  title: string;
+  artist: string;
+  link: string;
+  originalKey: string;
+  bandKey: string;
+  capo: number;
+  pasted: string;
 }
+
+const BLANK: FormValues = { title: "", artist: "", link: "", originalKey: "", bandKey: "", capo: 0, pasted: "" };
+
+/** A comparable picture of the fields the user can change, to tell whether anything is unsaved. */
+const snapshotOf = (v: FormValues) => JSON.stringify(v);
 
 export default function SongFormPage() {
   const { id } = useParams();
@@ -32,22 +40,46 @@ export default function SongFormPage() {
   const [pasted, setPasted] = useState("");
   const [imported, setImported] = useState<string | null>(null);
   const [existing, setExisting] = useState<string | null>(null);
+  const [initialPlain, setInitialPlain] = useState("");
   const [importing, setImporting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [isOriginal, setIsOriginal] = useState(false);
   const [message, setMessage] = useState("");
+  // What the form looked like when it was loaded (edit) or empty (new); null until an edit has loaded.
+  const [baseline, setBaseline] = useState<string | null>(() => (id ? null : snapshotOf(BLANK)));
 
   useEffect(() => {
-    if (!id) return;
-    api.getSong(id).then(
+    if (!id) {
+      setBaseline(snapshotOf(BLANK));
+      return;
+    }
+    setBaseline(null);
+    // Fresh, not a saved offline copy: whatever loads here is sent back whole on Save.
+    api.getSong(id, { fresh: true }).then(
       (s) => {
         setTitle(s.title);
+        setIsOriginal(Boolean(s.trackId));
         setArtist(s.artist);
         setOriginalKey(s.originalKey);
         setBandKey(s.bandKey);
         setCapo(s.capo);
         setLink(s.sourceUrl ?? "");
         setExisting(s.content);
+        const plain = plainTextFromMarkup(s.content);
+        setPasted(plain);
+        setInitialPlain(plain);
+        setBaseline(
+          snapshotOf({
+            title: s.title,
+            artist: s.artist,
+            link: s.sourceUrl ?? "",
+            originalKey: s.originalKey,
+            bandKey: s.bandKey,
+            capo: s.capo,
+            pasted: plain,
+          }),
+        );
       },
       (e: Error) => setMessage(e.message),
     );
@@ -58,6 +90,21 @@ export default function SongFormPage() {
     setMessage("");
     try {
       const song = await api.importSong(link.trim());
+      if (editing) {
+        // The song already has its title and artist (often from a playlist): keep them, and keep
+        // a band key the band already chose. Nothing is stored until Save.
+        // Some UG pages have no key: then keep the keys the song already has.
+        if (song.originalKey) {
+          setOriginalKey(song.originalKey);
+          if (bandKey === "") setBandKey(song.originalKey);
+        }
+        setCapo(song.capo);
+        const plain = plainTextFromMarkup(song.content);
+        setExisting(song.content);
+        setPasted(plain);
+        setInitialPlain(plain);
+        return;
+      }
       setTitle(song.title);
       setArtist(song.artist);
       setOriginalKey(song.originalKey);
@@ -67,14 +114,26 @@ export default function SongFormPage() {
       setPasted("");
     } catch (e) {
       setMessage((e as Error).message);
-      setMode("paste");
+      if (!editing) setMode("paste");
     } finally {
       setImporting(false);
     }
   }
 
-  const content = pasted.trim() ? markupFromPlainText(pasted) : (imported ?? existing ?? "");
-  const canSave = title.trim() !== "" && originalKey !== "" && !saving;
+  // Unchanged text sends the stored content as-is: converting back and forth can lose formatting.
+  const content =
+    editing && existing !== null && pasted === initialPlain
+      ? existing
+      : pasted.trim()
+        ? editing && existing !== null
+          ? mergeEditedText(existing, pasted)
+          : markupFromPlainText(pasted)
+        : (imported ?? existing ?? "");
+  const dirty =
+    baseline !== null && snapshotOf({ title, artist, link, originalKey, bandKey, capo, pasted }) !== baseline;
+  const { allowNavigation } = useUnsavedChanges(dirty);
+  // A song may have no key yet (an original nobody has worked out, or a song imported from a playlist).
+  const canSave = title.trim() !== "" && !saving;
 
   async function save() {
     setSaving(true);
@@ -84,12 +143,15 @@ export default function SongFormPage() {
       artist: artist.trim(),
       sourceUrl: link.trim() || null,
       originalKey,
-      bandKey: bandKey || originalKey,
+      // No key means no band key either.
+      bandKey: originalKey ? bandKey || originalKey : "",
       capo,
       content,
     };
     try {
       const song = id ? await api.updateSong(id, input) : await api.createSong(input);
+      clearSongCache();
+      allowNavigation();
       navigate(`/songs/${song.id}`);
     } catch (e) {
       setMessage((e as Error).message);
@@ -98,19 +160,21 @@ export default function SongFormPage() {
   }
 
   async function removeSong() {
-    if (!id || !window.confirm(`Delete "${title || "this song"}"? This cannot be undone.`)) return;
+    if (!id || !window.confirm(
+        `Delete "${title || "this song"}"?${isOriginal ? " This also deletes the mp3." : ""} This cannot be undone.`,
+      )) return;
     setDeleting(true);
     setMessage("");
     try {
       await api.deleteSong(id);
-      navigate("/songs");
+      clearSongCache();
+      allowNavigation();
+      navigate(isOriginal ? "/tracks" : "/songs");
     } catch (e) {
       setMessage((e as Error).message);
       setDeleting(false);
     }
   }
-
-  const preview = pasted.trim() ? null : (imported ?? existing);
 
   return (
     <main className="page">
@@ -139,7 +203,7 @@ export default function SongFormPage() {
           placeholder="https://tabs.ultimate-guitar.com/..."
         />
       </label>
-      {mode === "link" && (
+      {(mode === "link" || editing) && (
         <button type="button" className="btn" onClick={doImport} disabled={!link.trim() || importing}>
           {importing ? "Importing..." : "Import"}
         </button>
@@ -190,15 +254,17 @@ export default function SongFormPage() {
             rows={12}
             value={pasted}
             onChange={(e) => setPasted(e.target.value)}
-            placeholder={editing ? "Leave empty to keep the current chords" : "Paste chords above the lyrics"}
+            placeholder={editing ? "Fix chords here. Leave empty to keep the current chords" : "Paste chords above the lyrics"}
           />
         </label>
       )}
 
-      {preview && (
+      {content !== "" && (
         <section>
           <h2>Preview</h2>
-          <pre className="sheet" data-testid="preview">{previewOf(preview)}</pre>
+          <div data-testid="preview">
+            <ChordSheet content={content} full={false} />
+          </div>
         </section>
       )}
 

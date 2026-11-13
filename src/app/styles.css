@@ -4,9 +4,15 @@
   --text: #1c1c1e;
   --muted: #6b6b70;
   --border: #dcdcd4;
-  --accent: #b4341f;
-  --accent-text: #ffffff;
-  --chord: #b4341f;
+  /* Stereobloc brand colours, exact from the band's palette. */
+  --brand-yellow: #fff200;
+  --brand-blue: #00a2e8;
+  /* Filled buttons: blue with dark text (5.9:1). White on this blue is only 2.9:1. */
+  --accent: var(--brand-blue);
+  --accent-text: #1c1c1e;
+  /* Accent used as text/lines on the page: a deeper shade of the brand blue (5.3:1 on white). */
+  --accent-ink: #0072a3;
+  --chord: var(--accent-ink);
   --error: #b00020;
   color-scheme: light dark;
 }
@@ -18,9 +24,11 @@
     --text: #f1f1ee;
     --muted: #9c9ca3;
     --border: #34343a;
-    --accent: #ff7a5c;
-    --accent-text: #1a1a1a;
-    --chord: #ff9a80;
+    /* On dark, the yellow carries the actions (15.7:1 with dark text), like the logo's bolt. */
+    --accent: var(--brand-yellow);
+    --accent-text: #141416;
+    --accent-ink: var(--brand-yellow);
+    --chord: var(--brand-blue);
     --error: #ff8a9b;
   }
 }
@@ -40,12 +48,17 @@ h1 { font-size: 1.5rem; margin: 0.5rem 0; }
 h2 { font-size: 1.1rem; margin: 1rem 0 0.5rem; }
 
 .topbar {
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   font-weight: 700;
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
+
+.topbar-logo { width: 28px; height: 28px; border-radius: 50%; flex: none; }
 
 .page { max-width: 720px; margin: 0 auto; padding: 8px 16px 24px; }
 
@@ -156,10 +169,12 @@ h2 { font-size: 1.1rem; margin: 1rem 0 0.5rem; }
   font-weight: 600;
   text-decoration: none;
 }
-.bottom-nav a.active { color: var(--accent); }
+.bottom-nav a.active { color: var(--accent-ink); box-shadow: inset 0 3px 0 var(--accent); }
+
+:focus-visible { outline: 3px solid var(--accent-ink); outline-offset: 2px; }
 
 /* Chord view */
-:root { --chord-bg: #e9e9e9; --pill-yellow: #ffd600; --pill-yellow-text: #1c1c1e; }
+:root { --chord-bg: #e9e9e9; --pill-yellow: var(--brand-yellow); --pill-yellow-text: #1c1c1e; }
 @media (prefers-color-scheme: dark) { :root { --chord-bg: #3a3a3a; } }
 
 .song-title { font-size: 28px; font-weight: 800; line-height: 1.15; margin: 12px 0 4px; }
@@ -171,17 +186,26 @@ h2 { font-size: 1.1rem; margin: 1rem 0 0.5rem; }
   font: inherit; font-weight: 600; text-decoration: none; cursor: pointer;
   color: var(--text); background: var(--surface); border: 1px solid var(--border);
 }
-.pill-yellow { background: var(--pill-yellow); color: var(--pill-yellow-text); border-color: var(--pill-yellow); }
+.pill-split { padding: 0; gap: 0; }
+.pill-split button {
+  min-height: 44px; min-width: 48px; padding: 0 12px;
+  background: none; border: 0; font: inherit; font-weight: 700; color: inherit; cursor: pointer;
+}
+.pill-split button:disabled { opacity: 0.35; cursor: default; }
+.pill-yellow { background: var(--pill-yellow); color: var(--pill-yellow-text); border-color: #c9bd00; }
+@media (prefers-color-scheme: dark) { .pill-yellow { border-color: var(--pill-yellow); } }
 .transpose-bar { margin: 4px 0 8px; }
 .transpose-row { display: flex; align-items: center; gap: 12px; }
 .transpose-key { min-width: 48px; text-align: center; font-weight: 800; font-size: 20px; }
 .transpose-note { margin: 4px 0 0; font-size: 14px; }
 .song-info { margin: 8px 0 12px; }
-.source-link { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent); font-weight: 600; }
+.source-link { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent-ink); font-weight: 600; }
+@media (prefers-color-scheme: dark) { .source-link { color: var(--brand-blue); } }
 .key-note { margin: 0 0 12px; font-weight: 600; }
 .danger-zone { margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border); }
 .btn.danger { color: var(--error); border-color: var(--error); }
 .sheet {
+  position: relative;
   overflow-x: auto; max-width: 100%;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   font-size: 15px; line-height: 1.5;
@@ -203,3 +227,121 @@ h2 { font-size: 1.1rem; margin: 1rem 0 0.5rem; }
 
 .list-row.editing { flex-wrap: wrap; }
 .list-row.editing .grow { flex-basis: 100%; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 12px; }
+
+/* Gig floor sheet: only the song titles, huge, black on white. Hidden on screen. */
+.print-setlist { display: none; }
+
+@media print {
+  /* No page margin: browsers print their date / site name / URL / page number headers inside the margin, so with
+     none there's nowhere for them to go. The 15mm margin comes from .gig-page padding instead. */
+  @page { size: A4 portrait; margin: 0; }
+  html:has(.print-setlist), body:has(.print-setlist) { background: #fff; color: #000; padding: 0; }
+  body:has(.print-setlist) .topbar,
+  body:has(.print-setlist) .bottom-nav,
+  .gig-page > :not(.print-setlist) { display: none !important; }
+  /* clone: repeat the padding on every printed page, so page 2 and later keep their top margin. */
+  .gig-page { max-width: none; margin: 0; padding: 15mm; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+  .print-setlist {
+    display: block;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    color: #000;
+    font: 900 34pt/1.15 "Arial Black", Arial, Helvetica, sans-serif;
+  }
+  .print-setlist li { margin: 0 0 0.35em; break-inside: avoid; page-break-inside: avoid; }
+}
+
+/* Setlist: set breaks and notes */
+li.setlist-break {
+  padding: 12px 4px 6px;
+  font-weight: 700;
+  color: var(--accent-ink);
+  border-bottom: 2px solid var(--accent);
+}
+.list-row.editing.setlist-break { color: inherit; border-bottom: 1px solid var(--border); padding: 8px 4px; }
+.setlist-note { font-size: 0.95rem; }
+.setlist-note-edit { flex-basis: 100%; }
+
+
+.song-page .setlist-note {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-left: 4px solid var(--brand-yellow);
+  background: var(--surface);
+  font-weight: 600;
+}
+
+/* Add several songs at once */
+.add-songs-heading { margin: 0.5rem 0 0.5rem; font-size: 1rem; }
+.add-songs-list { list-style: none; margin: 8px 0; padding: 0; max-height: 50vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.add-songs-row { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 4px 12px; cursor: pointer; }
+.add-songs-row input { width: 22px; height: 22px; flex: none; }
+
+/* Drag to reorder (touch-action: none lets the handle drag while the rest of the page still scrolls) */
+.drag-handle {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 22px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  touch-action: none;
+  cursor: grab;
+}
+.drag-handle:active { cursor: grabbing; }
+.drag-handle:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Stage mode: nothing but the song */
+body.stage .topbar, body.stage .bottom-nav { display: none; }
+body.stage { padding-bottom: 0; }
+.stage-exit {
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  z-index: 50;
+  min-height: 44px;
+  padding: 0 16px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.link-button {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.badge {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  color: var(--accent-ink);
+}
+
+/* Looks like plain text: no link colour, no underline, before or after a visit. */
+.plain-link,
+.plain-link:visited {
+  color: inherit;
+  text-decoration: none;
+}

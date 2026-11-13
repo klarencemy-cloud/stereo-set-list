@@ -32,6 +32,28 @@ describe("parseUgHtml", () => {
     expect(song.sourceUrl).toBe(URL_OK);
     expect(song.content.startsWith("[Intro]")).toBe(true);
   });
+  it("decodes HTML entities UG leaves in the song text", () => {
+    // UG's JSON holds "don&rsquo;t"; in the attribute that becomes "don&amp;rsquo;t".
+    const data = {
+      store: {
+        page: {
+          data: {
+            tab: { song_name: "Caf&eacute; Song", artist_name: "IV OF SPADES", tonality_name: "Gm", capo: 0 },
+            tab_view: {
+              wiki_tab: {
+                content:
+                  "I don&rsquo;t\n&lsquo;Cause ba&mdash;-by &ldquo;hi&rdquo;&hellip; &amp;rsquo; &#8217; &#x2019; &bogus; R&amp;B",
+              },
+            },
+          },
+        },
+      },
+    };
+    const attr = JSON.stringify(data).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+    const song = parseUgHtml(`<div class="js-store" data-content="${attr}"></div>`, URL_OK);
+    expect(song.title).toBe("Café Song");
+    expect(song.content).toBe("I don’t\n‘Cause ba—-by “hi”… &rsquo; ’ ’ &bogus; R&B");
+  });
   it("throws parse when the store is missing", () => {
     expect(() => parseUgHtml("<html></html>", URL_OK)).toThrowError(ImportError);
   });

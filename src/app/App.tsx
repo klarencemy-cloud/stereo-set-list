@@ -1,4 +1,5 @@
-import { BrowserRouter, NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { useState } from "react";
+import { NavLink, RouterProvider, Route, Routes, createBrowserRouter, useLocation } from "react-router-dom";
 import { SITE_NAME } from "./config";
 import ErrorBoundary from "./components/ErrorBoundary";
 import SongsPage from "./pages/SongsPage";
@@ -22,7 +23,10 @@ export function AppRoutes() {
   const location = useLocation();
   return (
     <>
-      <header className="topbar">{SITE_NAME}</header>
+      <header className="topbar">
+        <img className="topbar-logo" src="/logo-64.png" alt="Stereobloc" width={28} height={28} />
+        <span>{SITE_NAME}</span>
+      </header>
       <ErrorBoundary resetKey={location.pathname}>
         <Routes>
           <Route path="/" element={<GigsPage />} />
@@ -45,9 +49,7 @@ export function AppRoutes() {
 }
 
 export default function App() {
-  return (
-    <BrowserRouter>
-      <AppRoutes />
-    </BrowserRouter>
-  );
+  // A data router (rather than <BrowserRouter>) so pages can warn before being left (useBlocker).
+  const [router] = useState(() => createBrowserRouter([{ path: "*", element: <AppRoutes /> }]));
+  return <RouterProvider router={router} />;
 }

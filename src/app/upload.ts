@@ -37,3 +37,8 @@ export async function loadTrackUrl(track: Track): Promise<string> {
   for (let n = 0; n < track.parts; n++) parts.push(await api.getTrackPart(track.id, n));
   return URL.createObjectURL(new Blob(parts, { type: "audio/mpeg" }));
 }
+
+/** A starting title for a picked file: its name without the extension, underscores as spaces. */
+export function titleFromFileName(name: string): string {
+  return name.replace(/\.[^./\\]*$/, "").replace(/_/g, " ").replace(/\s+/g, " ").trim();
+}

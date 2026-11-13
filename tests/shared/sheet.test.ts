@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { markupFromPlainText, parseSheet, transposeContent } from "../../src/shared/sheet";
+import { markupFromPlainText, mergeEditedText, parseSheet, plainTextFromMarkup, transposeContent } from "../../src/shared/sheet";
 
 describe("parseSheet", () => {
   it("parses sections, chords, tab blocks and CRLF", () => {
@@ -80,5 +80,45 @@ describe("markupFromPlainText", () => {
   });
   it("leaves lyric lines alone", () => {
     expect(markupFromPlainText("Dead End Road")).toBe("Dead End Road");
+  });
+});
+
+describe("mergeEditedText", () => {
+  const stored = "[Intro]\n[tab][ch]G[/ch]  [ch]D[/ch]\nHello [ch]Am[/ch] world\nBye[/tab]";
+  const plain = plainTextFromMarkup(stored);
+
+  it("keeps tab tags and inline chords on untouched lines after a one-line edit", () => {
+    const edited = plain.replace("Bye", "Goodbye");
+    expect(mergeEditedText(stored, edited)).toBe(
+      "[Intro]\n[tab][ch]G[/ch]  [ch]D[/ch]\nHello [ch]Am[/ch] world\nGoodbye",
+    );
+  });
+
+  it("tags chords on new lines and drops removed ones", () => {
+    const edited = "[Intro]\nC  F\nHello Am world";
+    expect(mergeEditedText(stored, edited)).toBe("[Intro]\n[ch]C[/ch]  [ch]F[/ch]\nHello [ch]Am[/ch] world");
+  });
+
+  it("is the original when nothing changed", () => {
+    expect(mergeEditedText(stored, plain)).toBe(stored);
+  });
+});
+
+describe("plainTextFromMarkup", () => {
+  it("removes chord tags but keeps section lines", () => {
+    expect(plainTextFromMarkup("[Verse]\n[ch]G[/ch]   [ch]D/F#[/ch]\nHello there")).toBe("[Verse]\nG   D/F#\nHello there");
+  });
+
+  it("removes tab tags", () => {
+    expect(plainTextFromMarkup("[tab][ch]Am[/ch]\nla[/tab]")).toBe("Am\nla");
+  });
+
+  it("normalises CRLF like parseSheet does", () => {
+    expect(plainTextFromMarkup("[ch]G[/ch]\r\nHi")).toBe("G\nHi");
+  });
+
+  it("round-trips through markupFromPlainText", () => {
+    const plain = "[Chorus]\nG  D  Em  C\nSing it loud\nAm x2 | C";
+    expect(markupFromPlainText(plainTextFromMarkup(markupFromPlainText(plain)))).toBe(markupFromPlainText(plain));
   });
 });

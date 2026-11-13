@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { memoryKV } from "../../netlify/functions/lib/kv";
-import { makeRepo, NotFoundError, ValidationError } from "../../netlify/functions/lib/repo";
+import { LIMITS, makeRepo, NotFoundError, ValidationError } from "../../netlify/functions/lib/repo";
 import type { SongInput } from "../../src/shared/types";
 
 const song = (over: Partial<SongInput> = {}): SongInput => ({
@@ -45,6 +45,14 @@ describe("songs", () => {
     expect(s).toMatchObject({ title: "Wonderwall", artist: "Oasis", bandKey: "Em" });
   });
 
+  it("listSongs says whether each song has chords yet", async () => {
+    const repo = makeRepo(memoryKV());
+    await repo.createSong(song({ title: "Empty", content: "  \n " }));
+    await repo.createSong(song({ title: "Full" }));
+    const list = await repo.listSongs();
+    expect(list.map((s) => [s.title, s.hasChords])).toEqual([["Empty", false], ["Full", true]]);
+  });
+
   it("keeps only known fields", async () => {
     const repo = makeRepo(memoryKV());
     const s = await repo.createSong({ ...song(), extra: "x", id: "forced" } as unknown as SongInput);
@@ -55,12 +63,19 @@ describe("songs", () => {
     expect(u.bandKey).toBe("Am");
   });
 
+  it("saves a song with no key yet, and then it has no band key either", async () => {
+    const repo = makeRepo(memoryKV());
+    const s = await repo.createSong(song({ originalKey: "", bandKey: "Em" }));
+    expect(s).toMatchObject({ originalKey: "", bandKey: "" });
+    const u = await repo.updateSong(s.id, { title: "Renamed" });
+    expect(u).toMatchObject({ title: "Renamed", originalKey: "", bandKey: "" });
+  });
+
   it("rejects bad keys, types and sizes", async () => {
     const repo = makeRepo(memoryKV());
     const bad: Partial<Record<keyof SongInput, unknown>>[] = [
       { originalKey: "H" },
       { bandKey: "Emaj" },
-      { originalKey: "" },
       { capo: 13 },
       { capo: 1.5 },
       { capo: "2" },
@@ -107,7 +122,7 @@ describe("gigs", () => {
   it("deleteSong removes the id from gigs", async () => {
     const repo = makeRepo(memoryKV());
     const s = await repo.createSong(song());
-    const g = await repo.createGig({ name: "Pub", date: "2026-12-01", songIds: [s.id] });
+    const g = await repo.createGig({ name: "Pub", date: "2026-12-01", songIds: [s.id] } as never);
     await repo.deleteSong(s.id);
     const got = await repo.getGig(g.id);
     expect(got).not.toBeNull();
@@ -119,7 +134,7 @@ describe("gigs", () => {
     const repo = makeRepo(kv);
     const a = await repo.createSong(song({ title: "A" }));
     const b = await repo.createSong(song({ title: "B" }));
-    const g = await repo.createGig({ name: "Pub", date: "2026-12-01", songIds: [a.id, b.id] });
+    const g = await repo.createGig({ name: "Pub", date: "2026-12-01", songIds: [a.id, b.id] } as never);
     await kv.delete(`songs/${a.id}`);
     expect((await repo.getGig(g.id))!.songIds).toEqual([b.id]);
   });
@@ -145,13 +160,13 @@ describe("gigs", () => {
       await expect(repo.updateGig(g.id, over as never)).rejects.toBeInstanceOf(ValidationError);
     }
     const u = await repo.updateGig(g.id, { name: "Club", junk: 2 } as never);
-    expect(u).toEqual({ id: g.id, name: "Club", date: "2026-12-01", songIds: [] });
+    expect(u).toEqual({ id: g.id, name: "Club", date: "2026-12-01", setlist: [], songIds: [] });
   });
 
   it("lists newest date first", async () => {
     const repo = makeRepo(memoryKV());
-    await repo.createGig({ name: "Nov", date: "2026-11-20", songIds: [] });
-    await repo.createGig({ name: "Dec", date: "2026-12-01", songIds: [] });
+    await repo.createGig({ name: "Nov", date: "2026-11-20" });
+    await repo.createGig({ name: "Dec", date: "2026-12-01" });
     expect((await repo.listGigs()).map((g) => g.date)).toEqual(["2026-12-01", "2026-11-20"]);
   });
 });
@@ -231,5 +246,403 @@ describe("tracks", () => {
     const tracks = await repo.listTracks();
     expect(tracks.map((x) => x.id)).toEqual([t.id]);
     expect(tracks[0].uploadedParts).toBe(3);
+  });
+});
+
+describe("gig setlists", () => {
+  async function withSongs() {
+    const kv = memoryKV();
+    const repo = makeRepo(kv);
+    const a = await repo.createSong(song({ title: "A" }));
+    const b = await repo.createSong(song({ title: "B" }));
+    return { kv, repo, a, b };
+  }
+
+  it("reads a legacy gig that only has songIds as a setlist (get and list)", async () => {
+    const { kv, repo, a, b } = await withSongs();
+    await kv.setText("gigs/x", JSON.stringify({ id: "x", name: "Pub", date: "2026-12-01", songIds: [a.id, b.id] }));
+    const expected = [{ type: "song", songId: a.id }, { type: "song", songId: b.id }];
+    const got = await repo.getGig("x");
+    expect(got!.setlist).toEqual(expected);
+    expect(got!.songIds).toEqual([a.id, b.id]);
+    const listed = (await repo.listGigs()).find((g) => g.id === "x")!;
+    expect(listed.setlist).toEqual(expected);
+    expect(listed.songIds).toEqual([a.id, b.id]);
+  });
+
+  it("leaves missing songs out of a gig the same way in get and list", async () => {
+    const { kv, repo, a, b } = await withSongs();
+    // A gig still pointing at a deleted song, e.g. saved from a stale page after the delete.
+    const stored = {
+      id: "x",
+      name: "Pub",
+      date: "2026-12-01",
+      setlist: [
+        { type: "song", songId: a.id },
+        { type: "song", songId: "gone" },
+        { type: "break", id: "k1", label: "Set 2" },
+        { type: "song", songId: b.id, note: "segue" },
+      ],
+    };
+    await kv.setText("gigs/x", JSON.stringify(stored));
+    const expected = [stored.setlist[0], stored.setlist[2], stored.setlist[3]];
+    const got = await repo.getGig("x");
+    expect(got!.setlist).toEqual(expected);
+    expect(got!.songIds).toEqual([a.id, b.id]);
+    const listed = (await repo.listGigs()).find((g) => g.id === "x")!;
+    expect(listed).toEqual(got);
+  });
+
+  it("round-trips notes and breaks, trimming notes and dropping empty ones", async () => {
+    const { repo, a, b } = await withSongs();
+    const g = await repo.createGig({ name: "Pub", date: "2026-12-01" });
+    expect(g.setlist).toEqual([]);
+    await repo.updateGig(g.id, {
+      setlist: [
+        { type: "song", songId: a.id, note: "  count-in  " },
+        { type: "break", id: "k1", label: " Set 2 " },
+        { type: "song", songId: b.id, note: "   " },
+      ],
+    });
+    const got = await repo.getGig(g.id);
+    expect(got!.setlist).toEqual([
+      { type: "song", songId: a.id, note: "count-in" },
+      { type: "break", id: "k1", label: "Set 2" },
+      { type: "song", songId: b.id },
+    ]);
+    expect(got!.songIds).toEqual([a.id, b.id]);
+  });
+
+  it("an old client writing only songIds keeps notes, applies the order and drops breaks", async () => {
+    const { repo, a, b } = await withSongs();
+    const g = await repo.createGig({
+      name: "Pub",
+      date: "2026-12-01",
+      setlist: [
+        { type: "song", songId: a.id, note: "keep me" },
+        { type: "break", id: "k1", label: "Set 2" },
+        { type: "song", songId: b.id },
+      ],
+    });
+    const u = await repo.updateGig(g.id, { songIds: [b.id, a.id] } as never);
+    expect(u.setlist).toEqual([
+      { type: "song", songId: b.id },
+      { type: "song", songId: a.id, note: "keep me" },
+    ]);
+    expect(u.songIds).toEqual([b.id, a.id]);
+  });
+
+  it("still creates a gig from songIds like before", async () => {
+    const { repo, a } = await withSongs();
+    const g = await repo.createGig({ name: "Pub", date: "2026-12-01", songIds: [a.id] } as never);
+    expect(g.setlist).toEqual([{ type: "song", songId: a.id }]);
+  });
+
+  it("rejects bad setlists", async () => {
+    const { repo } = await withSongs();
+    const g = await repo.createGig({ name: "Pub", date: "2026-12-01" });
+    const songs = (n: number) => Array.from({ length: n }, (_, i) => ({ type: "song", songId: `s${i}` }));
+    const bad: [unknown, string?][] = [
+      ["nope"],
+      [[{ type: "intermission" }]],
+      [[{ type: "song", songId: "a" }, { type: "song", songId: "a" }], "a song can only be in the setlist once"],
+      [songs(101)],
+      [[...songs(100), ...Array.from({ length: 51 }, (_, i) => ({ type: "break", id: `b${i}`, label: "x" }))]],
+      [[{ type: "song", songId: "a", note: "x".repeat(201) }]],
+      [[{ type: "song", songId: "a", note: 5 }]],
+      [[{ type: "song", songId: 5 }]],
+      [[{ type: "break", id: "k", label: "   " }], "break label is required"],
+      [[{ type: "break", id: "k", label: "x".repeat(101) }]],
+      [[{ type: "break", id: 5, label: "Set 2" }]],
+      [[{ type: "break", id: "k", label: "A" }, { type: "break", id: "k", label: "B" }]],
+      [[null]],
+    ];
+    for (const [setlist, message] of bad) {
+      const p = repo.updateGig(g.id, { setlist } as never);
+      await expect(p).rejects.toBeInstanceOf(ValidationError);
+      if (message) await expect(p).rejects.toThrow(message);
+    }
+    await expect(repo.createGig({ name: "x", date: "2026-12-01", setlist: "no" } as never)).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+  });
+
+  it("strips unknown keys from items", async () => {
+    const { repo, a } = await withSongs();
+    const g = await repo.createGig({
+      name: "Pub",
+      date: "2026-12-01",
+      setlist: [
+        { type: "song", songId: a.id, junk: 1 },
+        { type: "break", id: "k", label: "Set 2", junk: 2 },
+      ] as never,
+    });
+    expect(g.setlist).toEqual([{ type: "song", songId: a.id }, { type: "break", id: "k", label: "Set 2" }]);
+  });
+
+  it("deleteSong removes the song item but keeps the breaks", async () => {
+    const { repo, a, b } = await withSongs();
+    const g = await repo.createGig({
+      name: "Pub",
+      date: "2026-12-01",
+      setlist: [
+        { type: "song", songId: a.id },
+        { type: "break", id: "k", label: "Set 2" },
+        { type: "song", songId: b.id },
+      ],
+    });
+    await repo.deleteSong(a.id);
+    const got = await repo.getGig(g.id);
+    expect(got!.setlist).toEqual([{ type: "break", id: "k", label: "Set 2" }, { type: "song", songId: b.id }]);
+    expect(got!.songIds).toEqual([b.id]);
+  });
+
+  it("deleteSong also fixes a legacy gig", async () => {
+    const { kv, repo, a, b } = await withSongs();
+    await kv.setText("gigs/x", JSON.stringify({ id: "x", name: "Pub", date: "2026-12-01", songIds: [a.id, b.id] }));
+    await repo.deleteSong(a.id);
+    expect((await repo.getGig("x"))!.songIds).toEqual([b.id]);
+  });
+
+  it("getGig drops songs deleted straight from the KV from setlist and songIds", async () => {
+    const { kv, repo, a, b } = await withSongs();
+    const g = await repo.createGig({
+      name: "Pub",
+      date: "2026-12-01",
+      setlist: [
+        { type: "song", songId: a.id },
+        { type: "break", id: "k", label: "Set 2" },
+        { type: "song", songId: b.id },
+      ],
+    });
+    await kv.delete(`songs/${a.id}`);
+    const got = await repo.getGig(g.id);
+    expect(got!.songIds).toEqual([b.id]);
+    expect(got!.setlist).toEqual([{ type: "break", id: "k", label: "Set 2" }, { type: "song", songId: b.id }]);
+  });
+});
+
+describe("original songs", () => {
+  async function upload(repo: ReturnType<typeof makeRepo>, title = "Demo", size = 10) {
+    const t = await repo.createTrack({ title, size });
+    for (let n = 0; n < t.parts; n++) await repo.putTrackPart(t.id, n, bytes(Math.min(size, 3_145_728)));
+    return (await repo.getTrack(t.id))!;
+  }
+
+  it("creates a linked song when the last part is uploaded", async () => {
+    const repo = makeRepo(memoryKV());
+    const t = await upload(repo);
+    expect(t.songId).toBeTruthy();
+    const s = await repo.getSong(t.songId!);
+    expect(s).toMatchObject({
+      title: "Demo", trackId: t.id, content: "", originalKey: "", bandKey: "", artist: "", capo: 0, sourceUrl: null,
+    });
+    expect((await repo.listSongs()).map((x) => x.id)).toContain(s!.id);
+  });
+
+  it("lets an original song be saved without a key", async () => {
+    const repo = makeRepo(memoryKV());
+    const t = await upload(repo);
+    const s = await repo.updateSong(t.songId!, { content: "[ch]G[/ch]", originalKey: "", bandKey: "" });
+    expect(s).toMatchObject({ content: "[ch]G[/ch]", originalKey: "", bandKey: "" });
+  });
+
+  it("fills in the band key when an original song first gets a key", async () => {
+    const repo = makeRepo(memoryKV());
+    const t = await upload(repo);
+    const s = await repo.updateSong(t.songId!, { originalKey: "G" });
+    expect(s).toMatchObject({ originalKey: "G", bandKey: "G" });
+  });
+
+  it("clears the band key when an original song's key is removed", async () => {
+    const repo = makeRepo(memoryKV());
+    const t = await upload(repo);
+    await repo.updateSong(t.songId!, { originalKey: "G", bandKey: "A" });
+    const s = await repo.updateSong(t.songId!, { originalKey: "", bandKey: "A" });
+    expect(s).toMatchObject({ originalKey: "", bandKey: "" });
+  });
+
+  it("lets a song that is not an original drop its key too", async () => {
+    const repo = makeRepo(memoryKV());
+    const s = await repo.createSong(song());
+    expect(await repo.updateSong(s.id, { originalKey: "" })).toMatchObject({ originalKey: "", bandKey: "" });
+  });
+
+  it("does not create a song while the upload is unfinished", async () => {
+    const repo = makeRepo(memoryKV());
+    const t = await repo.createTrack({ title: "Demo", size: 7_000_000 });
+    await repo.putTrackPart(t.id, 0, bytes(3_145_728));
+    expect(await repo.listSongs()).toEqual([]);
+    await expect(repo.linkTrackSong(t.id)).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("linkTrackSong is idempotent", async () => {
+    const repo = makeRepo(memoryKV());
+    const t = await upload(repo);
+    const a = await repo.linkTrackSong(t.id);
+    const b = await repo.linkTrackSong(t.id);
+    expect(a.id).toBe(b.id);
+    expect(a.id).toBe(t.songId);
+    expect(await repo.listSongs()).toHaveLength(1);
+  });
+
+  it("deleteSong keeps the song if cleanup fails, so deleting again finishes", async () => {
+    const kv = memoryKV();
+    let failAudio = true;
+    const flaky = {
+      ...kv,
+      delete: async (k: string) => {
+        if (failAudio && k.startsWith("audio/")) throw new Error("timeout");
+        return kv.delete(k);
+      },
+    };
+    const repo = makeRepo(flaky);
+    const t = await upload(repo);
+    await expect(repo.deleteSong(t.songId!)).rejects.toThrow("timeout");
+    expect(await repo.getSong(t.songId!)).not.toBeNull();
+    failAudio = false;
+    await repo.deleteSong(t.songId!);
+    expect(await repo.getSong(t.songId!)).toBeNull();
+    expect(await repo.getTrack(t.id)).toBeNull();
+  });
+
+  it("overlapping linkTrackSong calls make one song, not two", async () => {
+    const kv = memoryKV();
+    const repo = makeRepo(kv);
+    const t = await upload(repo);
+    // Simulate the race: the track has not recorded its song yet when both calls read it.
+    await kv.setText(`tracks/${t.id}`, JSON.stringify({ ...(await repo.getTrack(t.id)), songId: undefined }));
+    await kv.delete(`songs/${t.songId}`);
+    const [a, b] = await Promise.all([repo.linkTrackSong(t.id), repo.linkTrackSong(t.id)]);
+    expect(a.id).toBe(b.id);
+    expect(await repo.listSongs()).toHaveLength(1);
+    expect((await repo.getTrack(t.id))!.songId).toBe(a.id);
+  });
+
+  it("linkTrackSong links a legacy track without a song", async () => {
+    const kv = memoryKV();
+    const repo = makeRepo(kv);
+    const legacy = { id: "old", title: "Old", size: 5, parts: 1, uploadedParts: 1, createdAt: "x" };
+    await kv.setText("tracks/old", JSON.stringify(legacy));
+    const s = await repo.linkTrackSong("old");
+    expect(s).toMatchObject({ title: "Old", trackId: "old" });
+    expect((await repo.getTrack("old"))!.songId).toBe(s.id);
+    await expect(repo.linkTrackSong("nope")).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("relinks if the linked song was removed", async () => {
+    const kv = memoryKV();
+    const repo = makeRepo(kv);
+    const t = await upload(repo);
+    await kv.delete(`songs/${t.songId}`);
+    const s = await repo.linkTrackSong(t.id);
+    expect(s.id).not.toBe(t.songId);
+    expect((await repo.getTrack(t.id))!.songId).toBe(s.id);
+  });
+
+  it("renaming a track renames its song", async () => {
+    const repo = makeRepo(memoryKV());
+    const t = await upload(repo);
+    await repo.renameTrack(t.id, " New ");
+    expect((await repo.getSong(t.songId!))!.title).toBe("New");
+  });
+
+  it("rejects track titles longer than the song title limit", async () => {
+    const repo = makeRepo(memoryKV());
+    const long = "x".repeat(LIMITS.title + 1);
+    await expect(repo.createTrack({ title: long, size: 5 })).rejects.toBeInstanceOf(ValidationError);
+    const t = await upload(repo);
+    await expect(repo.renameTrack(t.id, long)).rejects.toBeInstanceOf(ValidationError);
+    expect((await repo.getSong(t.songId!))!.title).toBe("Demo");
+  });
+
+  it("changing an original song's title renames its track", async () => {
+    const repo = makeRepo(memoryKV());
+    const t = await upload(repo);
+    await repo.updateSong(t.songId!, { content: "[C]la" });
+    expect((await repo.getTrack(t.id))!.title).toBe("Demo");
+    await repo.updateSong(t.songId!, { title: "Newer" });
+    expect((await repo.getTrack(t.id))!.title).toBe("Newer");
+    expect((await repo.getSong(t.songId!))!.trackId).toBe(t.id);
+  });
+
+  it("deleting a track deletes its song and removes it from setlists", async () => {
+    const kv = memoryKV();
+    const repo = makeRepo(kv);
+    const t = await upload(repo);
+    const gig = await repo.createGig({ name: "G", date: "2026-01-01", setlist: [{ type: "song", songId: t.songId! }] });
+    await repo.deleteTrack(t.id);
+    expect(await repo.getSong(t.songId!)).toBeNull();
+    expect((await repo.getGig(gig.id))!.setlist).toEqual([]);
+    expect(await kv.list(`audio/${t.id}/`)).toEqual([]);
+  });
+
+  it("deleting an original song deletes its track and audio", async () => {
+    const kv = memoryKV();
+    const repo = makeRepo(kv);
+    const t = await upload(repo);
+    await repo.deleteSong(t.songId!);
+    expect(await repo.getTrack(t.id)).toBeNull();
+    expect(await repo.listTracks()).toEqual([]);
+    expect(await kv.list(`audio/${t.id}/`)).toEqual([]);
+  });
+
+  it("clients cannot set trackId", async () => {
+    const repo = makeRepo(memoryKV());
+    const s = await repo.createSong({ ...song(), trackId: "x" } as unknown as SongInput);
+    expect(s.trackId).toBeUndefined();
+    const u = await repo.updateSong(s.id, { trackId: "y" } as unknown as Partial<SongInput>);
+    expect(u.trackId).toBeUndefined();
+  });
+});
+
+describe("importSongs", () => {
+  it("reuses matching songs, creates the rest empty, and keeps playlist order", async () => {
+    const repo = makeRepo(memoryKV());
+    const existing = await repo.createSong(song());
+    const out = await repo.importSongs([
+      { title: "wonderwall ", artist: "OASIS" },
+      { title: "Yellow", artist: "Coldplay" },
+      { title: "Yellow", artist: "coldplay" },
+    ]);
+    expect(out).toHaveLength(2);
+    expect(out[0].id).toBe(existing.id);
+    expect(out[0].content).toBe(existing.content);
+    expect(out[1]).toMatchObject({
+      title: "Yellow", artist: "Coldplay", originalKey: "", bandKey: "", capo: 0, content: "", sourceUrl: null,
+    });
+    expect(await repo.listSongs()).toHaveLength(2);
+  });
+
+  it("is safe to call again: the second call reuses the songs the first one made", async () => {
+    const repo = makeRepo(memoryKV());
+    const tracks = [{ title: "Yellow", artist: "Coldplay" }, { title: "Creep", artist: "Radiohead" }];
+    const first = await repo.importSongs(tracks);
+    const second = await repo.importSongs(tracks);
+    expect(second.map((s) => s.id)).toEqual(first.map((s) => s.id));
+    expect(await repo.listSongs()).toHaveLength(2);
+  });
+
+  it("trims titles and artists", async () => {
+    const repo = makeRepo(memoryKV());
+    const [s] = await repo.importSongs([{ title: "  Yellow ", artist: " Coldplay  " }]);
+    expect(s).toMatchObject({ title: "Yellow", artist: "Coldplay" });
+  });
+
+  it("rejects bad input", async () => {
+    const repo = makeRepo(memoryKV());
+    const many = Array.from({ length: LIMITS.gigSongs + 1 }, (_, i) => ({ title: `Song ${i}`, artist: "" }));
+    for (const bad of [
+      "x",
+      undefined,
+      many,
+      [{ title: "  ", artist: "" }],
+      [{ title: "x".repeat(LIMITS.title + 1), artist: "" }],
+      [{ title: "A", artist: 5 }],
+      [null],
+    ]) {
+      await expect(repo.importSongs(bad)).rejects.toThrow(ValidationError);
+    }
+    expect(await repo.listSongs()).toHaveLength(0);
   });
 });

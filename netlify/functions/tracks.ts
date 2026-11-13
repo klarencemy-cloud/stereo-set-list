@@ -22,6 +22,10 @@ export function makeTracksHandler(repo: Repo) {
       return methodNotAllowed();
     }
     if (sub === undefined) {
+      if (req.method === "GET") {
+        const track = await repo.getTrack(id);
+        return track ? json(track) : notFound();
+      }
       if (req.method === "PUT") {
         const body = await readBody<{ title: string }>(req);
         return json(await repo.renameTrack(id, body?.title));
@@ -30,6 +34,10 @@ export function makeTracksHandler(repo: Repo) {
         await repo.deleteTrack(id);
         return noContent();
       }
+      return methodNotAllowed();
+    }
+    if (sub === "song" && num === undefined) {
+      if (req.method === "POST") return json(await repo.linkTrackSong(id));
       return methodNotAllowed();
     }
     if (sub !== "parts" || num === undefined || extra !== undefined) return notFound();
@@ -55,4 +63,4 @@ export function makeTracksHandler(repo: Repo) {
 
 export default (req: Request) => makeTracksHandler(makeRepo(blobsKV()))(req);
 
-export const config: Config = { path: ["/api/tracks", "/api/tracks/:id", "/api/tracks/:id/parts/:n"] };
+export const config: Config = { path: ["/api/tracks", "/api/tracks/:id", "/api/tracks/:id/parts/:n", "/api/tracks/:id/song"] };

@@ -1,0 +1,16 @@
+# Code-review findings
+
+A code review of branch `update` on 2026-11-12 turned up 10 problems. All are fixed:
+
+1. TrackPlayer kept the previous song's audio
+2. putTrackPart / linkTrackSong race
+3. deleteSong cleanup was not atomic
+4. renameTrack / updateSong synced titles without a length check
+5. Editing a song lost inline chords and `[tab]` tags (fixed by `mergeEditedText` in `src/shared/sheet.ts`)
+6. `useUnsavedChanges`: `allowNavigation()` switched the warning off for good. It now covers only the next navigation (2026-11-13). This was hardening: users could not hit it, because both callers leave the form page right away and that unmounts the hook. The claim that StrictMode shows the confirm twice did not hold up when the code was read.
+7. A setlist note was lost when its save failed (2026-11-13). The review's main claim, that a note and a second change overwrite each other, did not hold up: the page redraws between two user actions and greys out every control while a save runs, so the second change is dropped instead (that is #8). The real bug was that a failed save rolled the setlist back and emptied the note or break-label box. `BlurField` in `SetlistEditor.tsx` now keeps the typed text until the save succeeds, and GigPage's `save` resolves `true`/`false`.
+8. "Add songs" lost your ticks when the save failed (2026-11-13). `AddSongsPicker` now clears the ticks and search only after a successful save, and only unticks the songs it added, so songs ticked during the save stay ticked. The review's other claim, that changes made during a save are silently dropped, mostly did not hold up: every setlist control is greyed out while saving. **Left as is (by choice):** if you type a note and then click a button straight away, the button is greyed out before the click lands, so the click does nothing; the note is saved and you click again. A proper fix would queue edits in GigPage's `save` instead of `if (saving) return false`. That was judged too big for a rare, easily recovered case.
+9. The gig list kept deleted songs that a single gig hides (2026-11-13). `listGigs` now runs every gig through the same `withoutMissingSongs` filter as `getGig`, using one listing of song keys for the whole list. Users could not see this yet: `deleteSong` already removes the song from every gig, so a stale reference only appears when an out-of-date page saves the gig after the delete, and no page reads setlists from the gig list today.
+10. New original songs claimed to be in the key of C (2026-11-13). `linkTrackSong` now creates them with an empty `originalKey` and `bandKey`. `repo.ts` accepts an empty key only for original songs (`withKeys`): with no original key the band key is cleared too, and a song that first gets a key starts with the band key equal to it. The edit form lets an original song be saved without a key. With no key, the Songs list, gig setlists and the Add songs picker show no key, and the song page shows "Key: ?" plus the existing "Key unknown — fix it in Edit" note; transposing shows that error instead of saving. **Not migrated:** original songs uploaded before this fix still say C, because a placeholder C cannot be told apart from a real one. Fix those by hand in Edit.
+
+All ten findings are fixed.

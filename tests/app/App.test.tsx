@@ -17,6 +17,19 @@ import ErrorBoundary from "../../src/app/components/ErrorBoundary";
 
 afterEach(() => vi.restoreAllMocks());
 
+describe("top bar", () => {
+  it("shows the Stereobloc logo next to the site name", () => {
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <AppRoutes />
+      </MemoryRouter>,
+    );
+    const banner = screen.getByRole("banner");
+    expect(banner).toHaveTextContent("Stereo Set");
+    expect(screen.getByRole("img", { name: "Stereobloc" })).toHaveAttribute("src", "/logo-64.png");
+  });
+});
+
 describe("ErrorBoundary", () => {
   it("shows a message and Reload button instead of a blank page, keeping the bottom nav", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});

@@ -1,14 +1,20 @@
-import { useEffect, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../api";
+import { loadSetlist, loadSong, peekSong, prefetchSong, rememberSong } from "../songCache";
 import type { Song } from "../../shared/types";
 import { transposeContent } from "../../shared/sheet";
 import { transposeKey } from "../../shared/transpose";
 import ChordSheet from "../components/ChordSheet";
+import TrackPlayer from "../components/TrackPlayer";
 import TransposeControl from "../components/TransposeControl";
 import { useAutoscroll } from "../components/useAutoscroll";
+import { useWakeLock } from "../components/useWakeLock";
+import { useSongSpeed } from "../components/useSongSpeed";
+import { useStageMode } from "../components/useStageMode";
+import { useFontSize } from "../components/useFontSize";
+import { useSwipe } from "../components/useSwipe";
 
-const SPEEDS = [0.5, 1, 1.5, 2, 3];
 const KEY_UNKNOWN = "Key unknown \u2014 fix it in Edit";
 
 export default function SongPage() {
@@ -16,22 +22,25 @@ export default function SongPage() {
   const [searchParams] = useSearchParams();
   const gigId = searchParams.get("gig");
   const [neighbours, setNeighbours] = useState<{ prev: string | null; next: string | null }>({ prev: null, next: null });
+  const [setlistNote, setSetlistNote] = useState<string | null>(null);
   const [song, setSong] = useState<Song | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
-  const [speedIdx, setSpeedIdx] = useState(1);
+  const speed = useSongSpeed(id);
+  const stage = useStageMode();
   const [showTranspose, setShowTranspose] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let alive = true;
     // Moving between songs reuses this component: start each one fresh, at the top.
-    setSong(null);
+    // A song fetched ahead of time shows straight away, with no loading screen.
+    setSong(peekSong(id) ?? null);
     setError(null);
     setRunning(false);
     setShowTranspose(false);
     window.scrollTo?.(0, 0);
-    api.getSong(id).then(
+    loadSong(id).then(
       (s) => alive && setSong(s),
       (e) => alive && setError(e instanceof ApiError ? e.message : "Could not load this song."),
     );
@@ -43,17 +52,21 @@ export default function SongPage() {
   // Opened from a gig's setlist: work out the neighbouring songs.
   useEffect(() => {
     setNeighbours({ prev: null, next: null });
+    setSetlistNote(null);
     if (!gigId) return;
     let alive = true;
-    Promise.all([api.getGig(gigId), api.listSongs()]).then(
-      ([gig, all]) => {
+    loadSetlist(gigId).then(
+      ({ ids, notes }) => {
         if (!alive) return;
-        const exists = new Set(all.map((s) => s.id));
-        // Songs deleted after being added simply drop out of the setlist.
-        const ids = gig.songIds.filter((sid) => exists.has(sid));
         const i = ids.indexOf(id);
         if (i === -1) return;
-        setNeighbours({ prev: ids[i - 1] ?? null, next: ids[i + 1] ?? null });
+        setSetlistNote(notes[id] ?? null);
+        const prev = ids[i - 1] ?? null;
+        const next = ids[i + 1] ?? null;
+        setNeighbours({ prev, next });
+        // Fetch the neighbours now so Next and Previous open instantly.
+        if (next) prefetchSong(next);
+        if (prev) prefetchSong(prev);
       },
       () => {
         // Navigation is a convenience; the song itself still works without it.
@@ -64,7 +77,17 @@ export default function SongPage() {
     };
   }, [id, gigId]);
 
-  useAutoscroll(SPEEDS[speedIdx], running);
+  useAutoscroll(speed.speed, running);
+  // Keep the phone from dimming or locking for as long as a song is open.
+  useWakeLock(true);
+  const font = useFontSize();
+  const navigate = useNavigate();
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const { prev, next } = neighbours;
+  useSwipe(sheetRef, {
+    onLeft: next ? () => navigate(`/songs/${next}?gig=${gigId}`) : undefined,
+    onRight: prev ? () => navigate(`/songs/${prev}?gig=${gigId}`) : undefined,
+  });
 
   async function transpose(semitones: number) {
     if (!song || saving) return;
@@ -81,6 +104,7 @@ export default function SongPage() {
     setSong({ ...song, bandKey: next });
     try {
       await api.updateSong(song.id, { bandKey: next });
+      rememberSong({ ...song, bandKey: next });
     } catch (e) {
       setSong((s) => (s ? { ...s, bandKey: previous } : s));
       setError(e instanceof ApiError ? e.message : "Could not save the new key.");
@@ -89,9 +113,17 @@ export default function SongPage() {
     }
   }
 
+  // Also shown while a song loads or fails to load: the top bar is hidden in stage mode, so this is the way out.
+  const exitStage = stage.on && (
+    <button type="button" className="stage-exit" onClick={stage.toggle}>
+      Exit stage
+    </button>
+  );
+
   if (!song) {
     return (
       <main className="page">
+        {exitStage}
         {error ? <p role="alert" className="error">{error}</p> : <p className="muted">Loading...</p>}
       </main>
     );
@@ -109,26 +141,41 @@ export default function SongPage() {
 
   return (
     <main className="page song-page">
+      {exitStage}
       <h1 className="song-title">{song.title}</h1>
-      <p className="song-by">
-        <span className="muted">by</span> <strong>{song.artist}</strong>
-      </p>
+      {song.artist && (
+        <p className="song-by">
+          <span className="muted">by</span> <strong>{song.artist}</strong>
+        </p>
+      )}
       <div className="pill-row">
         <button type="button" className="pill pill-yellow" onClick={() => setRunning((r) => !r)}>
           <span aria-hidden="true">{running ? "\u23f8" : "\u25b6"}</span> Autoscroll
         </button>
-        <button type="button" className="pill" onClick={() => setSpeedIdx((i) => (i + 1) % SPEEDS.length)}>
-          {`Speed: ${SPEEDS[speedIdx]}`}
+        <button type="button" className="pill" onClick={speed.cycle}>
+          {`Speed: ${speed.speed}`}
         </button>
+        <div className="pill pill-split" role="group" aria-label="Text size">
+          <button type="button" aria-label="Smaller text" disabled={!font.canShrink} onClick={font.smaller}>
+            {"A−"}
+          </button>
+          <button type="button" aria-label="Bigger text" disabled={!font.canGrow} onClick={font.bigger}>
+            A+
+          </button>
+        </div>
         <button type="button" className="pill" aria-expanded={showTranspose} onClick={() => setShowTranspose((v) => !v)}>
           Transpose
         </button>
+        <button type="button" className="pill" aria-pressed={stage.on} onClick={stage.toggle}>
+          Stage
+        </button>
         <Link className="pill" to={`/songs/${song.id}/edit`}>Edit</Link>
       </div>
-      {showTranspose && <TransposeControl bandKey={song.bandKey} onChange={transpose} busy={saving} />}
+      {showTranspose && <TransposeControl bandKey={song.bandKey || "?"} onChange={transpose} busy={saving} />}
       {error && <p role="alert" className="error">{error}</p>}
+      {setlistNote && <p className="setlist-note" role="note">{setlistNote}</p>}
       <p className="song-info">
-        <span>Key: <strong>{song.bandKey}</strong></span>
+        <span>Key: <strong>{song.bandKey || "?"}</strong></span>
         {" \u00b7 "}
         <span>{song.capo > 0 ? `Capo: ${song.capo}` : "No capo"}</span>
         {source && (
@@ -141,7 +188,12 @@ export default function SongPage() {
         )}
       </p>
       {keyUnknown && <p className="muted key-note">{KEY_UNKNOWN}</p>}
-      <ChordSheet content={content} onTap={() => setRunning(false)} />
+      {song.trackId && <TrackPlayer key={song.trackId} trackId={song.trackId} />}
+      {song.content.trim() === "" ? (
+        <p className="muted">No lyrics or chords yet {"—"} tap Edit to add them.</p>
+      ) : (
+        <ChordSheet content={content} sheetRef={sheetRef} fontSize={font.size} onTap={() => setRunning(false)} />
+      )}
       {(neighbours.prev || neighbours.next) && (
         <nav className="song-nav" aria-label="Setlist">
           {neighbours.prev ? (
