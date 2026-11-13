@@ -2,6 +2,20 @@
 
 What's new on Stereo Set, newest first.
 
+## Unreleased: Import a Spotify playlist
+
+### Added
+
+- **Import Playlist.** When you create a gig, tap "Import Playlist", paste a Spotify playlist link and tap Load. Every track is listed and ticked; untick any you won't play. Create the gig and the ticked tracks become its setlist, in playlist order. Each track also goes into Songs. A song you already have (same title and artist) is reused, with its chords, instead of being added twice.
+- **Import Playlist on an existing gig.** The same button on a gig's page adds the ticked tracks to the end of its setlist. Songs already in the setlist are marked "in setlist" and skipped.
+- **Paste a track list instead.** If Spotify can't be read, paste the tracks yourself, one per line as "Title - Artist". Spotify's page only lists the first 100 tracks of a playlist.
+- **Import chords while editing.** Edit song now has the Import button. Paste an Ultimate Guitar link to fill in the chords, key and capo. The title and artist stay as they are, and a band key you already chose is kept. Nothing is saved until you tap Save.
+- **"No chords yet" tag.** Songs with no chords are marked in the Songs list and in gig setlists, so you can see what's left to fill in.
+
+### Changed
+
+- **Any song can be saved without a key.** Imported songs start with no key; they show "?" until you set one or import the chords.
+
 ## Unreleased: Original songs get their own page
 
 ### Added
