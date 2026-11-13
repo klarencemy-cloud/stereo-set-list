@@ -1,4 +1,5 @@
 import { api } from "./api";
+import { setlistOf } from "../shared/setlist";
 import type { Song } from "../shared/types";
 
 /** Cached songs and setlists are refetched after this long, so other band members' edits show up. */
@@ -10,8 +11,15 @@ interface Entry<T> {
   value?: T;
 }
 
+export interface LoadedSetlist {
+  /** Song ids in setlist order, skipping songs deleted after they were added. */
+  ids: string[];
+  /** The gig's note for a song, by song id. */
+  notes: Record<string, string>;
+}
+
 const songs = new Map<string, Entry<Song>>();
-const setlists = new Map<string, Entry<string[]>>();
+const setlists = new Map<string, Entry<LoadedSetlist>>();
 
 function fresh<T>(entry: Entry<T> | undefined): entry is Entry<T> {
   return !!entry && Date.now() - entry.at <= CACHE_TTL_MS;
@@ -52,12 +60,20 @@ export function rememberSong(song: Song): void {
   songs.set(song.id, { at: Date.now(), promise: Promise.resolve(song), value: song });
 }
 
-/** The gig's song ids, skipping songs deleted after they were added. */
-export function loadSetlist(gigId: string): Promise<string[]> {
+/** The gig's songs in order (and their notes), skipping songs deleted after they were added. */
+export function loadSetlist(gigId: string): Promise<LoadedSetlist> {
   return load(setlists, gigId, async () => {
     const [gig, all] = await Promise.all([api.getGig(gigId), api.listSongs()]);
     const exists = new Set(all.map((s) => s.id));
-    return gig.songIds.filter((sid) => exists.has(sid));
+    const ids: string[] = [];
+    const notes: Record<string, string> = {};
+    // setlistOf also reads gigs cached before breaks and notes existed (songIds only).
+    for (const item of setlistOf(gig)) {
+      if (item.type !== "song" || !exists.has(item.songId)) continue;
+      ids.push(item.songId);
+      if (item.note) notes[item.songId] = item.note;
+    }
+    return { ids, notes };
   });
 }
 

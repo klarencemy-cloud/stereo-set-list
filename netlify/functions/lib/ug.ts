@@ -31,15 +31,38 @@ export function isUgUrl(url: string): boolean {
   );
 }
 
-function unescapeHtml(s: string): string {
-  return s
-    .replace(/&quot;/g, '"')
-    .replace(/&#0*39;|&apos;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&#x([0-9a-f]+);/gi, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_, d: string) => String.fromCodePoint(parseInt(d, 10)))
-    .replace(/&amp;/g, "&");
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
+  // A plain space keeps chord columns lined up in the monospace sheet.
+  nbsp: " ",
+  lsquo: "‘", rsquo: "’", sbquo: "‚", ldquo: "“", rdquo: "”", bdquo: "„",
+  ndash: "–", mdash: "—", hellip: "…", prime: "′", Prime: "″",
+  laquo: "«", raquo: "»", lsaquo: "‹", rsaquo: "›",
+  bull: "•", middot: "·", deg: "°", times: "×", divide: "÷",
+  copy: "©", reg: "®", trade: "™", iexcl: "¡", iquest: "¿",
+  szlig: "ß", aelig: "æ", AElig: "Æ", oslash: "ø", Oslash: "Ø", aring: "å", Aring: "Å",
+};
+// Accented letters: &eacute; &Ntilde; &uuml; ...
+for (const [suffix, base, marks] of [
+  ["acute", "aeiouyAEIOUY", "́"],
+  ["grave", "aeiouAEIOU", "̀"],
+  ["circ", "aeiouAEIOU", "̂"],
+  ["uml", "aeiouyAEIOUY", "̈"],
+  ["tilde", "anoANO", "̃"],
+  ["cedil", "cC", "̧"],
+] as const) {
+  for (const ch of base) NAMED_ENTITIES[ch + suffix] = (ch + marks).normalize("NFC");
+}
+
+/** Decodes HTML character references in one pass, so "&amp;rsquo;" becomes "&rsquo;", not "’". Unknown ones stay. */
+export function decodeEntities(s: string): string {
+  return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);/gi, (whole, ref: string) => {
+    if (ref[0] === "#") {
+      const code = ref[1] === "x" || ref[1] === "X" ? parseInt(ref.slice(2), 16) : parseInt(ref.slice(1), 10);
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+    }
+    return NAMED_ENTITIES[ref] ?? whole;
+  });
 }
 
 export function parseUgHtml(html: string, sourceUrl: string): ImportedSong {
@@ -47,7 +70,7 @@ export function parseUgHtml(html: string, sourceUrl: string): ImportedSong {
   if (!m) throw new ImportError("parse");
   let data: any;
   try {
-    data = JSON.parse(unescapeHtml(m[1]));
+    data = JSON.parse(decodeEntities(m[1]));
   } catch {
     throw new ImportError("parse");
   }
@@ -55,13 +78,14 @@ export function parseUgHtml(html: string, sourceUrl: string): ImportedSong {
   const tab = pageData?.tab;
   const content = pageData?.tab_view?.wiki_tab?.content;
   if (typeof content !== "string" || content.length === 0) throw new ImportError("parse");
+  // UG stores some user text with HTML entities still in it (&rsquo; &mdash; ...) and decodes them on display.
   return {
-    title: String(tab?.song_name ?? ""),
-    artist: String(tab?.artist_name ?? ""),
+    title: decodeEntities(String(tab?.song_name ?? "")),
+    artist: decodeEntities(String(tab?.artist_name ?? "")),
     sourceUrl,
     originalKey: typeof tab?.tonality_name === "string" ? tab.tonality_name : "",
     capo: Number.isFinite(Number(tab?.capo)) ? Number(tab.capo) : 0,
-    content,
+    content: decodeEntities(content),
   };
 }
 

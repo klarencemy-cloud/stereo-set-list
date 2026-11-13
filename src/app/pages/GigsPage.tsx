@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api";
 import { formatGigDate, todayISO } from "../formatDate";
+import { splitGigs } from "../gigList";
 import type { Gig } from "../../shared/types";
 
 export default function GigsPage() {
@@ -33,13 +34,15 @@ export default function GigsPage() {
     setFormError("");
     setSaving(true);
     try {
-      const gig = await api.createGig({ name: name.trim(), date, songIds: [] });
+      const gig = await api.createGig({ name: name.trim(), date, setlist: [] });
       navigate(`/gigs/${gig.id}`);
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : "Could not create the gig.");
       setSaving(false);
     }
   }
+
+  const sections = splitGigs(gigs ?? [], todayISO());
 
   return (
     <main className="page">
@@ -69,18 +72,41 @@ export default function GigsPage() {
       {error && <p className="error" role="alert">{error}</p>}
       {gigs === null && !error && <p className="muted">Loading...</p>}
       {gigs !== null && gigs.length === 0 && <p className="muted">No gigs yet. Add the first one.</p>}
-      <ul className="list">
-        {(gigs ?? []).map((g) => (
-          <li key={g.id}>
-            <Link className="list-row" to={`/gigs/${g.id}`}>
-              <span className="grow">
-                <strong>{g.name}</strong>
-                <span className="muted block">{formatGigDate(g.date)}</span>
-              </span>
-            </Link>
-          </li>
-        ))}
-      </ul>
+      {gigs !== null && gigs.length > 0 && (
+        <>
+          <section aria-labelledby="gigs-upcoming">
+            <h2 id="gigs-upcoming">Upcoming</h2>
+            {sections.upcoming.length === 0 ? (
+              <p className="muted">No upcoming gigs.</p>
+            ) : (
+              <GigRows gigs={sections.upcoming} />
+            )}
+          </section>
+          {sections.past.length > 0 && (
+            <section aria-labelledby="gigs-past">
+              <h2 id="gigs-past">Past</h2>
+              <GigRows gigs={sections.past} />
+            </section>
+          )}
+        </>
+      )}
     </main>
+  );
+}
+
+function GigRows({ gigs }: { gigs: Gig[] }) {
+  return (
+    <ul className="list">
+      {gigs.map((g) => (
+        <li key={g.id}>
+          <Link className="list-row" to={`/gigs/${g.id}`}>
+            <span className="grow">
+              <strong>{g.name}</strong>
+              <span className="muted block">{formatGigDate(g.date)}</span>
+            </span>
+          </Link>
+        </li>
+      ))}
+    </ul>
   );
 }

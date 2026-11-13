@@ -12,3 +12,19 @@ if (dom) {
 }
 
 afterEach(() => cleanup());
+
+// The data router (createMemoryRouter) builds a Request with an AbortSignal. In this jsdom environment that
+// signal is jsdom's, which Node's own Request refuses. Drop the signal: tests never need to abort a navigation.
+const NodeRequest = globalThis.Request;
+if (NodeRequest) {
+  globalThis.Request = class extends NodeRequest {
+    constructor(input: RequestInfo | URL, init?: RequestInit) {
+      if (init?.signal) {
+        const { signal: _signal, ...rest } = init;
+        super(input, rest);
+      } else {
+        super(input, init);
+      }
+    }
+  } as typeof Request;
+}

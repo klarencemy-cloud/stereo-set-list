@@ -37,6 +37,20 @@ describe("registerServiceWorker", () => {
     expect(register).not.toHaveBeenCalled();
   });
 
+  it("removes a leftover worker during development, then reloads", async () => {
+    vi.stubEnv("PROD", false);
+    const unregister = vi.fn(async () => true);
+    const reload = vi.fn();
+    vi.stubGlobal("location", { ...window.location, reload });
+    vi.stubGlobal("caches", { keys: async () => ["stereo-set-api-v1", "other"], delete: vi.fn(async () => true) });
+    mockServiceWorker({ register: vi.fn(), getRegistrations: async () => [{ unregister }] });
+    registerServiceWorker();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(unregister).toHaveBeenCalled();
+    expect(reload).toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
   it("does nothing when the browser has no service workers", () => {
     vi.stubEnv("PROD", true);
     expect(() => registerServiceWorker()).not.toThrow();

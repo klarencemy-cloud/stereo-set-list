@@ -11,6 +11,7 @@ import {
   saveShell,
   networkFirst,
   routeFor,
+  staleAfterTrackChange,
   type CacheLike,
 } from "../../src/sw/strategy";
 
@@ -49,7 +50,11 @@ describe("routeFor", () => {
     ["POST", "/api/gigs", false, "mutate"],
     ["DELETE", "/api/gigs/g1", false, "mutate"],
     ["POST", "/api/songs", false, "mutate"],
-    ["PUT", "/api/tracks/t1", false, "pass"],
+    ["PUT", "/api/tracks/t1", false, "mutate"],
+    ["DELETE", "/api/tracks/t1", false, "mutate"],
+    ["POST", "/api/tracks/t1/song", false, "mutate"],
+    ["PUT", "/api/tracks/t1/parts/2", false, "mutate"],
+    ["POST", "/api/tracks", false, "pass"],
     ["POST", "/api/import", false, "pass"],
     ["GET", "/api/tracks/t1/parts/0", true, "pass"],
     ["GET", "/api/songs", true, "api"],
@@ -164,6 +169,14 @@ describe("invalidationKeys", () => {
     expect(invalidationKeys(u("/api/songs/s1"))).toEqual(["/api/songs/s1", "/api/songs"]);
     expect(invalidationKeys(u("/api/gigs/g1"))).toEqual(["/api/gigs/g1", "/api/gigs"]);
     expect(invalidationKeys(u("/api/gigs"))).toEqual(["/api/gigs"]);
+    expect(invalidationKeys(u("/api/tracks/t1"))).toEqual([]);
+  });
+
+  it("drops saved songs when a track is renamed, and gigs too when one is deleted", () => {
+    const saved = ["/api/songs", "/api/songs/s1", "/api/gigs", "/api/gigs/g1"];
+    expect(staleAfterTrackChange("PUT", u("/api/tracks/t1"), saved)).toEqual(["/api/songs", "/api/songs/s1"]);
+    expect(staleAfterTrackChange("DELETE", u("/api/tracks/t1"), saved)).toEqual(saved);
+    expect(staleAfterTrackChange("PUT", u("/api/songs/s1"), saved)).toEqual([]);
   });
 });
 

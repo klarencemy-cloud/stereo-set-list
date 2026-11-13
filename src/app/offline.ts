@@ -4,10 +4,31 @@ export const NOT_READY = "Offline mode is still setting up. Reload the page and 
 
 /** Starts the offline service worker. Only in a production build: in dev it would cache Vite's modules. */
 export function registerServiceWorker(): void {
-  if (!import.meta.env.PROD || !("serviceWorker" in navigator)) return;
+  if (!("serviceWorker" in navigator)) return;
+  if (!import.meta.env.PROD) {
+    // Dev serves HTML at /sw.js, so a worker left over from an earlier production build on this
+    // address can never update and keeps answering from stale saved copies. Remove it.
+    void removeLeftoverWorkers();
+    return;
+  }
   navigator.serviceWorker.register("/sw.js").catch(() => {
     // Offline mode is a bonus; the site works without it.
   });
+}
+
+async function removeLeftoverWorkers(): Promise<void> {
+  try {
+    const regs = await navigator.serviceWorker.getRegistrations();
+    if (regs.length === 0) return;
+    await Promise.all(regs.map((r) => r.unregister()));
+    for (const name of await caches.keys()) {
+      if (name.startsWith("stereo-set-")) await caches.delete(name);
+    }
+    // The page is still controlled by the old worker until it reloads.
+    window.location.reload();
+  } catch {
+    // Nothing to clean up, or the browser refused: dev still works.
+  }
 }
 
 export function canSaveOffline(): boolean {

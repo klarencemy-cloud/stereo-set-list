@@ -82,6 +82,27 @@ describe("gigs API", () => {
   });
 });
 
+describe("gigs API setlists", () => {
+  it("PUT with a setlist returns the setlist and matching songIds", async () => {
+    const { songs, gigs } = setup();
+    const song = await (
+      await songs(
+        jsonReq("POST", "/api/songs", {
+          title: "A", artist: "x", sourceUrl: null, originalKey: "G", bandKey: "G", capo: 0, content: "",
+        }),
+      )
+    ).json();
+    const g = await (await gigs(jsonReq("POST", "/api/gigs", { name: "Pub", date: "2026-12-01" }))).json();
+    const setlist = [{ type: "song", songId: song.id, note: "hi" }, { type: "break", id: "k", label: "Set 2" }];
+    const res = await gigs(jsonReq("PUT", `/api/gigs/${g.id}`, { setlist }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.setlist).toEqual(setlist);
+    expect(body.songIds).toEqual([song.id]);
+    expect((await gigs(jsonReq("PUT", `/api/gigs/${g.id}`, { setlist: "bad" }))).status).toBe(400);
+  });
+});
+
 describe("tracks API", () => {
   it("rejects oversize tracks", async () => {
     const { tracks } = setup();
@@ -111,6 +132,30 @@ describe("tracks API", () => {
     const res = await tracks(jsonReq("GET", "/api/tracks"));
     expect(res.status).toBe(200);
     expect(await memory.getText(`tracks/${t.id}`)).toBeNull();
+  });
+
+  it("GET /api/tracks/:id returns the track, 404 for unknown", async () => {
+    const { tracks } = setup();
+    const t = await (await tracks(jsonReq("POST", "/api/tracks", { title: "Demo", size: 5 }))).json();
+    const res = await tracks(jsonReq("GET", `/api/tracks/${t.id}`));
+    expect(res.status).toBe(200);
+    expect((await res.json()).title).toBe("Demo");
+    expect((await tracks(jsonReq("GET", "/api/tracks/nope"))).status).toBe(404);
+  });
+
+  it("POST /api/tracks/:id/song returns the linked song; 404 unknown; 400 unfinished", async () => {
+    const { tracks, songs } = setup();
+    const t = await (await tracks(jsonReq("POST", "/api/tracks", { title: "Demo", size: 5 }))).json();
+    expect((await tracks(jsonReq("POST", `/api/tracks/${t.id}/song`))).status).toBe(400);
+    await tracks(new Request(`${U}/api/tracks/${t.id}/parts/0`, { method: "PUT", body: new Uint8Array(5) }));
+    const res = await tracks(jsonReq("POST", `/api/tracks/${t.id}/song`));
+    expect(res.status).toBe(200);
+    const song = await res.json();
+    expect(song).toMatchObject({ title: "Demo", trackId: t.id });
+    const list = await (await songs(jsonReq("GET", "/api/songs"))).json();
+    expect(list.map((x: { id: string }) => x.id)).toEqual([song.id]);
+    expect((await tracks(jsonReq("POST", "/api/tracks/nope/song"))).status).toBe(404);
+    expect((await tracks(jsonReq("GET", `/api/tracks/${t.id}/song`))).status).toBe(405);
   });
 
   it("round-trips a part as raw bytes", async () => {

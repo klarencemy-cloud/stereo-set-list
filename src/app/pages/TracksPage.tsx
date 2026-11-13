@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api";
-import { downloadFileName, loadTrackUrl, uploadTrack } from "../upload";
+import { clearSongCache } from "../songCache";
+import { downloadFileName, loadTrackUrl, titleFromFileName, uploadTrack } from "../upload";
 import type { Track } from "../../shared/types";
 
 export default function TracksPage() {
@@ -13,10 +15,14 @@ export default function TracksPage() {
   const [uploadError, setUploadError] = useState("");
   const [playing, setPlaying] = useState<{ id: string; url: string } | null>(null);
   const [loadingId, setLoadingId] = useState("");
+  const [openingId, setOpeningId] = useState("");
   const [renamingId, setRenamingId] = useState("");
   const [draft, setDraft] = useState("");
+  const navigate = useNavigate();
   const urlRef = useRef<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  // The title we filled in from a file name; only that (or an empty title) may be replaced by a later pick.
+  const autoTitle = useRef("");
 
   const refresh = () => api.listTracks().then(setTracks, (e: Error) => setError(e.message));
 
@@ -43,6 +49,7 @@ export default function TracksPage() {
       await uploadTrack(file, title.trim(), setProgress);
       setTitle("");
       setFile(null);
+      autoTitle.current = "";
       if (fileInput.current) fileInput.current.value = "";
       await refresh();
     } catch (err) {
@@ -94,6 +101,8 @@ export default function TracksPage() {
     setError("");
     try {
       const updated = await api.updateTrack(t.id, draft.trim());
+      // The server renames the linked song too; drop the cached copy so its page shows the new title.
+      clearSongCache();
       setTracks((list) => (list ?? []).map((x) => (x.id === t.id ? { ...x, title: updated.title } : x)));
       setRenamingId("");
     } catch (err) {
@@ -101,8 +110,21 @@ export default function TracksPage() {
     }
   };
 
+  // Tracks uploaded before songs were linked get their song page the first time they are opened.
+  const onOpen = async (t: Track) => {
+    setError("");
+    setOpeningId(t.id);
+    try {
+      const song = await api.linkTrackSong(t.id);
+      navigate(`/songs/${song.id}`);
+    } catch (err) {
+      setError((err as Error).message);
+      setOpeningId("");
+    }
+  };
+
   const onDelete = async (t: Track) => {
-    if (!window.confirm(`Delete "${t.title}"?`)) return;
+    if (!window.confirm(`Delete "${t.title}"? This also deletes its song page, lyrics and chords.`)) return;
     try {
       await api.deleteTrack(t.id);
       if (playing?.id === t.id) stopPlaying();
@@ -128,7 +150,14 @@ export default function TracksPage() {
             type="file"
             accept="audio/mpeg,.mp3"
             disabled={uploading}
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            onChange={(e) => {
+              const f = e.target.files?.[0] ?? null;
+              setFile(f);
+              if (f && (title.trim() === "" || title === autoTitle.current)) {
+                autoTitle.current = titleFromFileName(f.name);
+                setTitle(autoTitle.current);
+              }
+            }}
           />
         </label>
         {uploading && <progress value={progress} max={1} aria-label="Upload progress" style={{ width: "100%" }} />}
@@ -165,7 +194,19 @@ export default function TracksPage() {
             ) : (
               <>
                 <span className="grow">
-                  <strong>{t.title}</strong>
+                  {t.songId ? (
+                    <Link className="plain-link" to={`/songs/${t.songId}`}><strong>{t.title}</strong></Link>
+                  ) : (
+                    <button
+                      type="button"
+                      className="link-button"
+                      aria-label={`Open ${t.title}`}
+                      disabled={openingId === t.id}
+                      onClick={() => onOpen(t)}
+                    >
+                      <strong>{t.title}</strong>
+                    </button>
+                  )}
                 </span>
                 <button
                   className="btn"

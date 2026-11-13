@@ -11,6 +11,7 @@ import {
   networkFirst,
   routeFor,
   saveShell,
+  staleAfterTrackChange,
 } from "./strategy";
 
 // A narrow view of the worker globals we use; the "webworker" lib clashes with "DOM" in one tsconfig.
@@ -65,7 +66,9 @@ sw.addEventListener("fetch", (event) => {
       fetch(req).then(async (res) => {
         if (res.ok) {
           const cache = await caches.open(API_CACHE);
-          await Promise.all(invalidationKeys(url).map((key) => cache.delete(key)));
+          const saved = (await cache.keys()).map((r) => new URL(r.url).pathname);
+          const stale = [...invalidationKeys(url), ...staleAfterTrackChange(req.method, url, saved)];
+          await Promise.all(stale.map((key) => cache.delete(key)));
         }
         return res;
       }),

@@ -1,5 +1,6 @@
 import { CHUNK_SIZE, MAX_AUDIO_BYTES } from "../../../src/shared/types";
-import type { Gig, GigInput, Song, SongInput, SongSummary, Track } from "../../../src/shared/types";
+import type { Gig, GigInput, SetlistItem, Song, SongInput, SongSummary, Track } from "../../../src/shared/types";
+import { fromSongIds, setlistOf, songIdsOf } from "../../../src/shared/setlist";
 import { isValidKey } from "../../../src/shared/transpose";
 import type { KV } from "./kv";
 
@@ -24,10 +25,12 @@ export const LIMITS = {
   content: 100_000,
   gigName: 200,
   gigSongs: 100,
+  setlistItems: 150,
+  note: 200,
+  breakLabel: 100,
 } as const;
 
 const SONG_FIELDS = ["title", "artist", "sourceUrl", "originalKey", "bandKey", "capo", "content"] as const;
-const GIG_FIELDS = ["name", "date", "songIds"] as const;
 
 function checkString(field: string, v: unknown, max: number): string {
   if (typeof v !== "string") throw new ValidationError(`${field} must be text`);
@@ -48,7 +51,8 @@ function checkSongField(field: (typeof SONG_FIELDS)[number], v: unknown): unknow
       return v === null ? null : checkString(field, v, LIMITS.sourceUrl);
     case "originalKey":
     case "bandKey":
-      if (typeof v !== "string" || !isValidKey(v)) {
+      // "" means "no key yet"; withKeys decides whether the song may have no key.
+      if (typeof v !== "string" || (v !== "" && !isValidKey(v))) {
         throw new ValidationError(`${field} must be a key like C, F#m or Bb`);
       }
       return v;
@@ -74,7 +78,66 @@ function cleanSong(input: unknown, partial: boolean): Partial<SongInput> {
   return out as Partial<SongInput>;
 }
 
-function checkGigField(field: (typeof GIG_FIELDS)[number], v: unknown): unknown {
+/**
+ * Makes the two keys agree. Only an original song (one with a track) may have no key, since nobody
+ * has worked it out yet; then the band key is empty too. A song that gets a key but no band key
+ * starts in its original key.
+ */
+function withKeys<T extends Pick<Song, "originalKey" | "bandKey" | "trackId">>(song: T): T {
+  if (song.originalKey === "") {
+    if (!song.trackId) throw new ValidationError("originalKey must be a key like C, F#m or Bb");
+    return { ...song, bandKey: "" };
+  }
+  return song.bandKey === "" ? { ...song, bandKey: song.originalKey } : song;
+}
+
+function checkSongIds(v: unknown): string[] {
+  if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) {
+    throw new ValidationError("songIds must be a list of song ids");
+  }
+  if (v.length > LIMITS.gigSongs) throw new ValidationError(`a setlist can hold at most ${LIMITS.gigSongs} songs`);
+  return [...v];
+}
+
+function checkSetlist(v: unknown): SetlistItem[] {
+  if (!Array.isArray(v)) throw new ValidationError("setlist must be a list");
+  if (v.length > LIMITS.setlistItems) {
+    throw new ValidationError(`a setlist can hold at most ${LIMITS.setlistItems} items`);
+  }
+  const out: SetlistItem[] = [];
+  const songIds = new Set<string>();
+  const breakIds = new Set<string>();
+  for (const raw of v) {
+    if (typeof raw !== "object" || raw === null) throw new ValidationError("setlist items must be songs or breaks");
+    const item = raw as Record<string, unknown>;
+    if (item.type === "song") {
+      if (typeof item.songId !== "string" || !item.songId) throw new ValidationError("songId must be a song id");
+      if (songIds.has(item.songId)) throw new ValidationError("a song can only be in the setlist once");
+      songIds.add(item.songId);
+      if (songIds.size > LIMITS.gigSongs) {
+        throw new ValidationError(`a setlist can hold at most ${LIMITS.gigSongs} songs`);
+      }
+      const clean: SetlistItem = { type: "song", songId: item.songId };
+      if (item.note !== undefined && item.note !== null) {
+        const note = checkString("note", item.note, LIMITS.note).trim();
+        if (note) clean.note = note;
+      }
+      out.push(clean);
+    } else if (item.type === "break") {
+      if (typeof item.id !== "string" || !item.id) throw new ValidationError("break id must be text");
+      if (breakIds.has(item.id)) throw new ValidationError("break ids must be unique");
+      breakIds.add(item.id);
+      if (typeof item.label === "string" && !item.label.trim()) throw new ValidationError("break label is required");
+      const label = checkString("break label", item.label, LIMITS.breakLabel).trim();
+      out.push({ type: "break", id: item.id, label });
+    } else {
+      throw new ValidationError("setlist items must be songs or breaks");
+    }
+  }
+  return out;
+}
+
+function checkGigField(field: "name" | "date", v: unknown): string {
   switch (field) {
     case "name":
       if (typeof v === "string" && !v.trim()) throw new ValidationError("name is required");
@@ -84,26 +147,34 @@ function checkGigField(field: (typeof GIG_FIELDS)[number], v: unknown): unknown 
         throw new ValidationError("date must be YYYY-MM-DD");
       }
       return v;
-    case "songIds":
-      if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) {
-        throw new ValidationError("songIds must be a list of song ids");
-      }
-      if (v.length > LIMITS.gigSongs) throw new ValidationError(`a setlist can hold at most ${LIMITS.gigSongs} songs`);
-      return [...v];
   }
 }
 
-function cleanGig(input: unknown, partial: boolean): Partial<GigInput> {
+/**
+ * Copies only known gig fields, validating each. With `partial`, missing fields are skipped.
+ * A write with `songIds` instead of `setlist` (an old client) rebuilds the setlist from `current`.
+ */
+function cleanGig(input: unknown, partial: boolean, current: SetlistItem[] = []): Partial<GigInput> {
   const src = (input ?? {}) as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const f of GIG_FIELDS) {
+  const out: Partial<GigInput> = {};
+  for (const f of ["name", "date"] as const) {
     if (!(f in src)) {
       if (partial) continue;
       throw new ValidationError(`${f} is required`);
     }
     out[f] = checkGigField(f, src[f]);
   }
-  return out as Partial<GigInput>;
+  if ("setlist" in src) out.setlist = checkSetlist(src.setlist);
+  else if ("songIds" in src) out.setlist = fromSongIds(checkSongIds(src.songIds), current);
+  else if (!partial) out.setlist = [];
+  return out;
+}
+
+type StoredGig = { id: string; name: string; date: string; setlist?: SetlistItem[]; songIds?: string[] };
+
+function toGig(stored: StoredGig): Gig {
+  const setlist = setlistOf(stored);
+  return { id: stored.id, name: stored.name, date: stored.date, setlist, songIds: songIdsOf(setlist) };
 }
 
 export function makeRepo(kv: KV) {
@@ -121,14 +192,79 @@ export function makeRepo(kv: KV) {
   }
 
   const getSong = (id: string) => readJson<Song>(`songs/${id}`);
+  const getTrack = (id: string) => readJson<Track>(`tracks/${id}`);
+
+  /** Takes a song out of every setlist (the song record itself is deleted by the caller). */
+  async function removeSongFromGigs(id: string) {
+    for (const g of await readAll<StoredGig>("gigs/")) {
+      const items = setlistOf(g);
+      if (songIdsOf(items).includes(id)) {
+        const setlist = items.filter((item) => item.type === "break" || item.songId !== id);
+        await writeJson(`gigs/${g.id}`, { id: g.id, name: g.name, date: g.date, setlist });
+      }
+    }
+  }
+
+  async function removeTrackData(id: string) {
+    for (const k of await kv.list(`audio/${id}/`)) await kv.delete(k);
+    await kv.delete(`tracks/${id}`);
+  }
+
+  /** The song page for a finished track; creates it on first use. Safe to call again. */
+  async function linkTrackSong(trackId: string): Promise<Song> {
+    const t = await getTrack(trackId);
+    if (!t) throw new NotFoundError("track not found");
+    if (t.uploadedParts !== t.parts) throw new ValidationError("upload is not finished");
+    if (t.songId) {
+      const existing = await getSong(t.songId);
+      if (existing) return existing;
+    }
+    // First link uses the track's own id as the song id, so two overlapping calls (a retried
+    // last part, or the Tracks page opening it) write the same record instead of making two.
+    // Only re-linking after the song was removed gets a fresh id, so stale gig references stay dead.
+    if (!t.songId) {
+      const existing = await getSong(t.id);
+      if (existing && existing.trackId === t.id) {
+        const fresh = (await getTrack(t.id)) ?? t;
+        if (fresh.songId !== existing.id) await writeJson(`tracks/${t.id}`, { ...fresh, songId: existing.id });
+        return existing;
+      }
+    }
+    const song: Song = {
+      id: t.songId ? crypto.randomUUID() : t.id,
+      title: t.title,
+      artist: "",
+      sourceUrl: null,
+      // Nobody has said what key the recording is in yet.
+      originalKey: "",
+      bandKey: "",
+      capo: 0,
+      content: "",
+      trackId: t.id,
+      updatedAt: new Date().toISOString(),
+    };
+    await writeJson(`songs/${song.id}`, song);
+    // Re-read so a concurrent part upload's newer fields aren't overwritten with our stale copy.
+    const latest = (await getTrack(t.id)) ?? t;
+    await writeJson(`tracks/${t.id}`, { ...latest, songId: song.id });
+    return song;
+  }
+
+  /** Drops setlist songs that no longer exist (e.g. a stale page saved a gig after a song was deleted). */
+  function withoutMissingSongs(gig: Gig, exists: (songId: string) => boolean): Gig {
+    const setlist = gig.setlist.filter((item) => item.type === "break" || exists(item.songId));
+    return { ...gig, setlist, songIds: songIdsOf(setlist) };
+  }
 
   async function getGig(id: string): Promise<Gig | null> {
-    const g = await readJson<Gig>(`gigs/${id}`);
-    if (!g) return null;
-    const present = await Promise.all(
-      g.songIds.map(async (sid) => ((await kv.getText(`songs/${sid}`)) !== null ? sid : null)),
+    const stored = await readJson<StoredGig>(`gigs/${id}`);
+    if (!stored) return null;
+    const gig = toGig(stored);
+    const exists = new Map<string, boolean>();
+    await Promise.all(
+      songIdsOf(gig.setlist).map(async (sid) => exists.set(sid, (await kv.getText(`songs/${sid}`)) !== null)),
     );
-    return { ...g, songIds: present.filter((x): x is string => x !== null) };
+    return withoutMissingSongs(gig, (sid) => exists.get(sid) === true);
   }
 
   return {
@@ -139,47 +275,66 @@ export function makeRepo(kv: KV) {
         .sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
     },
     getSong,
+    getTrack,
+    linkTrackSong,
     async createSong(input: SongInput): Promise<Song> {
       const clean = cleanSong(input, false) as SongInput;
-      const song: Song = { ...clean, id: crypto.randomUUID(), updatedAt: new Date().toISOString() };
+      const song: Song = withKeys({ ...clean, id: crypto.randomUUID(), updatedAt: new Date().toISOString() });
       await writeJson(`songs/${song.id}`, song);
       return song;
     },
     async updateSong(id: string, patch: Partial<SongInput>): Promise<Song> {
       const cur = await getSong(id);
       if (!cur) throw new NotFoundError("song not found");
-      const next: Song = { ...cur, ...cleanSong(patch, true), id, updatedAt: new Date().toISOString() };
+      const clean = cleanSong(patch, true);
+      const next: Song = withKeys({ ...cur, ...clean, id, updatedAt: new Date().toISOString() });
       await writeJson(`songs/${id}`, next);
+      if (clean.title !== undefined && cur.trackId) {
+        const t = await getTrack(cur.trackId);
+        if (t) await writeJson(`tracks/${t.id}`, { ...t, title: clean.title });
+      }
       return next;
     },
     async deleteSong(id: string): Promise<void> {
-      if (!(await getSong(id))) throw new NotFoundError("song not found");
-      await kv.delete(`songs/${id}`);
-      const gigs = await readAll<Gig>("gigs/");
-      for (const g of gigs) {
-        if (g.songIds.includes(id)) {
-          await writeJson(`gigs/${g.id}`, { ...g, songIds: g.songIds.filter((s) => s !== id) });
-        }
+      const cur = await getSong(id);
+      if (!cur) throw new NotFoundError("song not found");
+      // Clean up everything that points at the song first and delete the record last, so a failure
+      // part-way leaves the song in place and deleting again simply finishes the job.
+      await removeSongFromGigs(id);
+      if (cur.trackId) {
+        const t = await getTrack(cur.trackId);
+        if (t && t.songId === id) await removeTrackData(t.id);
       }
+      await kv.delete(`songs/${id}`);
     },
 
     async listGigs(): Promise<Gig[]> {
-      const gigs = await readAll<Gig>("gigs/");
-      return gigs.sort((a, b) => b.date.localeCompare(a.date));
+      const [stored, songKeys] = await Promise.all([readAll<StoredGig>("gigs/"), kv.list("songs/")]);
+      // One listing of song keys covers every gig, instead of a lookup per song per gig.
+      const songs = new Set(songKeys);
+      return stored
+        .map((g) => withoutMissingSongs(toGig(g), (sid) => songs.has(`songs/${sid}`)))
+        .sort((a, b) => b.date.localeCompare(a.date));
     },
     getGig,
     async createGig(input: GigInput): Promise<Gig> {
-      const clean = cleanGig(input, false) as GigInput;
-      const gig: Gig = { name: clean.name, date: clean.date, songIds: clean.songIds, id: crypto.randomUUID() };
-      await writeJson(`gigs/${gig.id}`, gig);
-      return gig;
+      const clean = cleanGig(input, false);
+      const stored = { id: crypto.randomUUID(), name: clean.name!, date: clean.date!, setlist: clean.setlist! };
+      await writeJson(`gigs/${stored.id}`, stored);
+      return toGig(stored);
     },
     async updateGig(id: string, patch: Partial<GigInput>): Promise<Gig> {
-      const cur = await readJson<Gig>(`gigs/${id}`);
+      const cur = await readJson<StoredGig>(`gigs/${id}`);
       if (!cur) throw new NotFoundError("gig not found");
-      const next: Gig = { ...cur, ...cleanGig(patch, true), id };
+      const clean = cleanGig(patch, true, setlistOf(cur));
+      const next = {
+        id,
+        name: clean.name ?? cur.name,
+        date: clean.date ?? cur.date,
+        setlist: clean.setlist ?? setlistOf(cur),
+      };
       await writeJson(`gigs/${id}`, next);
-      return next;
+      return toGig(next);
     },
     async deleteGig(id: string): Promise<void> {
       if ((await kv.getText(`gigs/${id}`)) === null) throw new NotFoundError("gig not found");
@@ -194,6 +349,7 @@ export function makeRepo(kv: KV) {
     },
     async createTrack(input: { title: string; size: number }): Promise<Track> {
       if (!input.title || !input.title.trim()) throw new ValidationError("title is required");
+      checkString("title", input.title, LIMITS.title);
       if (!Number.isFinite(input.size) || input.size <= 0) throw new ValidationError("size must be positive");
       if (input.size > MAX_AUDIO_BYTES) throw new ValidationError("file is too large (max 25 MB)");
       const track: Track = {
@@ -209,9 +365,13 @@ export function makeRepo(kv: KV) {
     },
     async renameTrack(id: string, title: string): Promise<Track> {
       if (typeof title !== "string" || !title.trim()) throw new ValidationError("title is required");
-      const t = await readJson<Track>(`tracks/${id}`);
+      const clean = checkString("title", title.trim(), LIMITS.title);
+      const t = await getTrack(id);
       if (!t) throw new NotFoundError("track not found");
-      const next: Track = { ...t, title: title.trim() };
+      const next: Track = { ...t, title: clean };
+      // Song first: it's the title people see, so a failure after this still shows the right name.
+      const song = t.songId ? await getSong(t.songId) : null;
+      if (song) await writeJson(`songs/${song.id}`, { ...song, title: clean, updatedAt: new Date().toISOString() });
       await writeJson(`tracks/${id}`, next);
       return next;
     },
@@ -235,15 +395,23 @@ export function makeRepo(kv: KV) {
       const key = `audio/${id}/${n}`;
       await kv.setBytes(key, bytes);
       const uploadedParts = (await kv.list(`audio/${id}/`)).length;
-      await writeJson(`tracks/${id}`, { ...t, uploadedParts });
+      // Re-read so a songId written by a concurrent call isn't dropped.
+      const latest = (await readJson<Track>(`tracks/${id}`)) ?? t;
+      await writeJson(`tracks/${id}`, { ...latest, uploadedParts });
+      // The last part just landed: the recording becomes a song (also appears in the Songs list).
+      if (uploadedParts === t.parts) await linkTrackSong(id);
     },
     async getTrackPart(id: string, n: number): Promise<ArrayBuffer | null> {
       return kv.getBytes(`audio/${id}/${n}`);
     },
     async deleteTrack(id: string): Promise<void> {
-      if ((await kv.getText(`tracks/${id}`)) === null) throw new NotFoundError("track not found");
-      for (const k of await kv.list(`audio/${id}/`)) await kv.delete(k);
-      await kv.delete(`tracks/${id}`);
+      const t = await getTrack(id);
+      if (!t) throw new NotFoundError("track not found");
+      await removeTrackData(id);
+      if (t.songId && (await getSong(t.songId))) {
+        await kv.delete(`songs/${t.songId}`);
+        await removeSongFromGigs(t.songId);
+      }
     },
   };
 }

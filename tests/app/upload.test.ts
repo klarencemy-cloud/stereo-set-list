@@ -10,7 +10,7 @@ vi.mock("../../src/app/api", () => ({
 }));
 
 import { api } from "../../src/app/api";
-import { uploadTrack, loadTrackUrl } from "../../src/app/upload";
+import { uploadTrack, loadTrackUrl, titleFromFileName } from "../../src/app/upload";
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 const track = (size: number, parts: number) => ({
@@ -84,5 +84,15 @@ describe("loadTrackUrl", () => {
     const blob = create.mock.calls[0][0] as Blob;
     expect(blob.type).toBe("audio/mpeg");
     expect(blob.size).toBe(6);
+  });
+});
+
+describe("titleFromFileName", () => {
+  it("drops the extension and tidies separators", () => {
+    expect(titleFromFileName("My Song.mp3")).toBe("My Song");
+    expect(titleFromFileName("my_new-song.MP3")).toBe("my new-song");
+    expect(titleFromFileName("  Demo  .mp3")).toBe("Demo");
+    expect(titleFromFileName("no-extension")).toBe("no-extension");
+    expect(titleFromFileName(".mp3")).toBe("");
   });
 });

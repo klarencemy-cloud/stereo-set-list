@@ -70,3 +70,46 @@ export function markupFromPlainText(text: string): string {
     })
     .join("\n");
 }
+
+/**
+ * Re-applies an edit made in the plain-text view to the stored markup. Lines the user did not change keep
+ * their original markup (inline chords, [tab] tags); only changed or new lines go through markupFromPlainText.
+ */
+export function mergeEditedText(originalMarkup: string, editedPlain: string): string {
+  const origLines = originalMarkup.replace(/\r\n?/g, "\n").split("\n");
+  const origPlain = origLines.map((l) => plainTextFromMarkup(l));
+  const edited = editedPlain.replace(/\r\n?/g, "\n").split("\n");
+  const n = origPlain.length;
+  const m = edited.length;
+  // Longest common subsequence of unchanged lines.
+  const lcs: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[i][j] = origPlain[i] === edited[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  const out: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (j < m) {
+    if (i < n && origPlain[i] === edited[j]) {
+      out.push(origLines[i]);
+      i++;
+      j++;
+    } else if (i < n && lcs[i + 1][j] >= lcs[i][j + 1]) {
+      i++;
+    } else {
+      out.push(markupFromPlainText(edited[j]));
+      j++;
+    }
+  }
+  return out.join("\n");
+}
+
+/** The reverse of markupFromPlainText: strips [ch]/[tab] tags, leaves [Section] lines alone. */
+export function plainTextFromMarkup(markup: string): string {
+  return markup
+    .replace(/\r\n?/g, "\n")
+    .replace(/\[\/?tab\]/g, "")
+    .replace(/\[ch\](.*?)\[\/ch\]/g, "$1");
+}

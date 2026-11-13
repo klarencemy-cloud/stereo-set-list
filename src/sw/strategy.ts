@@ -18,11 +18,15 @@ export type Route = "asset" | "api" | "mutate" | "navigate" | "pass";
 
 const CACHED_API = /^\/api\/(songs|gigs)(\/[^/]+)?$/;
 
+/** Changes to a recording: they also change its song page and the song list. */
+const TRACK_CHANGE = /^\/api\/tracks\/[^/]+(\/(song|parts\/\d+))?$/;
+
 export function routeFor(method: string, url: URL, isNavigation: boolean, origin: string): Route {
   if (url.origin !== origin) return "pass";
-  // Songs and gigs only: tracks are large mp3s, and import goes to another site.
+  // Songs and gigs are cached: tracks are large mp3s, and import goes to another site.
+  // Changing a track still counts as a mutation, so the saved songs it touches get dropped.
   const cachedApi = CACHED_API.test(url.pathname);
-  if (method !== "GET") return cachedApi ? "mutate" : "pass";
+  if (method !== "GET") return cachedApi || TRACK_CHANGE.test(url.pathname) ? "mutate" : "pass";
   if (url.pathname.startsWith("/assets/")) return "asset";
   if (cachedApi) return "api";
   // Other /api/ paths opened in a tab (an mp3 part, say) are not the app page.
@@ -31,8 +35,18 @@ export function routeFor(method: string, url: URL, isNavigation: boolean, origin
 
 /** Saved copies a successful change makes out of date: the item and its list. */
 export function invalidationKeys(url: URL): string[] {
-  const list = url.pathname.match(/^\/api\/(songs|gigs)/)![0];
-  return url.pathname === list ? [list] : [url.pathname, list];
+  const list = url.pathname.match(/^\/api\/(songs|gigs)/)?.[0];
+  return list ? (url.pathname === list ? [list] : [url.pathname, list]) : [];
+}
+
+/**
+ * Of the saved paths, the ones a change to a track makes out of date. A track and its song share
+ * a title, so every saved song goes; deleting a track also removes its song from gigs.
+ */
+export function staleAfterTrackChange(method: string, url: URL, savedPaths: string[]): string[] {
+  if (!TRACK_CHANGE.test(url.pathname)) return [];
+  const gigsToo = method === "DELETE";
+  return savedPaths.filter((p) => /^\/api\/songs(\/|$)/.test(p) || (gigsToo && /^\/api\/gigs(\/|$)/.test(p)));
 }
 
 async function store(cache: CacheLike, key: string, res: Response): Promise<void> {

@@ -42,9 +42,10 @@ export default function SongsPage() {
             <Link className="list-row" to={`/songs/${s.id}`}>
               <span className="grow">
                 <strong>{s.title}</strong>
-                <span className="muted block">{s.artist}</span>
+                {s.artist && <span className="muted block">{s.artist}</span>}
+                {s.trackId && <span className="badge">Original</span>}
               </span>
-              <span className="pill">{s.bandKey}</span>
+              {s.bandKey && <span className="pill">{s.bandKey}</span>}
             </Link>
           </li>
         ))}

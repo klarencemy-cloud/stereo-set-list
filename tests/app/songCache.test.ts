@@ -84,10 +84,33 @@ describe("songCache", () => {
   it("loadSetlist drops deleted songs and is fetched once", async () => {
     mocked.getGig.mockResolvedValue({ id: "g1", name: "G", date: "2026-12-20", songIds: ["a", "gone", "b"] });
     mocked.listSongs.mockResolvedValue([song("a"), song("b")]);
-    expect(await loadSetlist("g1")).toEqual(["a", "b"]);
-    expect(await loadSetlist("g1")).toEqual(["a", "b"]);
+    expect((await loadSetlist("g1")).ids).toEqual(["a", "b"]);
+    expect((await loadSetlist("g1")).ids).toEqual(["a", "b"]);
     expect(mocked.getGig).toHaveBeenCalledTimes(1);
     expect(mocked.listSongs).toHaveBeenCalledTimes(1);
+  });
+
+  it("loadSetlist returns the notes by song id, and skips breaks", async () => {
+    mocked.getGig.mockResolvedValue({
+      id: "g1",
+      name: "G",
+      date: "2026-12-20",
+      songIds: ["s1", "s2"],
+      setlist: [
+        { type: "song", songId: "s1", note: "Klarence count-in" },
+        { type: "break", id: "k", label: "Set 2" },
+        { type: "song", songId: "s2" },
+        { type: "song", songId: "gone", note: "lost" },
+      ],
+    });
+    mocked.listSongs.mockResolvedValue([song("s1"), song("s2")]);
+    expect(await loadSetlist("g1")).toEqual({ ids: ["s1", "s2"], notes: { s1: "Klarence count-in" } });
+  });
+
+  it("loadSetlist works with a legacy gig that only has songIds", async () => {
+    mocked.getGig.mockResolvedValue({ id: "g1", name: "G", date: "2026-12-20", songIds: ["a"] });
+    mocked.listSongs.mockResolvedValue([song("a")]);
+    expect(await loadSetlist("g1")).toEqual({ ids: ["a"], notes: {} });
   });
 
   it("loadSetlist retries after a failure", async () => {
@@ -95,7 +118,7 @@ describe("songCache", () => {
     mocked.getGig.mockResolvedValue({ id: "g1", name: "G", date: "2026-12-20", songIds: ["a"] });
     mocked.listSongs.mockResolvedValue([song("a")]);
     await expect(loadSetlist("g1")).rejects.toThrow("offline");
-    expect(await loadSetlist("g1")).toEqual(["a"]);
+    expect((await loadSetlist("g1")).ids).toEqual(["a"]);
   });
 
   it("clearSongCache forgets everything", async () => {

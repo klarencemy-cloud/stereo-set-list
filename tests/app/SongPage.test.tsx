@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 vi.mock("../../src/app/api", async () => {
   const actual = await vi.importActual<typeof import("../../src/app/api")>("../../src/app/api");
-  return { ...actual, api: { getSong: vi.fn(), updateSong: vi.fn(), getGig: vi.fn(), listSongs: vi.fn() } };
+  return { ...actual, api: { getSong: vi.fn(), updateSong: vi.fn(), getGig: vi.fn(), listSongs: vi.fn(), getTrack: vi.fn(), getTrackPart: vi.fn() } };
 });
 
 import { api, ApiError } from "../../src/app/api";
@@ -37,6 +37,8 @@ function renderPage(path = "/songs/s1") {
 }
 
 beforeEach(() => {
+  document.body.className = "";
+  localStorage.clear();
   window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
   clearSongCache();
   Object.values(mocked).forEach((f) => f.mockReset());
@@ -105,12 +107,85 @@ describe("SongPage", () => {
     expect(screen.getByRole("button", { name: "Speed: 1.5" })).toBeInTheDocument();
   });
 
+  it("starts at the speed saved for this song on this device", async () => {
+    localStorage.setItem("stereo-set:scroll-speed:s1", "2");
+    renderPage();
+    expect(await screen.findByRole("button", { name: "Speed: 2" })).toBeInTheDocument();
+  });
+
+  it("remembers a changed speed for the next visit", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Speed: 1" }));
+    expect(localStorage.getItem("stereo-set:scroll-speed:s1")).toBe("1.5");
+  });
+
+  it("shows the next song's own speed after moving to it (the page is reused)", async () => {
+    localStorage.setItem("stereo-set:scroll-speed:s1", "3");
+    localStorage.setItem("stereo-set:scroll-speed:sC", "0.5");
+    mocked.getGig.mockResolvedValue({ id: "g1", name: "Show", date: "2026-12-20", songIds: ["s1", "sC", "sD"] });
+    mocked.listSongs.mockResolvedValue(["s1", "sC", "sD"].map((id) => ({ ...song, id, content: undefined })));
+    mocked.getSong.mockImplementation(async (id: string) =>
+      id === "s1" ? { ...song } : { ...song, id, title: `Song ${id}` },
+    );
+    renderPage("/songs/s1?gig=g1");
+    expect(await screen.findByRole("button", { name: "Speed: 3" })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("link", { name: /Next song/ }));
+    await screen.findByRole("heading", { name: "Song sC" });
+    expect(screen.getByRole("button", { name: "Speed: 0.5" })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("link", { name: /Next song/ }));
+    await screen.findByRole("heading", { name: "Song sD" });
+    expect(screen.getByRole("button", { name: "Speed: 1" })).toBeInTheDocument();
+  });
+
+  it("has a Stage toggle that adds the stage class, with an Exit stage button", async () => {
+    renderPage();
+    const stage = await screen.findByRole("button", { name: "Stage" });
+    expect(stage).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByRole("button", { name: "Exit stage" })).not.toBeInTheDocument();
+    fireEvent.click(stage);
+    expect(document.body.classList.contains("stage")).toBe(true);
+    expect(screen.getByRole("button", { name: "Stage" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Exit stage" }));
+    expect(document.body.classList.contains("stage")).toBe(false);
+    expect(screen.queryByRole("button", { name: "Exit stage" })).not.toBeInTheDocument();
+  });
+
+  it("stays in stage mode while moving to the next song in the gig", async () => {
+    mocked.getGig.mockResolvedValue({ id: "g1", name: "Show", date: "2026-12-20", songIds: ["s1", "sC"] });
+    mocked.listSongs.mockResolvedValue(["s1", "sC"].map((id) => ({ ...song, id, content: undefined })));
+    mocked.getSong.mockImplementation(async (id: string) =>
+      id === "s1" ? { ...song } : { ...song, id, title: `Song ${id}` },
+    );
+    renderPage("/songs/s1?gig=g1");
+    fireEvent.click(await screen.findByRole("button", { name: "Stage" }));
+    fireEvent.click(await screen.findByRole("link", { name: /Next song/ }));
+    await screen.findByRole("heading", { name: "Song sC" });
+    expect(document.body.classList.contains("stage")).toBe(true);
+    expect(screen.getByRole("button", { name: "Exit stage" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Exit stage" }));
+    expect(document.body.classList.contains("stage")).toBe(false);
+  });
+
   it("shows the untransposed sheet and a note when the key is unknown", async () => {
     mocked.getSong.mockResolvedValue({ ...song, originalKey: "H", bandKey: "A" });
     renderPage();
     expect(await screen.findByText("Key unknown \u2014 fix it in Edit")).toBeInTheDocument();
     const chords = Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent);
     expect(chords).toEqual(["G", "C"]);
+  });
+
+  it("shows a ? for the key, and the note, when the song has no key yet", async () => {
+    mocked.getSong.mockResolvedValue({ ...song, originalKey: "", bandKey: "", trackId: "t1" });
+    renderPage();
+    expect((await screen.findByText("No capo")).parentElement).toHaveTextContent("Key: ?");
+    expect(screen.getByText("Key unknown — fix it in Edit")).toBeInTheDocument();
+    const chords = Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent);
+    expect(chords).toEqual(["G", "C"]);
+    fireEvent.click(screen.getByRole("button", { name: "Transpose" }));
+    expect(document.querySelector(".transpose-key")).toHaveTextContent("?");
+    fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/key/i);
+    expect(mocked.updateSong).not.toHaveBeenCalled();
   });
 
   it("shows an error instead of crashing when transposing an unknown key", async () => {
@@ -152,6 +227,32 @@ describe("SongPage", () => {
       mocked.getSong.mockImplementation(async (id: string) =>
         id === "s1" ? { ...song } : { ...song, id, title: `Song ${id}` },
       );
+    });
+
+    it("shows the setlist note for the song, only on that song", async () => {
+      mocked.getGig.mockResolvedValue({
+        id: "g1",
+        name: "Show",
+        date: "2026-12-20",
+        songIds: ["sA", "s1", "sC"],
+        setlist: [
+          { type: "song", songId: "sA" },
+          { type: "song", songId: "s1", note: "Klarence count-in" },
+          { type: "break", id: "k", label: "Set 2" },
+          { type: "song", songId: "sC" },
+        ],
+      });
+      renderPage("/songs/s1?gig=g1");
+      expect(await screen.findByRole("note")).toHaveTextContent("Klarence count-in");
+      fireEvent.click(await screen.findByRole("link", { name: /Next song/ }));
+      await screen.findByRole("heading", { name: "Song sC" });
+      expect(screen.queryByRole("note")).not.toBeInTheDocument();
+    });
+
+    it("shows no note when the gig has none", async () => {
+      renderPage("/songs/s1?gig=g1");
+      await screen.findByRole("link", { name: /Next song/ });
+      expect(screen.queryByRole("note")).not.toBeInTheDocument();
     });
 
     it("prefetches the next and previous songs in the setlist", async () => {
@@ -252,6 +353,12 @@ describe("SongPage", () => {
     });
   });
 
+  it("shows no setlist note outside a gig", async () => {
+    renderPage("/songs/s1");
+    await screen.findByText("[Intro]");
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+  });
+
   it("makes the chord sheet bigger and smaller", async () => {
     localStorage.clear();
     renderPage();
@@ -285,5 +392,47 @@ describe("SongPage", () => {
     mocked.getSong.mockRejectedValue(new ApiError(404, "Song not found"));
     renderPage();
     expect(await screen.findByRole("alert")).toHaveTextContent("Song not found");
+  });
+});
+
+describe("SongPage original songs", () => {
+  const track = { id: "t1", title: "Test Song", size: 3, parts: 1, uploadedParts: 1, songId: "s1", createdAt: "x" };
+  beforeEach(() => {
+    URL.createObjectURL = vi.fn(() => "blob:fake");
+    URL.revokeObjectURL = vi.fn();
+  });
+
+  it("shows a player for an original song", async () => {
+    mocked.getSong.mockResolvedValue({ ...song, trackId: "t1" });
+    mocked.getTrack.mockResolvedValue(track);
+    mocked.getTrackPart.mockResolvedValue(new Uint8Array([1, 2, 3]).buffer);
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Play" }));
+    await waitFor(() => expect(document.querySelector("audio")).not.toBeNull());
+    expect(mocked.getTrack).toHaveBeenCalledWith("t1");
+    expect(mocked.getTrackPart).toHaveBeenCalledWith("t1", 0);
+  });
+
+  it("has no player for a regular song", async () => {
+    renderPage();
+    await screen.findByText("Test Song");
+    expect(screen.queryByRole("button", { name: "Play" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the chord sheet when the recording can't load", async () => {
+    mocked.getSong.mockResolvedValue({ ...song, trackId: "t1" });
+    mocked.getTrack.mockRejectedValue(new Error("offline"));
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Play" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("offline");
+    expect(screen.getByText("Test Song")).toBeInTheDocument();
+    expect(screen.getByText("la la")).toBeInTheDocument();
+  });
+
+  it("hints how to add lyrics when the sheet is empty", async () => {
+    mocked.getSong.mockResolvedValue({ ...song, artist: "", content: "" });
+    renderPage();
+    expect(await screen.findByText("No lyrics or chords yet — tap Edit to add them.")).toBeInTheDocument();
+    expect(screen.queryByText("by")).not.toBeInTheDocument();
   });
 });
