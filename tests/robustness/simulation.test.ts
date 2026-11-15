@@ -1,7 +1,7 @@
 // Protocol simulation of N phones (Phase 2). Pure: it runs the real clock maths and constants, not React.
 //
 // Each phone has its own performance.now() (any origin, ±100 ppm against the server) and its own audio clock
-// (±100 ppm against true time). It syncs like useClockSync (10 samples, then 3 every ROUND_EVERY_MS, best of the
+// (±100 ppm against true time). It syncs like useClockSync (20 samples, then 3 every ROUND_EVERY_MS, best of the
 // last 3 rounds, via the real estimateOffset), books the session's bar with the real toAudioTime, and re-aligns
 // like useSyncedMetronome.reconcile (real phaseError, 10 ms threshold). "Error" is where a phone's bar line really
 // sounds against the server's grid, ignoring output latency (i.e. as if every phone were calibrated perfectly).
@@ -17,7 +17,7 @@ import { applyChange, beatsInWindow, LEAD_MS, type MetroSession } from "../../sr
 import { rng } from "./harness";
 
 // Mirrors of private constants (not exported from the app code).
-const FIRST_ROUND = 10; // useClockSync.ts
+const FIRST_ROUND = 20; // useClockSync.ts
 const LATER_ROUND = 3; // useClockSync.ts
 const ROUNDS_KEPT = 3; // useClockSync.ts
 const REALIGN_S = 0.01; // useSyncedMetronome.ts

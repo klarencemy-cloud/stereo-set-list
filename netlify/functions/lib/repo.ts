@@ -41,6 +41,8 @@ export const LIMITS = {
   setlistItems: 150,
   note: 200,
   breakLabel: 100,
+  /** A synced metronome's leader: a device id. */
+  metroLeader: 64,
 } as const;
 
 const SONG_FIELDS = ["title", "artist", "sourceUrl", "originalKey", "bandKey", "capo", "content", "bpm", "beatsPerBar"] as const;
@@ -260,7 +262,7 @@ function blankSong({ id, title, artist, trackId }: { id: string; title: string; 
  */
 export const METRO_STALE_MS = 2 * 60 * 60 * 1000;
 
-/** Checks a metronome change from a client: at least one of bpm, beatsPerBar and running. */
+/** Checks a metronome change from a client: at least one of bpm, beatsPerBar and running, plus an optional leader. */
 function checkMetroChange(input: unknown): MetroChange {
   const src = (input ?? {}) as Record<string, unknown>;
   const out: MetroChange = {};
@@ -282,13 +284,24 @@ function checkMetroChange(input: unknown): MetroChange {
     out.running = src.running;
   }
   if (Object.keys(out).length === 0) throw new ValidationError("send bpm, beatsPerBar or running");
+  if (src.leader !== undefined) {
+    if (!isMetroLeader(src.leader)) throw new ValidationError(`leader must be text of 1 to ${LIMITS.metroLeader} characters`);
+    out.leader = src.leader;
+  }
   return out;
 }
 
-/** The session as everyone reads it: a forgotten running one counts as stopped. */
+const isMetroLeader = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= LIMITS.metroLeader;
+
+/**
+ * The session as everyone reads it (every read path goes through this): only the known fields, a leader only
+ * when it is a valid one, and a forgotten running one counts as stopped.
+ */
 function toMetroSession(stored: MetroSession, nowMs: number): MetroSession {
   const age = nowMs - Date.parse(stored.updatedAt);
-  return stored.running && !(age <= METRO_STALE_MS) ? { ...stored, running: false } : stored;
+  const running = stored.running && age <= METRO_STALE_MS;
+  const { bpm, beatsPerBar, startAt, updatedAt, leader } = stored;
+  return { bpm, beatsPerBar, startAt, running, updatedAt, ...(isMetroLeader(leader) ? { leader } : {}) };
 }
 
 /** A song as stored; songs saved before tempo existed have no bpm or beatsPerBar. */
@@ -460,7 +473,7 @@ export function makeRepo(kv: KV) {
       }
       const next = applyChange(current, change, nowMs);
       if (next !== current) await writeJson(`metronome/${songId}`, next);
-      return next;
+      return toMetroSession(next, nowMs);
     },
     async listSongs(): Promise<SongSummary[]> {
       const songs = await readSongs();

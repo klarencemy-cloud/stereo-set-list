@@ -123,6 +123,20 @@ describe("applyChange", () => {
     expect(s).toMatchObject({ running: false, bpm: 80 });
   });
 
+  it("a start sets the leader, a tempo change keeps it, and a stop keeps it", () => {
+    const started = applyChange(null, { bpm: 90, beatsPerBar: 3, running: true, leader: "phone-a" }, now);
+    expect(started.leader).toBe("phone-a");
+    const changed = applyChange(started, { bpm: 100, leader: "phone-b" }, now + 10_000);
+    expect(changed.leader).toBe("phone-a");
+    expect(applyChange(changed, { running: false }, now + 20_000).leader).toBe("phone-a");
+  });
+
+  it("a restart takes the new starter as leader, or none when it sends none", () => {
+    const stopped = session({ running: false, leader: "phone-a" });
+    expect(applyChange(stopped, { running: true, leader: "phone-b" }, now).leader).toBe("phone-b");
+    expect(applyChange(stopped, { running: true }, now)).not.toHaveProperty("leader");
+  });
+
   it("refuses to start with no session and no tempo rather than inventing one", () => {
     expect(() => applyChange(null, { running: true }, now)).toThrow(/bpm/);
   });

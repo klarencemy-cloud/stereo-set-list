@@ -6,13 +6,33 @@ vi.mock("../../src/app/api", async () => {
   return { ...actual, api: { getMetronome: vi.fn(), putMetronome: vi.fn(), getTime: vi.fn(), updateSong: vi.fn() } };
 });
 
+vi.mock("../../src/app/metronome/listen", () => ({ listen: vi.fn(() => new Promise(() => {})) }));
+
 import { api, ApiError } from "../../src/app/api";
-import SongMetronome, { NUDGE_KEY } from "../../src/app/components/SongMetronome";
+import SongMetronome, { NUDGE_KEY, ROUNDTRIP_KEY } from "../../src/app/components/SongMetronome";
+import { DEVICE_KEY } from "../../src/app/device";
+import { listen } from "../../src/app/metronome/listen";
 import { METRONOME_KEY } from "../../src/app/components/Metronome";
 import type { MetroSession } from "../../src/shared/metronome";
 import type { Song } from "../../src/shared/types";
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
+const listenMock = listen as unknown as ReturnType<typeof vi.fn>;
+
+/** A recording of `seconds` from audio time `startS`, with a metronome click (as renderBar makes) at each time. */
+function recording(sampleRate: number, startS: number, seconds: number, clickTimes: number[]) {
+  const samples = new Float32Array(Math.round(seconds * sampleRate));
+  const len = Math.round(0.05 * sampleRate);
+  for (const t of clickTimes) {
+    const at = Math.round((t - startS) * sampleRate);
+    for (let j = 0; j < len && at + j < samples.length; j++) {
+      if (at + j < 0) continue;
+      const u = j / sampleRate;
+      samples[at + j] += 0.6 * Math.exp((-Math.log(1000) / 0.05) * u) * Math.sin(2 * Math.PI * 1000 * u);
+    }
+  }
+  return { samples, startS };
+}
 
 const song: Song = {
   id: "s1", title: "Song", artist: "Band", sourceUrl: null, originalKey: "C", bandKey: "C", capo: 0, content: "",
@@ -84,6 +104,8 @@ function renderPanel(s: Song = song) {
 beforeEach(() => {
   localStorage.clear();
   Object.values(mocked).forEach((f) => f.mockReset());
+  listenMock.mockReset();
+  listenMock.mockImplementation(() => new Promise(() => {}));
   onSongChange.mockReset();
   FakeAudioContext.instances = [];
   (window as unknown as { AudioContext: unknown }).AudioContext = FakeAudioContext;
@@ -109,7 +131,10 @@ describe("SongMetronome, nothing running", () => {
     expect(screen.getByRole("button", { name: "3" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(screen.getByRole("button", { name: "Faster" }));
     fireEvent.click(screen.getByRole("button", { name: "Start for everyone" }));
-    expect(mocked.putMetronome).toHaveBeenCalledWith("s1", { bpm: 97, beatsPerBar: 3, running: true });
+    // ...as its leader: this phone's own id, made once and kept.
+    const me = localStorage.getItem(DEVICE_KEY);
+    expect(me).toBeTruthy();
+    expect(mocked.putMetronome).toHaveBeenCalledWith("s1", { bpm: 97, beatsPerBar: 3, running: true, leader: me });
     // The one who starts it is joined straight away.
     await screen.findByRole("button", { name: "Stop for everyone" });
     expect(screen.getByRole("button", { name: "Leave" })).toBeInTheDocument();
@@ -369,6 +394,176 @@ describe("SongMetronome fallback", () => {
   });
 });
 
+describe("matching the band by ear", () => {
+  let ctx: FakeAudioContext;
+  /** Moves performance.now() and the audio clock together (audio 0 s = perf 4000 ms) and lets timers run. */
+  const moveTo = async (ms: number) => {
+    perf = ms;
+    ctx.currentTime = (ms - 4000) / 1000;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30);
+    });
+  };
+  const flush = async () => {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  };
+  const playing = () => ctx.loops.filter((l) => l.stoppedAt === undefined);
+  /** A listen the test answers when it likes. */
+  function deferListen() {
+    const calls: { resolve: (r: unknown) => void; reject: (e: unknown) => void; seconds: number }[] = [];
+    listenMock.mockImplementation(
+      (_ctx: unknown, seconds: number) => new Promise((resolve, reject) => calls.push({ resolve, reject, seconds })),
+    );
+    return calls;
+  }
+  /**
+   * What the mic hears when this phone, by the clock, would be `lateMs` behind the band: beat n is due at audio
+   * 0.9 + 0.5n (server 10 000 + 500n, offset 5000, nudge 100, audio 0 = perf 4000), heard a round trip (50 ms) later.
+   */
+  const band = (lateMs: number, seconds = 4.9) =>
+    recording(48000, 0, seconds, Array.from({ length: 9 }, (_, n) => 0.9 + 0.5 * n + 0.05 - lateMs / 1000));
+
+  async function joinAs(session: MetroSession, measured = true) {
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
+    localStorage.setItem(NUDGE_KEY, "100");
+    if (measured) localStorage.setItem(ROUNDTRIP_KEY, "50");
+    localStorage.setItem(DEVICE_KEY, "me");
+    perf = 4000; // server time 9000; beat 0 is at 10 000, bars of 2000 ms
+    mocked.getMetronome.mockResolvedValue(session);
+    renderPanel();
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    await flush();
+    ctx = FakeAudioContext.instances[0];
+  }
+
+  it("stays silent while listening, then plays with the heard shift applied", async () => {
+    const calls = deferListen();
+    await joinAs(running({ leader: "them" }));
+    expect(listenMock).toHaveBeenCalledTimes(1);
+    expect(listenMock.mock.calls[0][0]).toBe(ctx);
+    // Until beat 0 (0.9 s away), then 2 bars (4 s).
+    expect(calls[0].seconds).toBeCloseTo(4.9, 6);
+    await moveTo(4010);
+    await moveTo(4500);
+    expect(ctx.loops).toHaveLength(0);
+    expect(screen.getByRole("status")).toHaveTextContent("Listening to the band…");
+    // The band is heard 20 ms before this phone's clock says: it plays 20 ms earlier than by the clock.
+    calls[0].resolve(band(20));
+    await moveTo(4510);
+    expect(playing()).toHaveLength(1);
+    expect(playing()[0].when!).toBeCloseTo(0.88, 3);
+    expect(screen.getByRole("status")).toHaveTextContent("Matched to the band ±1 ms");
+    expect(screen.queryByRole("button", { name: "Listen again" })).toBeNull();
+  });
+
+  it("the leader never listens: it is the reference", async () => {
+    await joinAs(running({ leader: "me" }));
+    await moveTo(4010);
+    expect(listenMock).not.toHaveBeenCalled();
+    expect(playing().map((l) => +l.when!.toFixed(3))).toEqual([0.9]);
+    expect(screen.getByRole("status")).toHaveTextContent(/^Leading · synced ±\d+ ms$/);
+  });
+
+  it("plays by the clock alone when it can't hear the band, and Listen again goes silent and tries again", async () => {
+    const calls = deferListen();
+    await joinAs(running({ leader: "them" }));
+    calls[0].reject(new DOMException("blocked", "NotAllowedError"));
+    await moveTo(4010);
+    expect(playing().map((l) => +l.when!.toFixed(3))).toEqual([0.9]);
+    expect(screen.getByRole("status")).toHaveTextContent(/^Couldn't hear the band, synced by clock ±\d+ ms$/);
+    fireEvent.click(screen.getByRole("button", { name: "Listen again" }));
+    await moveTo(4100);
+    expect(listenMock).toHaveBeenCalledTimes(2);
+    expect(playing()).toHaveLength(0);
+    expect(screen.getByRole("status")).toHaveTextContent("Listening to the band…");
+    calls[1].resolve(band(-15, calls[1].seconds));
+    await moveTo(4200);
+    expect(playing()[0].when!).toBeCloseTo(0.915, 3);
+  });
+
+  it("falls back to the clock when the beats heard are too few", async () => {
+    const calls = deferListen();
+    await joinAs(running({ leader: "them" }));
+    calls[0].resolve(recording(48000, 0, 4.9, [1.0, 1.5]));
+    await moveTo(4010);
+    expect(playing().map((l) => +l.when!.toFixed(3))).toEqual([0.9]);
+    expect(screen.getByRole("button", { name: "Listen again" })).toBeInTheDocument();
+  });
+
+  it("a tempo change keeps the match", async () => {
+    const calls = deferListen();
+    await joinAs(running({ leader: "them" }));
+    calls[0].resolve(band(20));
+    await moveTo(4010);
+    mocked.getMetronome.mockResolvedValue(running({ leader: "them", bpm: 60, startAt: 12_000, updatedAt: "2026-11-15T10:00:05.000Z" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1600);
+    });
+    await moveTo(5700);
+    expect(listenMock).toHaveBeenCalledTimes(1);
+    // The new bar (server 12 000) is played 20 ms early too.
+    expect(ctx.loops[ctx.loops.length - 1].when!).toBeCloseTo(2.88, 3);
+  });
+
+  it("a new leader clears the match and listens again", async () => {
+    const calls = deferListen();
+    await joinAs(running({ leader: "them" }));
+    calls[0].resolve(band(20));
+    await moveTo(4010);
+    expect(playing()[0].when!).toBeCloseTo(0.88, 3);
+    mocked.getMetronome.mockResolvedValue(running({ leader: "someone-else", updatedAt: "2026-11-15T10:00:05.000Z" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1600);
+    });
+    expect(listenMock).toHaveBeenCalledTimes(2);
+    expect(playing()).toHaveLength(0);
+    // Nothing heard this time: by the clock alone, with no trace of the old shift.
+    calls[1].resolve(recording(48000, 0, 3, []));
+    await moveTo(5700);
+    expect(playing()).toHaveLength(1);
+    const l = playing()[0];
+    expect(((l.when! - l.offset! - 0.9) / 2) % 1).toBeCloseTo(0, 6);
+  });
+
+  it("a later sync round doesn't undo the match", async () => {
+    const calls = deferListen();
+    await joinAs(running({ leader: "them" }));
+    calls[0].resolve(band(20));
+    await moveTo(4010);
+    await moveTo(6000); // the loop is playing, so it is checked for drift
+    const booked = ctx.loops.length;
+    // The clock estimate moves by 40 ms; once the first round has aged out, a clock-only phone would follow it.
+    mocked.getTime.mockImplementation(async () => ({ now: perf + 5040 }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3 * 60_000 + 100);
+    });
+    await moveTo(6100);
+    expect(mocked.getTime.mock.calls.length).toBeGreaterThanOrEqual(29);
+    expect(ctx.loops).toHaveLength(booked);
+    expect(screen.getByRole("status")).toHaveTextContent("Matched to the band");
+  });
+
+  it("without a measured round trip it plays by the clock and points to Measure this phone", async () => {
+    await joinAs(running({ leader: "them" }), false);
+    await moveTo(4010);
+    expect(listenMock).not.toHaveBeenCalled();
+    expect(playing().map((l) => +l.when!.toFixed(3))).toEqual([0.9]);
+    expect(screen.getByRole("status")).toHaveTextContent(/^Synced ±\d+ ms$/);
+    expect(screen.getByText(/tap Measure this phone/)).toBeInTheDocument();
+  });
+
+  it("an old session with no leader plays by the clock without listening", async () => {
+    await joinAs(running());
+    await moveTo(4010);
+    expect(listenMock).not.toHaveBeenCalled();
+    expect(playing().map((l) => +l.when!.toFixed(3))).toEqual([0.9]);
+    expect(screen.queryByText(/tap Measure this phone/)).toBeNull();
+  });
+});
+
 describe("Calibrate this phone", () => {
   it("saves the nudge on this phone", async () => {
     const { unmount } = renderPanel();
@@ -399,6 +594,42 @@ describe("Calibrate this phone", () => {
     });
     expect(screen.getByText("Measured +140 ms, saved")).toBeInTheDocument();
     expect(localStorage.getItem(NUDGE_KEY)).toBe("140");
+  });
+
+  it("measures this phone's round trip from clicks it plays and hears, and saves it", async () => {
+    listenMock.mockImplementation(async (ctx: FakeAudioContext, seconds: number, opts: { onStart?: () => void }) => {
+      opts.onStart?.();
+      expect(ctx.started).toHaveLength(8);
+      return recording(ctx.sampleRate, 0, seconds, ctx.started.map((t) => t + 0.142));
+    });
+    renderPanel();
+    fireEvent.click(screen.getByText("Calibrate this phone"));
+    expect(screen.getByText(/Not measured yet/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Measure this phone" }));
+    expect(await screen.findByText("Measured 142 ms, saved")).toBeInTheDocument();
+    expect(Number(localStorage.getItem(ROUNDTRIP_KEY))).toBeCloseTo(142, 0);
+    expect(screen.getByText(/Measured: 142 ms/)).toBeInTheDocument();
+  });
+
+  it("saves nothing when no clicks are heard", async () => {
+    listenMock.mockImplementation(async (_ctx: FakeAudioContext, seconds: number, opts: { onStart?: () => void }) => {
+      opts.onStart?.();
+      return recording(48000, 0, seconds, []);
+    });
+    renderPanel();
+    fireEvent.click(screen.getByText("Calibrate this phone"));
+    fireEvent.click(screen.getByRole("button", { name: "Measure this phone" }));
+    expect(await screen.findByText(/Couldn't hear the clicks/)).toBeInTheDocument();
+    expect(localStorage.getItem(ROUNDTRIP_KEY)).toBeNull();
+  });
+
+  it("says so when the mic is blocked, and saves nothing", async () => {
+    listenMock.mockRejectedValue(new DOMException("no", "NotAllowedError"));
+    renderPanel();
+    fireEvent.click(screen.getByText("Calibrate this phone"));
+    fireEvent.click(screen.getByRole("button", { name: "Measure this phone" }));
+    expect(await screen.findByText(/Microphone access was blocked/)).toBeInTheDocument();
+    expect(localStorage.getItem(ROUNDTRIP_KEY)).toBeNull();
   });
 
   it("says so when the taps are too few to measure", async () => {

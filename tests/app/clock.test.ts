@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateOffset, nudgeFromTaps, toAudioTime } from "../../src/app/metronome/clock";
+import { estimateOffset, fitDrift, nudgeFromTaps, toAudioTime } from "../../src/app/metronome/clock";
 
 describe("estimateOffset", () => {
   it("is null with no samples", () => {
@@ -75,5 +75,32 @@ describe("nudgeFromTaps", () => {
 
   it("is null without clicks", () => {
     expect(nudgeFromTaps([], [1, 2, 3, 4, 5, 6, 7, 8, 9])).toBeNull();
+  });
+});
+
+describe("fitDrift", () => {
+  /** A round of samples answered with `offset` at local time `at`, plus slower ones that are further off. */
+  const round = (at: number, offset: number) => [
+    { sentMs: at - 10, serverMs: at + offset, receivedMs: at + 10 },
+    { sentMs: at - 100, serverMs: at + offset + 70, receivedMs: at + 100 },
+  ];
+
+  it("is 0 with fewer than 3 rounds", () => {
+    expect(fitDrift([])).toBe(0);
+    expect(fitDrift([round(0, 100), round(60_000, 130)])).toBe(0);
+  });
+
+  it("is 0 for a steady offset", () => {
+    expect(fitDrift([round(0, 100), round(60_000, 100), round(120_000, 100)])).toBeCloseTo(0, 12);
+  });
+
+  it("is the slope of each round's best offset against local time", () => {
+    // 3 ms more every minute: 50 ppm.
+    const rounds = [round(0, 100), round(60_000, 103), round(120_000, 106), round(180_000, 109)];
+    expect(fitDrift(rounds)).toBeCloseTo(3 / 60_000, 12);
+  });
+
+  it("skips empty rounds", () => {
+    expect(fitDrift([round(0, 100), [], round(60_000, 106), round(120_000, 112)])).toBeCloseTo(6 / 60_000, 12);
   });
 });

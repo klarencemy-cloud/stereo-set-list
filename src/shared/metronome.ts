@@ -18,6 +18,11 @@ export interface MetroSession {
   startAt: number;
   running: boolean;
   updatedAt: string;
+  /**
+   * The device id of the phone that started it: the reference the others match by ear. Missing on sessions
+   * started before leaders existed, or by a client that sends none.
+   */
+  leader?: string;
 }
 
 /** What a client asks for. Anything left out stays as it is. */
@@ -25,6 +30,8 @@ export interface MetroChange {
   bpm?: number;
   beatsPerBar?: number;
   running?: boolean;
+  /** Sent with a start: the starter becomes the leader. Ignored on any other change. */
+  leader?: string;
 }
 
 export interface GridBeat {
@@ -71,6 +78,7 @@ export function gridBeats(prev: MetroSession | null, cur: MetroSession, fromMs: 
  * - a tempo or beats-per-bar change while running: the new tempo starts on the first bar line of the current
  *   grid at or after now + lead, so the grid never jumps;
  * - stop: at once.
+ * The leader is set by a start (from `change.leader`, or none) and kept by every other change.
  */
 export function applyChange(
   current: MetroSession | null,
@@ -86,10 +94,14 @@ export function applyChange(
   }
   const running = change.running ?? current?.running ?? false;
   const updatedAt = new Date(nowMs).toISOString();
-  if (!running) return { bpm, beatsPerBar, startAt: current?.startAt ?? nowMs, running: false, updatedAt };
-  if (!current?.running) return { bpm, beatsPerBar, startAt: nowMs + leadMs, running: true, updatedAt };
+  const kept = current?.leader ? { leader: current.leader } : {};
+  if (!running) return { bpm, beatsPerBar, startAt: current?.startAt ?? nowMs, running: false, updatedAt, ...kept };
+  if (!current?.running) {
+    const leader = change.leader ? { leader: change.leader } : {};
+    return { bpm, beatsPerBar, startAt: nowMs + leadMs, running: true, updatedAt, ...leader };
+  }
   if (bpm === current.bpm && beatsPerBar === current.beatsPerBar) return current;
   const barMs = (current.beatsPerBar * 60000) / current.bpm;
   const bars = Math.max(0, Math.ceil((nowMs + leadMs - current.startAt) / barMs - EPS));
-  return { bpm, beatsPerBar, startAt: current.startAt + bars * barMs, running: true, updatedAt };
+  return { bpm, beatsPerBar, startAt: current.startAt + bars * barMs, running: true, updatedAt, ...kept };
 }

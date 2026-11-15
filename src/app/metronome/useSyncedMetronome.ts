@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import { audioLink, createAudioContext, preferPlaybackAudio, startClickLoop, type ClickLoop } from "../audio";
+import { deviceId } from "../device";
 import type { MetroChange, MetroSession } from "../../shared/metronome";
 import { toAudioTime } from "./clock";
+import { listen } from "./listen";
 import { loopStart, phaseError } from "./loop";
+import { detectOnsets, matchShift } from "./match";
 import { useClockSync } from "./useClockSync";
 
 /**
@@ -19,6 +22,40 @@ const TICK_MS = 25;
 const START_MARGIN_S = 0.05;
 /** A loop further than this from the grid is moved back onto it, at the next bar line. */
 const REALIGN_S = 0.01;
+
+/** A joining phone listens to the band for this many bars (and at least LISTEN_MIN_S) before it plays. */
+const LISTEN_BARS = 2;
+const LISTEN_MIN_S = 3;
+/** Clicks closer together than this share of a beat count as one. */
+const REFRACTORY_BEATS = 0.6;
+
+/**
+ * How this phone is lined up with the band:
+ * - leading: it started the session, so it is the reference;
+ * - listening: silent, hearing the leader's clicks to match them;
+ * - matched: lined up by ear;
+ * - failed: couldn't hear the band, so it plays by the clock alone;
+ * - clock: by the clock alone, with nothing to match (no leader, or no round trip measured).
+ */
+export type SyncPhase = "leading" | "listening" | "matched" | "failed" | "clock";
+
+/** A match by ear, kept in memory only, for one leader. */
+interface Match {
+  leader: string;
+  /** Added to the nudge: plus = played earlier. */
+  shiftMs: number;
+  spreadMs: number;
+  /** The clock offset the match was made with, and when (performance.now()): only drift is added from then on. */
+  offsetMs: number;
+  atMs: number;
+}
+
+/** What the page shows about the match, for one leader. */
+interface MatchView {
+  leader: string;
+  status: "listening" | "matched" | "failed";
+  spreadMs?: number;
+}
 
 /** A looped bar playing (or booked to start) for one session grid. */
 interface Playing {
@@ -48,8 +85,13 @@ const sameSession = (a: MetroSession | null, b: MetroSession | null) =>
  * `nudgeMs`), so they keep going when the screen is off and the page's timers stop. While the page runs, a short
  * timer starts and stops loops, switches tempo on the server's bar line, pulls a drifting loop back, and moves
  * the flash, which works without sound too.
+ *
+ * A phone that joins someone else's session, with its round trip (`roundTripMs`, speaker to its own mic) measured,
+ * first stays silent for about 2 bars and listens to the leader through the mic, then shifts its grid to match
+ * what it heard. The match is kept for that leader (a tempo change keeps it, a new leader listens again), and from
+ * then on the clock offset is frozen and only drifts, so a later sync round can't undo it.
  */
-export function useSyncedMetronome(songId: string, nudgeMs: number) {
+export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs: number | null = null) {
   /** undefined until the first answer; null when nobody has started one. */
   const [session, setSession] = useState<MetroSession | null | undefined>(undefined);
   /** False after the last check failed. */
@@ -72,11 +114,29 @@ export function useSyncedMetronome(songId: string, nudgeMs: number) {
   /** Loops booked, oldest first; the last one is for the newest grid. */
   const audio = useRef<Playing[]>([]);
   const shown = useRef<{ key: string; count: number }>({ key: "", count: 0 });
-  const live = useRef({ offsetMs: 0, nudgeMs, synced: false });
-  live.current = { offsetMs: clock.offsetMs, nudgeMs, synced: clock.status === "synced" };
+  const live = useRef({ offsetMs: 0, nudgeMs, synced: false, driftPerMs: 0 });
+  live.current = { offsetMs: clock.offsetMs, nudgeMs, synced: clock.status === "synced", driftPerMs: clock.driftPerMs };
+  const [me] = useState(deviceId);
+  const match = useRef<Match | null>(null);
+  const [matchView, setMatchView] = useState<MatchView | null>(null);
+  /** True while listening: no loops are booked. */
+  const listening = useRef(false);
+  /** Bumped by "Listen again" (and by a listen spoilt by a tempo change), to listen once more. */
+  const [attempt, setAttempt] = useState(0);
+
+  /**
+   * The offset and nudge the grid is played with. Once matched: the offset taken at match time plus drift since,
+   * and the nudge plus the match's shift.
+   */
+  const aligned = () => {
+    const { offsetMs, nudgeMs: nudge, driftPerMs } = live.current;
+    const m = match.current;
+    if (!m) return { offsetMs, nudgeMs: nudge };
+    return { offsetMs: m.offsetMs + driftPerMs * (performance.now() - m.atMs), nudgeMs: nudge + m.shiftMs };
+  };
 
   /** Best guess at the server's time now; before syncing, this phone's own clock. */
-  const serverNow = () => (live.current.synced ? performance.now() + live.current.offsetMs : Date.now());
+  const serverNow = () => (live.current.synced ? performance.now() + aligned().offsetMs : Date.now());
 
   /** Stops every loop at `at` (audio s; default now). */
   const stopAudio = useCallback((at = 0) => {
@@ -100,6 +160,8 @@ export function useSyncedMetronome(songId: string, nudgeMs: number) {
         stopAudio();
         setBeat(null);
       }
+      // A different leader: the match was against someone else's phone. (A stop keeps the leader, and the match.)
+      if (next && match.current && next.leader !== match.current.leader) match.current = null;
       grid.current.cur = next;
       setSession(next);
     },
@@ -172,11 +234,11 @@ export function useSyncedMetronome(songId: string, nudgeMs: number) {
   const reconcile = useCallback(() => {
     const ctx = ctxRef.current;
     const cur = grid.current.cur;
-    if (!ctx || !cur?.running) {
+    if (!ctx || !cur?.running || listening.current) {
       stopAudio();
       return;
     }
-    const { offsetMs, nudgeMs: nudge } = live.current;
+    const { offsetMs, nudgeMs: nudge } = aligned();
     const now = ctx.currentTime;
     const startS = toAudioTime(cur.startAt, offsetMs, audioLink(ctx), nudge);
     const barS = (cur.beatsPerBar * 60) / cur.bpm;
@@ -201,7 +263,8 @@ export function useSyncedMetronome(songId: string, nudgeMs: number) {
   const flash = useCallback(() => {
     const { prev, cur } = grid.current;
     if (!cur?.running) return;
-    const heard = performance.now() + live.current.offsetMs + live.current.nudgeMs;
+    const a = aligned();
+    const heard = performance.now() + a.offsetMs + a.nudgeMs;
     const g = prev?.running && heard < cur.startAt ? prev : cur;
     if (heard < g.startAt) return;
     const n = Math.floor((heard - g.startAt) / (60000 / g.bpm));
@@ -213,6 +276,77 @@ export function useSyncedMetronome(songId: string, nudgeMs: number) {
 
   // While joined and synced: keep the loops right and the flash moving. The clicks don't depend on this running.
   const synced = clock.status === "synced";
+  // Listen to the leader before playing: while the session runs, someone else leads it, the round trip is known,
+  // and there is no match for this leader yet (or "Listen again" was tapped). Declared before the tick below,
+  // so a listen starts before the tick can book a loop.
+  const leader = session?.running ? session.leader : undefined;
+  const shouldListen = joined && synced && !noSound && !!leader && leader !== me && roundTripMs !== null;
+  /** The attempt a match was made on, so only "Listen again" (a new attempt) re-listens to the same leader. */
+  const matchedAttempt = useRef(-1);
+  useEffect(() => {
+    const ctx = ctxRef.current;
+    const cur = grid.current.cur;
+    if (!shouldListen || !ctx || !leader || roundTripMs === null || !cur?.running) return;
+    if (match.current?.leader === leader && matchedAttempt.current === attempt) return;
+    const ac = new AbortController();
+    match.current = null;
+    listening.current = true;
+    stopAudio();
+    setMatchView({ leader, status: "listening" });
+    // The grid as this phone would play it now, by the clock: the offset and nudge are frozen from here.
+    const offsetMs = live.current.offsetMs;
+    const nudge = live.current.nudgeMs;
+    const atMs = performance.now();
+    const beatS = 60 / cur.bpm;
+    const barS = cur.beatsPerBar * beatS;
+    const gridStartS = () => toAudioTime(cur.startAt, offsetMs, audioLink(ctx), nudge);
+    // Don't count the silence before a session that hasn't started yet.
+    const waitS = Math.max(0, gridStartS() - ctx.currentTime);
+    const seconds = waitS + Math.max(LISTEN_MIN_S, LISTEN_BARS * barS);
+    const done = (m: Match | null, spreadMs?: number) => {
+      listening.current = false;
+      match.current = m;
+      matchedAttempt.current = attempt;
+      setMatchView({ leader, status: m ? "matched" : "failed", spreadMs });
+    };
+    listen(ctx, seconds, { signal: ac.signal }).then(
+      ({ samples, startS }) => {
+        if (ac.signal.aborted) return;
+        if (grid.current.cur !== cur) {
+          // The tempo changed mid-listen: what was heard doesn't fit the grid any more. Listen again.
+          listening.current = false;
+          setAttempt((n) => n + 1);
+          return;
+        }
+        const rtS = roundTripMs / 1000;
+        const endS = startS + samples.length / ctx.sampleRate;
+        const g0 = gridStartS();
+        // The beats whose clicks, heard a round trip later, fall inside the recording.
+        const expected: number[] = [];
+        for (let n = Math.max(0, Math.ceil((startS - rtS - g0) / beatS)); g0 + n * beatS + rtS < endS; n++) {
+          expected.push(g0 + n * beatS);
+        }
+        const onsets = detectOnsets(samples, ctx.sampleRate, startS, REFRACTORY_BEATS * beatS);
+        const r = matchShift(expected, onsets, rtS, beatS);
+        done(r && { leader, shiftMs: r.shiftMs, spreadMs: r.spreadMs, offsetMs, atMs }, r?.spreadMs);
+      },
+      () => {
+        // Mic blocked or missing, or nothing heard: play by the clock alone.
+        if (!ac.signal.aborted) done(null);
+      },
+    );
+    return () => {
+      ac.abort();
+      if (listening.current) {
+        listening.current = false;
+        setMatchView(null);
+      }
+    };
+  }, [shouldListen, leader, me, roundTripMs, attempt, stopAudio]);
+
+  /** Goes silent and matches the band by ear again. */
+  const listenAgain = useCallback(() => setAttempt((n) => n + 1), []);
+
   useEffect(() => {
     if (!joined || !synced) return;
     const tick = () => {
@@ -248,6 +382,9 @@ export function useSyncedMetronome(songId: string, nudgeMs: number) {
   /** Stops this phone only. */
   const leave = useCallback(() => {
     stopAudio();
+    // A new join listens again.
+    match.current = null;
+    setMatchView(null);
     joinedRef.current = false;
     setJoined(false);
     setBeat(null);
@@ -282,12 +419,16 @@ export function useSyncedMetronome(songId: string, nudgeMs: number) {
   const start = useCallback(
     async (bpm: number, beatsPerBar: number) => {
       joinPhone();
-      if (!(await send({ bpm, beatsPerBar, running: true }))) return leave();
+      if (!(await send({ bpm, beatsPerBar, running: true, leader: me }))) return leave();
       // Check after the answer, not before it: a check answered before the start could undo it until the next one.
       checkNowRef.current?.();
     },
-    [joinPhone, leave, send],
+    [joinPhone, leave, send, me],
   );
+
+  let phase: SyncPhase = "clock";
+  if (joined && session?.running && leader === me) phase = "leading";
+  else if (joined && session?.running && matchView && matchView.leader === leader) phase = matchView.status;
 
   return {
     session,
@@ -297,6 +438,13 @@ export function useSyncedMetronome(songId: string, nudgeMs: number) {
     beat,
     error,
     noSound,
+    /** How this phone is lined up with the band (see SyncPhase). */
+    phase,
+    /** With phase "matched": how much the heard beats disagreed (ms). */
+    matchSpreadMs: phase === "matched" ? (matchView?.spreadMs ?? null) : null,
+    /** Someone else leads, but this phone can't match by ear until its round trip is measured. */
+    needsRoundTrip: joined && !!session?.running && !!leader && leader !== me && roundTripMs === null,
+    listenAgain,
     join,
     leave,
     start,

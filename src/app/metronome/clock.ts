@@ -28,6 +28,32 @@ export function estimateOffset(samples: TimeSample[]): ClockEstimate | null {
   return best;
 }
 
+/**
+ * How fast the offset is changing (ms per ms of local time): the least-squares slope of each round's best
+ * (fastest) sample's offset against the local time it was taken. 0 with fewer than 3 rounds, too few to tell.
+ */
+export function fitDrift(rounds: TimeSample[][]): number {
+  const points: { x: number; y: number }[] = [];
+  for (const round of rounds) {
+    let best: TimeSample | null = null;
+    for (const s of round) {
+      if (s.receivedMs - s.sentMs < 0) continue;
+      if (!best || s.receivedMs - s.sentMs < best.receivedMs - best.sentMs) best = s;
+    }
+    if (best) points.push({ x: (best.sentMs + best.receivedMs) / 2, y: best.serverMs - (best.sentMs + best.receivedMs) / 2 });
+  }
+  if (points.length < 3) return 0;
+  const mx = points.reduce((a, p) => a + p.x, 0) / points.length;
+  const my = points.reduce((a, p) => a + p.y, 0) / points.length;
+  let sxy = 0;
+  let sxx = 0;
+  for (const p of points) {
+    sxy += (p.x - mx) * (p.y - my);
+    sxx += (p.x - mx) ** 2;
+  }
+  return sxx > 0 ? sxy / sxx : 0;
+}
+
 /** The same moment on performance.now() (ms) and on AudioContext.currentTime (s). */
 export interface ClockLink {
   perfMs: number;

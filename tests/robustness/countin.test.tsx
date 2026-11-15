@@ -44,7 +44,7 @@ async function starter(rttMs: number) {
   return firstBar(s);
 }
 
-describe("H1: the starter waits for 10 serial clock samples before it plays anything", () => {
+describe("H1: the starter waits for 20 serial clock samples before it plays anything", () => {
   it("control: with a 100 ms round trip the starter hears beat 1 of its own count-in", async () => {
     const { got, first, want } = await starter(100);
     expect(got).toHaveLength(want);
@@ -148,7 +148,8 @@ describe("H11: the sync status is a fair bound but never warns", () => {
     render(<SongMetronome song={w.song} onSongChange={() => {}} />);
     await advance(50, 10);
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
-    await advance(4500, 10);
+    // 20 serial samples at 400 ms each before the first estimate.
+    await advance(8500, 10);
     const status = screen.getByRole("status");
     expect(status).toHaveTextContent("Synced ±200 ms");
     expect(status).not.toHaveClass("warn");

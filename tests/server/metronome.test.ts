@@ -77,12 +77,39 @@ describe("metronome API", () => {
     [{ bpm: "100" }],
     [{ beatsPerBar: 8 }],
     [{ running: "yes" }],
+    [{ running: true, leader: 5 }],
+    [{ running: true, leader: "" }],
+    [{ running: true, leader: "x".repeat(65) }],
+    [{ leader: "phone-a" }],
   ])("refuses %o", async (body) => {
     const { metro, id } = await setup();
     await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
     const res = await metro(req("PUT", `/api/metronome/${id}`, body));
     expect(res.status).toBe(400);
     expect((await res.json()).message).toBeTruthy();
+  });
+
+  it("keeps the leader that started it, and everyone reads it", async () => {
+    const { metro, clock, id } = await setup();
+    const put = await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true, leader: "phone-a" }));
+    expect(await put.json()).toMatchObject({ leader: "phone-a" });
+    clock.now += 5000;
+    const changed = await (await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90 }))).json();
+    expect(changed.leader).toBe("phone-a");
+    expect((await (await metro(req("GET", `/api/metronome/${id}`))).json()).leader).toBe("phone-a");
+  });
+
+  it("reads a session stored before leaders existed, or with a bad leader, as having none", async () => {
+    const { kv, metro, repo, id } = await setup();
+    const base = { bpm: 120, beatsPerBar: 4, startAt: 1_002_000, running: true, updatedAt: new Date(1_000_000).toISOString() };
+    for (const stored of [base, { ...base, leader: 42 }, { ...base, leader: "x".repeat(500) }, { ...base, extra: "junk" }]) {
+      await kv.setText(`metronome/${id}`, JSON.stringify(stored));
+      const got = await (await metro(req("GET", `/api/metronome/${id}`))).json();
+      expect(got).toEqual(base);
+      // Every read path agrees: a change read back through setMetronome is normalised the same way.
+      const set = await repo.setMetronome(id, { beatsPerBar: 4 }, 1_000_100);
+      expect(set).toEqual(base);
+    }
   });
 
   it("needs a tempo to start the first session (no made-up default)", async () => {

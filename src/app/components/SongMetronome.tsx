@@ -6,6 +6,8 @@ import { songTempo } from "../../shared/song";
 import type { Song } from "../../shared/types";
 import { bpmFromTaps } from "../metronome/schedule";
 import { MAX_NUDGE_MS, NUDGE_STEP_MS, nudgeFromTaps } from "../metronome/clock";
+import { listen } from "../metronome/listen";
+import { detectOnsets, measureRoundTrip } from "../metronome/match";
 import { useMetronome } from "../metronome/useMetronome";
 import { useSyncedMetronome } from "../metronome/useSyncedMetronome";
 import BeatDisplay from "./BeatDisplay";
@@ -14,6 +16,10 @@ import { readSavedMetronome, saveMetronome } from "./Metronome";
 
 /** This phone's calibration in ms (plus = plays earlier). */
 export const NUDGE_KEY = "stereo-set:metronome-nudge";
+/** This phone's measured speaker-to-mic round trip in ms, for matching the band by ear. Unset until measured. */
+export const ROUNDTRIP_KEY = "stereo-set:metronome-roundtrip";
+/** A round trip outside this is a bad reading, not a phone. */
+const MAX_ROUNDTRIP_MS = 1000;
 /** A tempo dragged or tapped while playing is sent once it settles, not on every step. */
 const SEND_DELAY_MS = 400;
 const OFFLINE = "Can't sync: playing on this phone only";
@@ -26,6 +32,19 @@ function readNudge(): number {
     // Storage blocked: no nudge.
   }
   return 0;
+}
+
+/** The saved round trip, or null when it was never measured (no made-up default). */
+function readRoundTrip(): number | null {
+  try {
+    const raw = localStorage.getItem(ROUNDTRIP_KEY);
+    if (raw === null || raw === "") return null;
+    const v = Number(raw);
+    if (Number.isFinite(v) && v > 0 && v <= MAX_ROUNDTRIP_MS) return v;
+  } catch {
+    // Storage blocked: not measured.
+  }
+  return null;
 }
 
 const signed = (ms: number) => (ms > 0 ? `+${ms}` : `${ms}`);
@@ -108,10 +127,35 @@ function LocalMetronome({ tempo, onChange, onRetry }: { tempo: Tempo; onChange: 
 
 const TAP_ALONG_CLICKS = 12;
 const TAP_ALONG_BPM = 90;
+const MEASURE_CLICKS = 8;
+/** Far enough apart that even a slow phone hears each click before the next one plays. */
+const MEASURE_GAP_S = 0.8;
+/** The first click plays this long after the mic starts. */
+const MEASURE_LEAD_S = 0.3;
 
-/** The nudge slider and the tap-along that measures it. */
-function Calibrate({ nudge, onNudge }: { nudge: number; onNudge: (ms: number) => void }) {
+function measureError(e: unknown): string {
+  const name = typeof e === "object" && e !== null ? (e as { name?: string }).name : "";
+  if (name === "NotAllowedError" || name === "SecurityError") {
+    return "Microphone access was blocked. Allow the microphone for this site, then try again.";
+  }
+  if (name === "NotSupportedError") return "This browser can't use the microphone here.";
+  return "Couldn't use the microphone. Try again.";
+}
+
+/** The nudge slider, the tap-along that measures it, and the round-trip measure for matching by ear. */
+function Calibrate({
+  nudge,
+  onNudge,
+  roundTrip,
+  onRoundTrip,
+}: {
+  nudge: number;
+  onNudge: (ms: number) => void;
+  roundTrip: number | null;
+  onRoundTrip: (ms: number) => void;
+}) {
   const [tapping, setTapping] = useState(false);
+  const [measuring, setMeasuring] = useState(false);
   const [message, setMessage] = useState("");
   const ctxRef = useRef<AudioContext | null>(null);
   const clicks = useRef<number[]>([]);
@@ -165,6 +209,48 @@ function Calibrate({ nudge, onNudge }: { nudge: number; onNudge: (ms: number) =>
 
   const tap = () => taps.current.push(performance.now());
 
+  /** Plays clicks on the speaker and times how long each takes to reach this phone's own mic. */
+  async function measure() {
+    setMessage("");
+    preferPlaybackAudio();
+    const ctx = ctxRef.current ?? createAudioContext();
+    if (!ctx) {
+      setMessage("This browser can't play sound.");
+      return;
+    }
+    ctxRef.current = ctx;
+    ctx.resume().catch(() => {});
+    setMeasuring(true);
+    const scheduled: number[] = [];
+    try {
+      const seconds = MEASURE_LEAD_S + MEASURE_CLICKS * MEASURE_GAP_S + 0.2;
+      const rec = await listen(ctx, seconds, {
+        onStart: () => {
+          // From when the mic is recording, so none of the clicks is missed.
+          const first = ctx.currentTime + MEASURE_LEAD_S;
+          for (let i = 0; i < MEASURE_CLICKS; i++) {
+            const at = first + i * MEASURE_GAP_S;
+            click(ctx, at, false);
+            scheduled.push(at);
+          }
+        },
+      });
+      const onsets = detectOnsets(rec.samples, ctx.sampleRate, rec.startS, 0.6 * MEASURE_GAP_S);
+      const r = measureRoundTrip(scheduled, onsets, MEASURE_GAP_S);
+      if (!r || r.roundTripMs > MAX_ROUNDTRIP_MS) {
+        setMessage("Couldn't hear the clicks. Turn the sound up, unplug earphones, and try again somewhere quiet.");
+        return;
+      }
+      const ms = Math.round(r.roundTripMs * 10) / 10;
+      onRoundTrip(ms);
+      setMessage(`Measured ${Math.round(ms)} ms, saved`);
+    } catch (e) {
+      setMessage(measureError(e));
+    } finally {
+      setMeasuring(false);
+    }
+  }
+
   return (
     <div className="metro-calibrate">
       <label className="field">
@@ -200,10 +286,20 @@ function Calibrate({ nudge, onNudge }: { nudge: number; onNudge: (ms: number) =>
           Tap
         </button>
       ) : (
-        <button type="button" className="btn" onClick={begin}>Tap along</button>
+        <p className="actions">
+          <button type="button" className="btn" disabled={measuring} onClick={begin}>Tap along</button>
+          <button type="button" className="btn" disabled={measuring} onClick={measure}>
+            {measuring ? "Measuring..." : "Measure this phone"}
+          </button>
+        </p>
       )}
       <p className="muted tool-note">
         Tap along plays 12 clicks on this phone. Tap the big button on each click you hear; the first few don't count.
+      </p>
+      <p className="muted tool-note">
+        Measure this phone plays 8 clicks and listens with the mic, so this phone can match the band by ear when it
+        joins. Do it once, somewhere quiet, sound up, no earphones.
+        {roundTrip !== null ? ` Measured: ${Math.round(roundTrip)} ms.` : " Not measured yet."}
       </p>
       {message && <p role="status">{message}</p>}
     </div>
@@ -221,7 +317,8 @@ interface Props {
 /** The song's shared metronome: anyone can start, change or stop it, and every joined phone clicks in time. */
 export default function SongMetronome({ song, onSongChange, onSession }: Props) {
   const [nudge, setNudgeState] = useState(readNudge);
-  const m = useSyncedMetronome(song.id, nudge);
+  const [roundTrip, setRoundTripState] = useState(readRoundTrip);
+  const m = useSyncedMetronome(song.id, nudge, roundTrip);
   const songT = songTempo(song);
   const [tempo, setTempo] = useState<Tempo>(() => {
     const saved = readSavedMetronome();
@@ -266,6 +363,15 @@ export default function SongMetronome({ song, onSongChange, onSession }: Props) 
     setNudgeState(ms);
     try {
       localStorage.setItem(NUDGE_KEY, String(ms));
+    } catch {
+      // Not saved; still applies now.
+    }
+  }
+
+  function setRoundTrip(ms: number) {
+    setRoundTripState(ms);
+    try {
+      localStorage.setItem(ROUNDTRIP_KEY, String(ms));
     } catch {
       // Not saved; still applies now.
     }
@@ -358,8 +464,14 @@ export default function SongMetronome({ song, onSongChange, onSession }: Props) 
 
   let status = "";
   if (!offline && m.joined) {
-    if (m.clock.status === "synced") status = `Synced ±${Math.max(1, Math.round(m.clock.rttMs / 2))} ms`;
-    else if (m.clock.status === "syncing") status = "Syncing...";
+    const bound = `±${Math.max(1, Math.round(m.clock.rttMs / 2))} ms`;
+    if (m.clock.status === "synced") {
+      if (m.phase === "leading") status = `Leading · synced ${bound}`;
+      else if (m.phase === "listening") status = "Listening to the band…";
+      else if (m.phase === "matched") status = `Matched to the band ±${Math.max(1, Math.round(m.matchSpreadMs ?? 0))} ms`;
+      else if (m.phase === "failed") status = `Couldn't hear the band, synced by clock ${bound}`;
+      else status = `Synced ${bound}`;
+    } else if (m.clock.status === "syncing") status = "Syncing...";
   }
   // Save as song tempo saves what is on screen: the shared tempo while it plays, else the controls'.
   // Only once it has been played: before that the controls' starting value is nobody's choice.
@@ -369,6 +481,16 @@ export default function SongMetronome({ song, onSongChange, onSession }: Props) 
   return (
     <section className="tool song-metronome" aria-label="Metronome">
       {status && <p className="metro-status" role="status">{status}</p>}
+      {!offline && m.joined && m.phase === "failed" && (
+        <p className="actions">
+          <button type="button" className="btn" onClick={m.listenAgain}>Listen again</button>
+        </p>
+      )}
+      {!offline && m.needsRoundTrip && (
+        <p className="muted tool-note">
+          To match the band by ear, open Calibrate this phone and tap Measure this phone.
+        </p>
+      )}
       {m.noSound && m.joined && <p className="muted">No sound on this phone: follow the flash.</p>}
       {!offline && session !== undefined && !m.reachable && (
         <p className="muted">Can't reach the server: changes from others won't show until it's back.</p>
@@ -402,7 +524,7 @@ export default function SongMetronome({ song, onSongChange, onSession }: Props) 
       >
         Calibrate this phone
       </button>
-      {calibrating && <Calibrate nudge={nudge} onNudge={setNudge} />}
+      {calibrating && <Calibrate nudge={nudge} onNudge={setNudge} roundTrip={roundTrip} onRoundTrip={setRoundTrip} />}
       <p className="muted tool-note">
         Bluetooth earphones lag 150–300 ms: use wired ones, or calibrate. On iPhone, check the silent switch.
         Keep the screen on while it plays.
