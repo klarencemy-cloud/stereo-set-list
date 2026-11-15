@@ -190,7 +190,7 @@ export default function SongPage() {
         <button type="button" className="pill" aria-expanded={choosingPrint} onClick={() => setChoosingPrint((v) => !v)}>
           Print lyrics
         </button>
-        <Link className="pill" to={`/songs/${song.id}/edit`}>Edit</Link>
+        <Link className="pill" to={`/songs/${song.id}/edit${gigId ? `?gig=${encodeURIComponent(gigId)}` : ""}`}>Edit</Link>
       </div>
       {choosingPrint && (
         <PrintLyricsChoice

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, conflictOf } from "../api";
 import { useUnsavedChanges } from "../components/useUnsavedChanges";
 import { KEYS } from "../../shared/transpose";
@@ -41,6 +41,10 @@ export default function SongFormPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const editing = Boolean(id);
+  // Opened from a song in a gig's setlist: go back there with the gig kept, so Previous/Next still show.
+  const [searchParams] = useSearchParams();
+  const gigId = searchParams.get("gig");
+  const songUrl = (songId: string) => `/songs/${songId}${gigId ? `?gig=${encodeURIComponent(gigId)}` : ""}`;
 
   const [mode, setMode] = useState<"link" | "paste">(editing ? "paste" : "link");
   const [link, setLink] = useState("");
@@ -169,13 +173,13 @@ export default function SongFormPage() {
     if (id && Object.keys(patch).length === 0) {
       // Nothing changed: nothing to save (and nothing that could clash with a bandmate's edit).
       allowNavigation();
-      navigate(`/songs/${id}`);
+      navigate(songUrl(id));
       return;
     }
     try {
       const song = id ? await api.updateSong(id, patch, loaded?.updatedAt) : await api.createSong(input);
       allowNavigation();
-      navigate(`/songs/${song.id}`);
+      navigate(songUrl(song.id));
     } catch (e) {
       // Everything typed stays in the form; Reload is the user's choice.
       setConflict(conflictOf<Song>(e));
