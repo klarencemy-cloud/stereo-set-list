@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import AddSongsPicker from "../../src/app/components/AddSongsPicker";
 
 const mk = (id: string, title: string, artist = "Band") => ({
-  id, title, artist, sourceUrl: null, originalKey: "A", bandKey: "A", capo: 0, updatedAt: "x",
+  id, title, artist, sourceUrl: null, originalKey: "A", bandKey: "A", capo: 0, bpm: null, beatsPerBar: null, updatedAt: "x",
 });
 const songs = [mk("s1", "Alpha"), mk("s4", "Delta"), mk("s3", "Gamma", "Zed")];
 
@@ -88,5 +88,16 @@ describe("AddSongsPicker", () => {
   it("says so when every song is already in the setlist", () => {
     render(<AddSongsPicker songs={[]} busy={false} onAdd={async () => true} />);
     expect(screen.getByText("Every song is already in the setlist.")).toBeInTheDocument();
+  });
+  it("marks songs with no chords yet, but not older copies that don't say", () => {
+    render(
+      <AddSongsPicker
+        songs={[{ ...mk("a", "Empty"), hasChords: false }, { ...mk("b", "Full"), hasChords: true }, mk("c", "Old")]}
+        busy={false}
+        onAdd={vi.fn(async () => true)}
+      />,
+    );
+    expect(screen.getAllByText("No chords yet")).toHaveLength(1);
+    expect(screen.getByText("No chords yet").closest("label")).toHaveTextContent("Empty — A");
   });
 });

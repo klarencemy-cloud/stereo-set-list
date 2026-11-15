@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, ApiError } from "../api";
+import { api, ApiError, conflictOf } from "../api";
 import { loadSetlist, loadSong, peekSong, prefetchSong, rememberSong } from "../songCache";
 import type { Song } from "../../shared/types";
 import { transposeContent } from "../../shared/sheet";
@@ -8,12 +8,18 @@ import { transposeKey } from "../../shared/transpose";
 import ChordSheet from "../components/ChordSheet";
 import TrackPlayer from "../components/TrackPlayer";
 import TransposeControl from "../components/TransposeControl";
+import ConflictNotice from "../components/ConflictNotice";
 import { useAutoscroll } from "../components/useAutoscroll";
 import { useWakeLock } from "../components/useWakeLock";
 import { useSongSpeed } from "../components/useSongSpeed";
 import { useStageMode } from "../components/useStageMode";
 import { useFontSize } from "../components/useFontSize";
 import { useSwipe } from "../components/useSwipe";
+import { useShowChords } from "../components/useShowChords";
+import PrintLyrics, { PrintLyricsChoice, usePrintLyrics } from "../components/PrintLyrics";
+import SongMetronome from "../components/SongMetronome";
+import type { MetroSession } from "../../shared/metronome";
+import { songTempo } from "../../shared/song";
 
 const KEY_UNKNOWN = "Key unknown \u2014 fix it in Edit";
 
@@ -29,7 +35,15 @@ export default function SongPage() {
   const speed = useSongSpeed(id);
   const stage = useStageMode();
   const [showTranspose, setShowTranspose] = useState(false);
+  const chords = useShowChords();
+  const printer = usePrintLyrics();
+  const [choosingPrint, setChoosingPrint] = useState(false);
   const [saving, setSaving] = useState(false);
+  // A bandmate changed the song since this copy loaded: what is stored now, shown on Reload.
+  const [conflict, setConflict] = useState<Song | null>(null);
+  const [showMetronome, setShowMetronome] = useState(false);
+  // For the pill's live dot: checked once when the song opens, then kept up to date by the open panel.
+  const [metroSession, setMetroSession] = useState<MetroSession | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -37,9 +51,19 @@ export default function SongPage() {
     // A song fetched ahead of time shows straight away, with no loading screen.
     setSong(peekSong(id) ?? null);
     setError(null);
+    setConflict(null);
     setRunning(false);
     setShowTranspose(false);
+    setChoosingPrint(false);
+    setShowMetronome(false);
+    setMetroSession(null);
     window.scrollTo?.(0, 0);
+    api.getMetronome(id).then(
+      (s) => alive && setMetroSession(s),
+      () => {
+        // Only the live dot depends on this; the panel checks again when opened.
+      },
+    );
     loadSong(id).then(
       (s) => alive && setSong(s),
       (e) => alive && setError(e instanceof ApiError ? e.message : "Could not load this song."),
@@ -100,13 +124,18 @@ export default function SongPage() {
       return;
     }
     setError(null);
+    setConflict(null);
     setSaving(true);
     setSong({ ...song, bandKey: next });
     try {
-      await api.updateSong(song.id, { bandKey: next });
-      rememberSong({ ...song, bandKey: next });
+      // Keep the saved copy: its new updatedAt is the version the next transpose sends.
+      const saved = await api.updateSong(song.id, { bandKey: next }, song.updatedAt);
+      // The user may have swiped to another song while this saved.
+      setSong((s) => (s && s.id === saved.id ? saved : s));
+      rememberSong(saved);
     } catch (e) {
       setSong((s) => (s ? { ...s, bandKey: previous } : s));
+      setConflict(conflictOf<Song>(e));
       setError(e instanceof ApiError ? e.message : "Could not save the new key.");
     } finally {
       setSaving(false);
@@ -138,6 +167,8 @@ export default function SongPage() {
     keyUnknown = true;
   }
   const source = song.sourceUrl && /^https?:\/\//i.test(song.sourceUrl) ? song.sourceUrl : null;
+  // Older offline copies have no tempo fields: that reads as unknown, shown as no number.
+  const tempo = songTempo(song);
 
   return (
     <main className="page song-page">
@@ -166,13 +197,63 @@ export default function SongPage() {
         <button type="button" className="pill" aria-expanded={showTranspose} onClick={() => setShowTranspose((v) => !v)}>
           Transpose
         </button>
+        <button type="button" className="pill" aria-pressed={!chords.on} onClick={chords.toggle}>
+          {chords.on ? "Chords: on" : "Chords: off"}
+        </button>
         <button type="button" className="pill" aria-pressed={stage.on} onClick={stage.toggle}>
           Stage
         </button>
-        <Link className="pill" to={`/songs/${song.id}/edit`}>Edit</Link>
+        <button type="button" className="pill" aria-expanded={choosingPrint} onClick={() => setChoosingPrint((v) => !v)}>
+          Print lyrics
+        </button>
+        <button
+          type="button"
+          className="pill"
+          aria-expanded={showMetronome}
+          onClick={() => setShowMetronome((v) => !v)}
+        >
+          {metroSession?.running && <span className="live-dot" aria-hidden="true" />}
+          Metronome
+          {tempo.bpm !== null && ` · ${tempo.bpm}`}
+          {metroSession?.running && <span className="sr-only"> (playing)</span>}
+        </button>
+        <Link className="pill" to={`/songs/${song.id}/edit${gigId ? `?gig=${encodeURIComponent(gigId)}` : ""}`}>Edit</Link>
       </div>
+      {choosingPrint && (
+        <PrintLyricsChoice
+          busy={printer.busy}
+          onCancel={() => setChoosingPrint(false)}
+          onPick={async (withChords) => {
+            const current = song;
+            if (await printer.print(async () => [current], withChords)) setChoosingPrint(false);
+          }}
+        />
+      )}
+      {printer.error && <p role="alert" className="error">{printer.error}</p>}
+      {showMetronome && (
+        <SongMetronome
+          song={song}
+          onSession={setMetroSession}
+          onSongChange={(saved) => {
+            setSong((s) => (s && s.id === saved.id ? saved : s));
+            rememberSong(saved);
+          }}
+        />
+      )}
       {showTranspose && <TransposeControl bandKey={song.bandKey || "?"} onChange={transpose} busy={saving} />}
-      {error && <p role="alert" className="error">{error}</p>}
+      {error && conflict?.id === song.id ? (
+        <ConflictNotice
+          message={error}
+          onReload={() => {
+            setSong(conflict!);
+            rememberSong(conflict!);
+            setConflict(null);
+            setError(null);
+          }}
+        />
+      ) : (
+        error && <p role="alert" className="error">{error}</p>
+      )}
       {setlistNote && <p className="setlist-note" role="note">{setlistNote}</p>}
       <p className="song-info">
         <span>Key: <strong>{song.bandKey || "?"}</strong></span>
@@ -192,7 +273,13 @@ export default function SongPage() {
       {song.content.trim() === "" ? (
         <p className="muted">No lyrics or chords yet {"—"} tap Edit to add them.</p>
       ) : (
-        <ChordSheet content={content} sheetRef={sheetRef} fontSize={font.size} onTap={() => setRunning(false)} />
+        <ChordSheet
+          content={content}
+          chords={chords.on}
+          sheetRef={sheetRef}
+          fontSize={font.size}
+          onTap={() => setRunning(false)}
+        />
       )}
       {(neighbours.prev || neighbours.next) && (
         <nav className="song-nav" aria-label="Setlist">
@@ -208,6 +295,7 @@ export default function SongPage() {
           ) : <span />}
         </nav>
       )}
+      {printer.songs && <PrintLyrics songs={printer.songs} />}
     </main>
   );
 }

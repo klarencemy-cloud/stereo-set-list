@@ -1,5 +1,5 @@
 import type { Config } from "@netlify/functions";
-import type { SongInput } from "../../src/shared/types";
+import type { BaseVersion, SongInput } from "../../src/shared/types";
 import { guard, json, methodNotAllowed, noContent, notFound, readBody, routeParts } from "./lib/http";
 import { blobsKV } from "./lib/kv";
 import { makeRepo, type Repo } from "./lib/repo";
@@ -20,7 +20,7 @@ export function makeSongsHandler(repo: Repo) {
       const s = await repo.getSong(id);
       return s ? json(s) : notFound();
     }
-    if (req.method === "PUT") return json(await repo.updateSong(id, await readBody<Partial<SongInput>>(req)));
+    if (req.method === "PUT") return json(await repo.updateSong(id, await readBody<Partial<SongInput> & BaseVersion>(req)));
     if (req.method === "DELETE") {
       await repo.deleteSong(id);
       return noContent();

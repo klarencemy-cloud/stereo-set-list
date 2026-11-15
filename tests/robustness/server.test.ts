@@ -1,0 +1,96 @@
+// Server side of the synced metronome (H5, H17, H18, H20), on memoryKV with makeMetronomeHandler.
+import { describe, it, expect } from "vitest";
+import { memoryKV } from "../../netlify/functions/lib/kv";
+import { makeRepo, METRO_STALE_MS } from "../../netlify/functions/lib/repo";
+import { makeMetronomeHandler } from "../../netlify/functions/metronome";
+import { routeFor } from "../../src/sw/strategy";
+import type { MetroSession } from "../../src/shared/metronome";
+
+const U = "http://localhost";
+const req = (method: string, path: string, body?: unknown) =>
+  new Request(U + path, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+async function setup() {
+  const repo = makeRepo(memoryKV());
+  const clock = { now: Date.UTC(2026, 10, 15, 18) };
+  const metro = makeMetronomeHandler(repo, () => clock.now);
+  const song = await repo.createSong({
+    title: "Song", artist: "Band", sourceUrl: null, originalKey: "C", bandKey: "C", capo: 0, content: "", bpm: null, beatsPerBar: null,
+  });
+  const put = async (body: unknown) => (await metro(req("PUT", `/api/metronome/${song.id}`, body))).json() as Promise<MetroSession>;
+  const get = async () => (await metro(req("GET", `/api/metronome/${song.id}`))).json() as Promise<MetroSession | null>;
+  return { repo, clock, put, get, id: song.id };
+}
+
+describe("H5: two phones change it at the same moment (read-modify-write, no compare-and-swap)", () => {
+  it.fails("BUG H5: Stop for everyone sent at the same moment as a tempo change is lost; it keeps playing", async () => {
+    const { clock, put, get } = await setup();
+    await put({ bpm: 120, beatsPerBar: 4, running: true });
+    clock.now += 10_000;
+    // Two function invocations at once: both read the running session before either writes.
+    const [stopAnswer, tempoAnswer] = await Promise.all([put({ running: false }), put({ bpm: 140 })]);
+    console.log(`[H5] answers: stopper got running=${stopAnswer.running}; tempo phone got running=${tempoAnswer.running}`);
+    expect((await get())!.running).toBe(false);
+  });
+
+  it("H5 regression: a stop and a tempo change one after the other leave it stopped, in either order", async () => {
+    const a = await setup();
+    await a.put({ bpm: 120, beatsPerBar: 4, running: true });
+    await a.put({ running: false });
+    await a.put({ bpm: 140 });
+    expect((await a.get())!.running).toBe(false);
+    const b = await setup();
+    await b.put({ bpm: 120, beatsPerBar: 4, running: true });
+    await b.put({ bpm: 140 });
+    await b.put({ running: false });
+    expect((await b.get())!.running).toBe(false);
+  });
+});
+
+describe("H17: a running session nobody changes for 2 h", () => {
+  it.fails("BUG H17: reads as stopped after 2 h, even with phones joined and polling the whole time", async () => {
+    const { clock, put, get } = await setup();
+    await put({ bpm: 120, beatsPerBar: 4, running: true });
+    // Joined phones poll every 1.5 s; none of that counts as use.
+    for (let t = 0; t < METRO_STALE_MS; t += 600_000) {
+      clock.now += 600_000;
+      await get();
+    }
+    clock.now += 1000;
+    expect((await get())!.running).toBe(true);
+  });
+
+  it.fails("BUG H17: pressing Start for everyone again at the same tempo doesn't keep it alive either", async () => {
+    const { clock, put, get } = await setup();
+    await put({ bpm: 120, beatsPerBar: 4, running: true });
+    clock.now += METRO_STALE_MS - 60_000;
+    await put({ bpm: 120, beatsPerBar: 4, running: true }); // same tempo: stored unchanged, updatedAt not moved
+    clock.now += 120_000;
+    expect((await get())!.running).toBe(true);
+  });
+});
+
+describe("H18: Start for everyone while it is already running", () => {
+  it.fails("BUG H18: a start with another tempo becomes a tempo change for everyone, not 'already playing'", async () => {
+    const { clock, put } = await setup();
+    const first = await put({ bpm: 120, beatsPerBar: 4, running: true });
+    clock.now += 3000;
+    const second = await put({ bpm: 96, beatsPerBar: 3, running: true });
+    expect({ bpm: second.bpm, beatsPerBar: second.beatsPerBar }).toEqual({ bpm: first.bpm, beatsPerBar: first.beatsPerBar });
+  });
+});
+
+describe("H20: the service worker never answers the metronome from a cache", () => {
+  const origin = "https://band.example";
+  it.each([
+    ["GET", "/api/time"],
+    ["GET", "/api/metronome/abc"],
+    ["PUT", "/api/metronome/abc"],
+  ])("refuted: %s %s passes straight to the network", (method, path) => {
+    expect(routeFor(method, new URL(origin + path), false, origin)).toBe("pass");
+  });
+});

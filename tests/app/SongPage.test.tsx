@@ -4,7 +4,10 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 vi.mock("../../src/app/api", async () => {
   const actual = await vi.importActual<typeof import("../../src/app/api")>("../../src/app/api");
-  return { ...actual, api: { getSong: vi.fn(), updateSong: vi.fn(), getGig: vi.fn(), listSongs: vi.fn(), getTrack: vi.fn(), getTrackPart: vi.fn() } };
+  return { ...actual, api: {
+      getSong: vi.fn(), updateSong: vi.fn(), getGig: vi.fn(), listSongs: vi.fn(), getTrack: vi.fn(), getTrackPart: vi.fn(),
+      getMetronome: vi.fn(), putMetronome: vi.fn(), getTime: vi.fn(),
+    } };
 });
 
 import { api, ApiError } from "../../src/app/api";
@@ -43,6 +46,7 @@ beforeEach(() => {
   clearSongCache();
   Object.values(mocked).forEach((f) => f.mockReset());
   mocked.getSong.mockResolvedValue({ ...song });
+  mocked.getMetronome.mockResolvedValue(null);
 });
 
 describe("SongPage", () => {
@@ -66,7 +70,8 @@ describe("SongPage", () => {
     await screen.findByText("[Intro]");
     fireEvent.click(screen.getByRole("button", { name: "Transpose" }));
     fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
-    expect(mocked.updateSong).toHaveBeenCalledWith("s1", { bandKey: "Bb" });
+    // Sends the version it loaded, so a bandmate's newer key isn't overwritten.
+    expect(mocked.updateSong).toHaveBeenCalledWith("s1", { bandKey: "Bb" }, "x");
     await waitFor(() => {
       const chords = Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent);
       expect(chords).toEqual(["Bb", "Eb"]);
@@ -83,6 +88,36 @@ describe("SongPage", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not save");
     const chords = Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent);
     expect(chords).toEqual(["A", "D"]);
+  });
+
+  it("sends the new version with the next transpose", async () => {
+    mocked.updateSong.mockResolvedValueOnce({ ...song, bandKey: "Bb", updatedAt: "y" });
+    mocked.updateSong.mockResolvedValueOnce({ ...song, bandKey: "B", updatedAt: "z" });
+    renderPage();
+    await screen.findByText("[Intro]");
+    fireEvent.click(screen.getByRole("button", { name: "Transpose" }));
+    fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Transpose up" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
+    await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(2));
+    expect(mocked.updateSong.mock.calls[1]).toEqual(["s1", { bandKey: "B" }, "y"]);
+  });
+
+  it("on a conflict, keeps the old key, says someone else changed it, and Reload shows their version", async () => {
+    const theirs = { ...song, bandKey: "C", updatedAt: "y" };
+    mocked.updateSong.mockRejectedValue(new ApiError(409, "Someone else changed this song. Reload to see their changes.", theirs));
+    renderPage();
+    await screen.findByText("[Intro]");
+    fireEvent.click(screen.getByRole("button", { name: "Transpose" }));
+    fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Someone else changed this song");
+    let chords = Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent);
+    expect(chords).toEqual(["A", "D"]);
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    chords = Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent);
+    expect(chords).toEqual(["C", "F"]);
+    expect(peekSong("s1")).toEqual(theirs);
   });
 
   it("disables the transpose buttons while a save is pending", async () => {
@@ -434,5 +469,161 @@ describe("SongPage original songs", () => {
     renderPage();
     expect(await screen.findByText("No lyrics or chords yet — tap Edit to add them.")).toBeInTheDocument();
     expect(screen.queryByText("by")).not.toBeInTheDocument();
+  });
+});
+
+describe("SongPage lyrics mode", () => {
+  const sheetText = () =>
+    Array.from(document.querySelectorAll("[data-testid=sheet] .sheet-line")).map((l) => l.textContent);
+
+  it("hides the chords and closes the gaps they leave, keeping section labels", async () => {
+    mocked.getSong.mockResolvedValue({
+      ...song,
+      content: "[Verse 1]\n[ch]G[/ch]   [ch]C[/ch]\nla la\n[ch]D[/ch]\nlo lo\n\n[Instrumental]\n[ch]G[/ch] [ch]C[/ch]",
+    });
+    renderPage();
+    await screen.findByText("[Verse 1]");
+    fireEvent.click(screen.getByRole("button", { name: "Chords: on" }));
+    expect(document.querySelectorAll(".chord")).toHaveLength(0);
+    expect(sheetText()).toEqual(["[Verse 1]", "la la", "lo lo", "", "[Instrumental]"]);
+    expect(screen.getByRole("button", { name: "Chords: off" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("brings the chords back in the current band key", async () => {
+    mocked.updateSong.mockResolvedValue({ ...song, bandKey: "Bb" });
+    renderPage();
+    await screen.findByText("[Intro]");
+    fireEvent.click(screen.getByRole("button", { name: "Chords: on" }));
+    fireEvent.click(screen.getByRole("button", { name: "Transpose" }));
+    fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
+    await waitFor(() => expect(mocked.updateSong).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Chords: off" }));
+    await waitFor(() =>
+      expect(Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent)).toEqual(["Bb", "Eb"]),
+    );
+  });
+
+  it("remembers the choice on this device for every song", async () => {
+    const first = renderPage();
+    await screen.findByText("[Intro]");
+    fireEvent.click(screen.getByRole("button", { name: "Chords: on" }));
+    first.unmount();
+    clearSongCache();
+    mocked.getSong.mockResolvedValue({ ...song, id: "s2" });
+    renderPage("/songs/s2");
+    expect(await screen.findByRole("button", { name: "Chords: off" })).toBeInTheDocument();
+    expect(document.querySelectorAll(".chord")).toHaveLength(0);
+  });
+
+  it("still shows the empty-song hint with chords off", async () => {
+    localStorage.setItem("stereo-set:show-chords", "off");
+    mocked.getSong.mockResolvedValue({ ...song, content: "" });
+    renderPage();
+    expect(await screen.findByText("No lyrics or chords yet — tap Edit to add them.")).toBeInTheDocument();
+  });
+});
+
+describe("SongPage print lyrics", () => {
+  const printed = () => document.querySelector(".print-lyrics");
+
+  it("asks which version, then prints that one song in the band key", async () => {
+    const print = vi.spyOn(window, "print").mockImplementation(() => {});
+    renderPage();
+    await screen.findByText("[Intro]");
+    expect(printed()).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Print lyrics" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lyrics + chords" }));
+    await waitFor(() => expect(print).toHaveBeenCalledTimes(1));
+    const block = printed()!;
+    expect(block.querySelector(".print-song-title")).toHaveTextContent("Test Song");
+    expect(block.querySelector(".print-song-meta")).toHaveTextContent("The Band · Key: A");
+    expect(Array.from(block.querySelectorAll(".chord")).map((c) => c.textContent)).toEqual(["A", "D"]);
+    // The choice closes once printing started.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Lyrics only" })).not.toBeInTheDocument());
+    print.mockRestore();
+  });
+
+  it("prints lyrics only without chords", async () => {
+    const print = vi.spyOn(window, "print").mockImplementation(() => {});
+    renderPage();
+    await screen.findByText("[Intro]");
+    fireEvent.click(screen.getByRole("button", { name: "Print lyrics" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lyrics only" }));
+    await waitFor(() => expect(print).toHaveBeenCalled());
+    expect(printed()!.querySelectorAll(".chord")).toHaveLength(0);
+    expect(printed()).toHaveTextContent("[Intro]");
+    expect(printed()).toHaveTextContent("la la");
+    print.mockRestore();
+  });
+
+  it("removes the print block once printing is done", async () => {
+    const print = vi.spyOn(window, "print").mockImplementation(() => {});
+    renderPage();
+    await screen.findByText("[Intro]");
+    fireEvent.click(screen.getByRole("button", { name: "Print lyrics" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lyrics only" }));
+    await waitFor(() => expect(printed()).not.toBeNull());
+    fireEvent(window, new Event("afterprint"));
+    await waitFor(() => expect(printed()).toBeNull());
+    print.mockRestore();
+  });
+
+  it("prints the title and a no-lyrics note for an empty song", async () => {
+    const print = vi.spyOn(window, "print").mockImplementation(() => {});
+    mocked.getSong.mockResolvedValue({ ...song, content: "" });
+    renderPage();
+    await screen.findByText("Test Song");
+    fireEvent.click(screen.getByRole("button", { name: "Print lyrics" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lyrics + chords" }));
+    await waitFor(() => expect(print).toHaveBeenCalled());
+    expect(printed()).toHaveTextContent("No lyrics yet");
+    print.mockRestore();
+  });
+});
+
+describe("SongPage metronome pill", () => {
+  const pill = () => screen.getByRole("button", { name: /^Metronome/ });
+
+  it("says Metronome with no number when the song has no tempo", async () => {
+    renderPage();
+    await screen.findByText("[Intro]");
+    expect(pill()).toHaveTextContent(/^Metronome$/);
+  });
+
+  it("shows the song's tempo", async () => {
+    mocked.getSong.mockResolvedValue({ ...song, bpm: 96, beatsPerBar: 3 });
+    renderPage();
+    await screen.findByText("[Intro]");
+    expect(pill()).toHaveTextContent("Metronome · 96");
+  });
+
+  it("shows a live dot when someone is playing it", async () => {
+    mocked.getMetronome.mockResolvedValue({ bpm: 120, beatsPerBar: 4, startAt: 1, running: true, updatedAt: "t" });
+    renderPage();
+    await screen.findByText("[Intro]");
+    await waitFor(() => expect(pill().querySelector(".live-dot")).not.toBeNull());
+    expect(pill()).toHaveAccessibleName("Metronome (playing)");
+  });
+
+  it("opens and closes the metronome panel", async () => {
+    renderPage();
+    await screen.findByText("[Intro]");
+    expect(screen.queryByRole("region", { name: "Metronome" })).toBeNull();
+    fireEvent.click(pill());
+    expect(pill()).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByRole("button", { name: "Start for everyone" })).toBeInTheDocument();
+    fireEvent.click(pill());
+    expect(screen.queryByRole("region", { name: "Metronome" })).toBeNull();
+  });
+
+  it("shows a tempo saved from the panel at once", async () => {
+    mocked.getMetronome.mockResolvedValue({ bpm: 100, beatsPerBar: 4, startAt: 1, running: true, updatedAt: "t" });
+    mocked.updateSong.mockResolvedValue({ ...song, bpm: 100, beatsPerBar: 4, updatedAt: "y" });
+    renderPage();
+    await screen.findByText("[Intro]");
+    fireEvent.click(pill());
+    fireEvent.click(await screen.findByRole("button", { name: "Save as song tempo" }));
+    await waitFor(() => expect(pill()).toHaveTextContent("Metronome · 100"));
+    expect(peekSong("s1")?.bpm).toBe(100);
   });
 });

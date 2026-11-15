@@ -13,7 +13,7 @@ import type { PlaylistTrack } from "../../src/shared/playlist";
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 const summary = (id: string, title: string, artist: string) => ({
-  id, title, artist, sourceUrl: null, originalKey: "", bandKey: "", capo: 0, updatedAt: "x",
+  id, title, artist, sourceUrl: null, originalKey: "", bandKey: "", capo: 0, bpm: null, beatsPerBar: null, updatedAt: "x",
 });
 const songs = [summary("s1", "Wonderwall", "Oasis"), summary("s2", "Creep", "Radiohead")];
 const LINK = "https://open.spotify.com/playlist/abc";
@@ -122,5 +122,13 @@ describe("PlaylistImport", () => {
     fireEvent.click(screen.getByRole("button", { name: "Paste track list" }));
     fireEvent.change(screen.getByLabelText("Paste track list"), { target: { value: "Yellow - Coldplay" } });
     expect(last()).toEqual([{ title: "Yellow", artist: "Coldplay" }]);
+  });
+  it("marks a track by the same copy of a duplicate song the server picks (smallest id)", async () => {
+    // Title-sorted list with the larger id last: a "last one wins" lookup would pick dup-b.
+    const dupes = [summary("dup-a", "Wonderwall", "Oasis"), summary("dup-b", "Wonderwall", "Oasis")];
+    render(<PlaylistImport songs={dupes} inSetlist={new Set(["dup-a"])} onTicked={(t) => ticked.push(t)} />);
+    await load([{ title: "Wonderwall", artist: "Oasis" }]);
+    expect(within(rowOf("Wonderwall — Oasis")).getByText("in setlist")).toBeInTheDocument();
+    expect(last()).toEqual([]);
   });
 });

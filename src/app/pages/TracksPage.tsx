@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api";
-import { clearSongCache } from "../songCache";
 import { downloadFileName, loadTrackUrl, titleFromFileName, uploadTrack } from "../upload";
 import type { Track } from "../../shared/types";
 
@@ -101,8 +100,6 @@ export default function TracksPage() {
     setError("");
     try {
       const updated = await api.updateTrack(t.id, draft.trim());
-      // The server renames the linked song too; drop the cached copy so its page shows the new title.
-      clearSongCache();
       setTracks((list) => (list ?? []).map((x) => (x.id === t.id ? { ...x, title: updated.title } : x)));
       setRenamingId("");
     } catch (err) {

@@ -1,17 +1,18 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, ApiError } from "../api";
-import { clearSongCache } from "../songCache";
+import { api, ApiError, conflictOf } from "../api";
 import { NOT_READY, canSaveOffline, saveGigForOffline } from "../offline";
 import { formatGigDate } from "../formatDate";
 import SetlistEditor from "../components/SetlistEditor";
 import PlaylistImport from "../components/PlaylistImport";
+import ConflictNotice from "../components/ConflictNotice";
+import PrintLyrics, { PrintLyricsChoice, usePrintLyrics } from "../components/PrintLyrics";
+import { loadSong } from "../songCache";
 import { setlistOf, songIdsOf } from "../../shared/setlist";
 import type { PlaylistTrack } from "../../shared/playlist";
+import { toSongSummary } from "../../shared/song";
 import type { Gig, SetlistItem, Song, SongSummary } from "../../shared/types";
-
-const summaryOf = ({ content, ...rest }: Song): SongSummary => ({ ...rest, hasChords: content.trim() !== "" });
 
 export default function GigPage() {
   const { id = "" } = useParams();
@@ -29,6 +30,10 @@ export default function GigPage() {
   const [importing, setImporting] = useState(false);
   const [importBusy, setImportBusy] = useState(false);
   const [ticked, setTicked] = useState<PlaylistTrack[]>([]);
+  // A bandmate saved this gig first: the gig as stored now, shown on Reload.
+  const [conflict, setConflict] = useState<Gig | null>(null);
+  const printer = usePrintLyrics();
+  const [choosingLyrics, setChoosingLyrics] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -63,14 +68,17 @@ export default function GigPage() {
     if (!gig || saving) return false;
     const previous = gig;
     setError("");
+    setConflict(null);
     setSaving(true);
     setGig({ ...gig, setlist: next, songIds: songIdsOf(next) });
     try {
-      await api.updateGig(gig.id, { setlist: next });
-      clearSongCache();
+      const saved = await api.updateGig(gig.id, { setlist: next }, gig.updatedAt);
+      // The new version is what the next save sends.
+      setGig((g) => (g ? { ...g, updatedAt: saved.updatedAt } : g));
       return true;
     } catch (e) {
       setGig(previous);
+      setConflict(conflictOf<Gig>(e));
       setError(e instanceof ApiError ? e.message : "Could not save the setlist.");
       return false;
     } finally {
@@ -93,7 +101,7 @@ export default function GigPage() {
       }
       setSongs((prev) => {
         const known = new Set(prev.map((s) => s.id));
-        return [...prev, ...added.filter((s) => !known.has(s.id)).map(summaryOf)];
+        return [...prev, ...added.filter((s) => !known.has(s.id)).map(toSongSummary)];
       });
       const fresh = added.filter((s) => !ids.includes(s.id));
       const next: SetlistItem[] = [...items, ...fresh.map((s) => ({ type: "song" as const, songId: s.id }))];
@@ -122,17 +130,29 @@ export default function GigPage() {
       return;
     }
     setError("");
+    setConflict(null);
     setSaving(true);
     try {
-      const updated = await api.updateGig(gig.id, { name: name.trim(), date });
-      clearSongCache();
-      setGig({ ...gig, name: updated.name, date: updated.date });
+      const updated = await api.updateGig(gig.id, { name: name.trim(), date }, gig.updatedAt);
+      setGig({ ...gig, name: updated.name, date: updated.date, updatedAt: updated.updatedAt });
       setEditingDetails(false);
     } catch (err) {
+      setConflict(conflictOf<Gig>(err));
       setError(err instanceof ApiError ? err.message : "Could not save the gig.");
     } finally {
       setSaving(false);
     }
+  }
+
+  /** Shows the gig as a bandmate saved it. Only on request: their changes are never merged in silently. */
+  function reload() {
+    if (!conflict) return;
+    setGig(conflict);
+    setConflict(null);
+    setError("");
+    setEditingDetails(false);
+    // Their setlist may have songs this page hasn't loaded yet.
+    api.listSongs().then(setSongs, () => {});
   }
 
   async function saveOffline() {
@@ -159,7 +179,6 @@ export default function GigPage() {
     if (!gig || !window.confirm(`Delete "${gig.name}"? This cannot be undone.`)) return;
     try {
       await api.deleteGig(gig.id);
-      clearSongCache();
       navigate("/");
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Could not delete the gig.");
@@ -179,7 +198,7 @@ export default function GigPage() {
             <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
           </label>
           <div className="row">
-            <button type="button" className="btn" onClick={() => { setEditingDetails(false); setError(""); }}>
+            <button type="button" className="btn" onClick={() => { setEditingDetails(false); setError(""); setConflict(null); }}>
               Cancel
             </button>
             <button type="submit" className="btn primary" disabled={saving}>Save</button>
@@ -234,19 +253,50 @@ export default function GigPage() {
             </button>
           )}
           {ids.length > 0 && (
-            <button type="button" className="btn" onClick={() => window.print()}>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                // Drop any lyrics left from an earlier print, so only the setlist goes on paper.
+                printer.clear();
+                window.print();
+              }}
+            >
               Print setlist
+            </button>
+          )}
+          {ids.length > 0 && (
+            <button type="button" className="btn" aria-expanded={choosingLyrics} onClick={() => setChoosingLyrics((v) => !v)}>
+              Print lyrics
             </button>
           )}
         </p>
       )}
+      {!editing && ids.length > 0 && choosingLyrics && (
+        <PrintLyricsChoice
+          busy={printer.busy}
+          onCancel={() => setChoosingLyrics(false)}
+          onPick={async (withChords) => {
+            // Songs only, in setlist order: breaks and notes don't print.
+            const order = [...ids];
+            if (await printer.print(() => Promise.all(order.map((sid) => loadSong(sid))), withChords)) {
+              setChoosingLyrics(false);
+            }
+          }}
+        />
+      )}
+      {printer.error && <p role="alert" className="error">{printer.error}</p>}
       {offline &&
         (offline.ok ? (
           <p role="status" className="muted">{offline.text}</p>
         ) : (
           <p role="alert" className="error">{offline.text}</p>
         ))}
-      {error && <p role="alert" className="error">{error}</p>}
+      {error && conflict ? (
+        <ConflictNotice message={error} onReload={reload} />
+      ) : (
+        error && <p role="alert" className="error">{error}</p>
+      )}
       {!editing && ids.length === 0 && <p className="muted">No songs in the setlist yet.</p>}
       {editing ? (
         <SetlistEditor items={items} songs={byId} busy={saving} onChange={save} />
@@ -284,7 +334,8 @@ export default function GigPage() {
       <p>
         <button type="button" className="btn" onClick={removeGig}>Delete gig</button>
       </p>
-      {ids.length > 0 && (
+      {printer.songs && <PrintLyrics songs={printer.songs} />}
+      {ids.length > 0 && !printer.songs && (
         // Floor sheet: invisible on screen, the only thing on paper (see @media print in styles.css).
         <ol className="print-setlist" aria-hidden="true">
           {ids.map((sid) => (

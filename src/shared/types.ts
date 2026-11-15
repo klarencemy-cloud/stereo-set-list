@@ -7,6 +7,10 @@ export interface Song {
   bandKey: string;
   capo: number;
   content: string;
+  /** Tempo in beats per minute (30-300), or null when nobody has set it. Missing on songs saved before it existed. */
+  bpm: number | null;
+  /** Beats in a bar (2-7), or null when unknown. Missing on songs saved before it existed. */
+  beatsPerBar: number | null;
   /** The mp3 of an original song. Set by the server only; missing on regular songs. */
   trackId?: string | null;
   updatedAt: string;
@@ -29,11 +33,21 @@ export interface Gig {
   setlist: SetlistItem[];
   /** Derived from `setlist`, read-only. Kept so offline copies and older clients keep working. */
   songIds: string[];
+  /** Changes on every save; what a client sends back as `baseVersion`. Missing on gigs saved before versions existed. */
+  updatedAt?: string;
 }
 export interface GigInput {
   name: string;
   date: string;
   setlist?: SetlistItem[];
+}
+
+/**
+ * Sent with an update: the `updatedAt` the client loaded. The server answers 409 instead of
+ * saving if the record changed since. Leave it out to save regardless (older clients).
+ */
+export interface BaseVersion {
+  baseVersion?: string;
 }
 
 export interface Track {
@@ -47,7 +61,8 @@ export interface Track {
   createdAt: string;
 }
 
-export type ImportedSong = Omit<SongInput, "bandKey">;
+/** What the Ultimate Guitar import finds: no band key, and no tempo (the page doesn't give one). */
+export type ImportedSong = Omit<SongInput, "bandKey" | "bpm" | "beatsPerBar">;
 
 /** Audio is uploaded in chunks of at most this many bytes. */
 export const CHUNK_SIZE = 3_145_728;

@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
-import { api } from "../api";
-import { clearSongCache } from "../songCache";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { api, conflictOf } from "../api";
 import { useUnsavedChanges } from "../components/useUnsavedChanges";
 import { KEYS } from "../../shared/transpose";
 import { markupFromPlainText, mergeEditedText, plainTextFromMarkup } from "../../shared/sheet";
 import ChordSheet from "../components/ChordSheet";
-import type { SongInput } from "../../shared/types";
+import ConflictNotice from "../components/ConflictNotice";
+import type { Song, SongInput } from "../../shared/types";
+import { BEATS_PER_BAR, MAX_BPM, MIN_BPM } from "../../shared/metronome";
+import { songTempo } from "../../shared/song";
 
 const ALL_KEYS = KEYS.flatMap((k) => [k, `${k}m`]);
 
@@ -17,10 +19,35 @@ interface FormValues {
   originalKey: string;
   bandKey: string;
   capo: number;
+  bpm: string;
+  beatsPerBar: string;
   pasted: string;
 }
 
-const BLANK: FormValues = { title: "", artist: "", link: "", originalKey: "", bandKey: "", capo: 0, pasted: "" };
+const SONG_FIELDS = ["title", "artist", "sourceUrl", "originalKey", "bandKey", "capo", "content", "bpm", "beatsPerBar"] as const;
+
+/** The typed tempo: null when empty, undefined when it isn't a tempo the server accepts. */
+function parseBpm(text: string): number | null | undefined {
+  if (!text.trim()) return null;
+  const n = Number(text);
+  return Number.isInteger(n) && n >= MIN_BPM && n <= MAX_BPM ? n : undefined;
+}
+
+/**
+ * Only the fields the user changed since the song loaded. Sending the rest would put back what
+ * this form loaded, e.g. undo a bandmate's transpose made while the form was open.
+ */
+function changedFields(input: SongInput, loaded: Song): Partial<SongInput> {
+  const out: Partial<Record<keyof SongInput, unknown>> = {};
+  // A copy saved before tempo existed has no bpm or beatsPerBar: that's the same as empty.
+  const was = { ...loaded, ...songTempo(loaded) };
+  for (const f of SONG_FIELDS) if (input[f] !== was[f]) out[f] = input[f];
+  return out as Partial<SongInput>;
+}
+
+const BLANK: FormValues = {
+  title: "", artist: "", link: "", originalKey: "", bandKey: "", capo: 0, bpm: "", beatsPerBar: "", pasted: "",
+};
 
 /** A comparable picture of the fields the user can change, to tell whether anything is unsaved. */
 const snapshotOf = (v: FormValues) => JSON.stringify(v);
@@ -29,6 +56,10 @@ export default function SongFormPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const editing = Boolean(id);
+  // Opened from a song in a gig's setlist: go back there with the gig kept, so Previous/Next still show.
+  const [searchParams] = useSearchParams();
+  const gigId = searchParams.get("gig");
+  const songUrl = (songId: string) => `/songs/${songId}${gigId ? `?gig=${encodeURIComponent(gigId)}` : ""}`;
 
   const [mode, setMode] = useState<"link" | "paste">(editing ? "paste" : "link");
   const [link, setLink] = useState("");
@@ -37,6 +68,8 @@ export default function SongFormPage() {
   const [originalKey, setOriginalKey] = useState("");
   const [bandKey, setBandKey] = useState("");
   const [capo, setCapo] = useState(0);
+  const [bpm, setBpm] = useState("");
+  const [beatsPerBar, setBeatsPerBar] = useState("");
   const [pasted, setPasted] = useState("");
   const [imported, setImported] = useState<string | null>(null);
   const [existing, setExisting] = useState<string | null>(null);
@@ -46,6 +79,10 @@ export default function SongFormPage() {
   const [deleting, setDeleting] = useState(false);
   const [isOriginal, setIsOriginal] = useState(false);
   const [message, setMessage] = useState("");
+  // The song as it was loaded: what Save compares against, and the version it sends.
+  const [loaded, setLoaded] = useState<Song | null>(null);
+  // A bandmate saved the song first: what is stored now, loaded into the form on Reload.
+  const [conflict, setConflict] = useState<Song | null>(null);
   // What the form looked like when it was loaded (edit) or empty (new); null until an edit has loaded.
   const [baseline, setBaseline] = useState<string | null>(() => (id ? null : snapshotOf(BLANK)));
 
@@ -55,35 +92,42 @@ export default function SongFormPage() {
       return;
     }
     setBaseline(null);
-    // Fresh, not a saved offline copy: whatever loads here is sent back whole on Save.
-    api.getSong(id, { fresh: true }).then(
-      (s) => {
-        setTitle(s.title);
-        setIsOriginal(Boolean(s.trackId));
-        setArtist(s.artist);
-        setOriginalKey(s.originalKey);
-        setBandKey(s.bandKey);
-        setCapo(s.capo);
-        setLink(s.sourceUrl ?? "");
-        setExisting(s.content);
-        const plain = plainTextFromMarkup(s.content);
-        setPasted(plain);
-        setInitialPlain(plain);
-        setBaseline(
-          snapshotOf({
-            title: s.title,
-            artist: s.artist,
-            link: s.sourceUrl ?? "",
-            originalKey: s.originalKey,
-            bandKey: s.bandKey,
-            capo: s.capo,
-            pasted: plain,
-          }),
-        );
-      },
-      (e: Error) => setMessage(e.message),
-    );
+    // Fresh, not a saved offline copy: Save compares against it and sends its version.
+    api.getSong(id, { fresh: true }).then(fill, (e: Error) => setMessage(e.message));
   }, [id]);
+
+  function fill(s: Song) {
+    setLoaded(s);
+    setTitle(s.title);
+    setIsOriginal(Boolean(s.trackId));
+    setArtist(s.artist);
+    setOriginalKey(s.originalKey);
+    setBandKey(s.bandKey);
+    setCapo(s.capo);
+    const tempo = songTempo(s);
+    const bpmText = tempo.bpm === null ? "" : String(tempo.bpm);
+    const beatsText = tempo.beatsPerBar === null ? "" : String(tempo.beatsPerBar);
+    setBpm(bpmText);
+    setBeatsPerBar(beatsText);
+    setLink(s.sourceUrl ?? "");
+    setExisting(s.content);
+    const plain = plainTextFromMarkup(s.content);
+    setPasted(plain);
+    setInitialPlain(plain);
+    setBaseline(
+      snapshotOf({
+        title: s.title,
+        artist: s.artist,
+        link: s.sourceUrl ?? "",
+        originalKey: s.originalKey,
+        bandKey: s.bandKey,
+        capo: s.capo,
+        bpm: bpmText,
+        beatsPerBar: beatsText,
+        pasted: plain,
+      }),
+    );
+  }
 
   async function doImport() {
     setImporting(true);
@@ -130,14 +174,17 @@ export default function SongFormPage() {
           : markupFromPlainText(pasted)
         : (imported ?? existing ?? "");
   const dirty =
-    baseline !== null && snapshotOf({ title, artist, link, originalKey, bandKey, capo, pasted }) !== baseline;
+    baseline !== null &&
+    snapshotOf({ title, artist, link, originalKey, bandKey, capo, bpm, beatsPerBar, pasted }) !== baseline;
   const { allowNavigation } = useUnsavedChanges(dirty);
   // A song may have no key yet (an original nobody has worked out, or a song imported from a playlist).
-  const canSave = title.trim() !== "" && !saving;
+  const bpmValue = parseBpm(bpm);
+  const canSave = title.trim() !== "" && bpmValue !== undefined && !saving;
 
   async function save() {
     setSaving(true);
     setMessage("");
+    setConflict(null);
     const input: SongInput = {
       title: title.trim(),
       artist: artist.trim(),
@@ -147,13 +194,24 @@ export default function SongFormPage() {
       bandKey: originalKey ? bandKey || originalKey : "",
       capo,
       content,
+      // Empty means nobody has set it: stored as null, never a made-up tempo.
+      bpm: bpmValue ?? null,
+      beatsPerBar: beatsPerBar ? Number(beatsPerBar) : null,
     };
-    try {
-      const song = id ? await api.updateSong(id, input) : await api.createSong(input);
-      clearSongCache();
+    const patch = loaded ? changedFields(input, loaded) : input;
+    if (id && Object.keys(patch).length === 0) {
+      // Nothing changed: nothing to save (and nothing that could clash with a bandmate's edit).
       allowNavigation();
-      navigate(`/songs/${song.id}`);
+      navigate(songUrl(id));
+      return;
+    }
+    try {
+      const song = id ? await api.updateSong(id, patch, loaded?.updatedAt) : await api.createSong(input);
+      allowNavigation();
+      navigate(songUrl(song.id));
     } catch (e) {
+      // Everything typed stays in the form; Reload is the user's choice.
+      setConflict(conflictOf<Song>(e));
       setMessage((e as Error).message);
       setSaving(false);
     }
@@ -167,7 +225,6 @@ export default function SongFormPage() {
     setMessage("");
     try {
       await api.deleteSong(id);
-      clearSongCache();
       allowNavigation();
       navigate(isOriginal ? "/tracks" : "/songs");
     } catch (e) {
@@ -191,7 +248,18 @@ export default function SongFormPage() {
         </div>
       )}
 
-      {message && <p className="error" role="alert">{message}</p>}
+      {message && conflict ? (
+        <ConflictNotice
+          message={`${message} Reloading replaces what you typed here.`}
+          onReload={() => {
+            fill(conflict);
+            setConflict(null);
+            setMessage("");
+          }}
+        />
+      ) : (
+        message && <p className="error" role="alert">{message}</p>
+      )}
 
       <label className="field">
         Link
@@ -245,6 +313,35 @@ export default function SongFormPage() {
           onChange={(e) => setCapo(Math.max(0, Math.min(12, Number(e.target.value) || 0)))}
         />
       </label>
+      <div className="field-row">
+        <label className="field">
+          Tempo (BPM)
+          <input
+            className="input"
+            type="number"
+            inputMode="numeric"
+            min={MIN_BPM}
+            max={MAX_BPM}
+            step={1}
+            value={bpm}
+            placeholder="Not set"
+            aria-invalid={bpmValue === undefined}
+            onChange={(e) => setBpm(e.target.value)}
+          />
+        </label>
+        <label className="field">
+          Beats per bar
+          <select className="input" value={beatsPerBar} onChange={(e) => setBeatsPerBar(e.target.value)}>
+            <option value="">{"—"}</option>
+            {BEATS_PER_BAR.map((n) => (
+              <option key={n} value={String(n)}>{n}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      {bpmValue === undefined && (
+        <p className="error">{`Tempo must be a whole number from ${MIN_BPM} to ${MAX_BPM}.`}</p>
+      )}
 
       {mode === "paste" && (
         <label className="field">

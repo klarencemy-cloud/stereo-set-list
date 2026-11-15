@@ -51,6 +51,7 @@ export default function AddSongsPicker({ songs, busy, onAdd }: Props) {
             <label className="add-songs-row">
               <input type="checkbox" checked={picked.includes(s.id)} onChange={() => toggle(s.id)} />
               <span>{s.bandKey ? `${s.title} — ${s.bandKey}` : s.title}</span>
+              {s.hasChords === false && <span className="badge muted">No chords yet</span>}
             </label>
           </li>
         ))}

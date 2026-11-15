@@ -18,7 +18,7 @@ import {
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 const song = (id: string, bandKey = "A") => ({
-  id, title: id, artist: "X", sourceUrl: null, originalKey: "A", bandKey, capo: 0, content: "", updatedAt: "x",
+  id, title: id, artist: "X", sourceUrl: null, originalKey: "A", bandKey, capo: 0, content: "", bpm: null, beatsPerBar: null, updatedAt: "x",
 });
 
 beforeEach(() => {

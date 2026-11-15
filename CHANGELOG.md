@@ -2,6 +2,28 @@
 
 What's new on Stereo Set, newest first.
 
+## Unreleased: Lyrics and band tools
+
+### Added
+
+- **Lyrics mode.** On a song, tap "Chords: on" to switch the chords off and see only the lyrics. The gaps the chord lines leave close up, and section labels such as [Verse 1], [Chorus] and [Instrumental] stay. Your phone remembers the choice for every song. Tap again to bring the chords back, in the current key.
+- **Print lyrics.** A song's page and a gig's page each have a "Print lyrics" button. Choose "Lyrics + chords" or "Lyrics only", then print. A gig prints every song in setlist order, each on a new page; set breaks and notes are left off. Chords print in the band key.
+- **Tools page.** A new Tools tab in the bottom bar.
+- **Tuner.** A chromatic tuner on Tools, for any instrument and any tuning. Tap Start tuner and play a note: it shows the nearest note (with its octave) and how many cents sharp or flat. It hears down to a 5-string bass's low B. The reference pitch is A4 = 440 Hz; change it with - / + or type a number from 415 to 466, and tap "Reset to 440" to go back. Your phone remembers it. Uses the microphone; the screen stays on while it listens.
+- **Tuner: smooth and strict.** The needle glides and the cents reading holds steady instead of jumping. "In tune" (green, with a ✓) means within 3 cents either way: hold the note there for a second while a bar under the meter fills. 4 or more cents off says tune up or tune down. The needle has no outline. A new A4 applies straight away, even while you're still typing it.
+- **Metronome.** On Tools: 30-300 BPM with - / + and a slider, tap tempo, 2 to 7 beats per bar with an accented first beat, and a big flashing beat you can see on stage. Your phone remembers the tempo and beats per bar.
+- **Song tempo.** A song can have a tempo (30-300 BPM) and beats per bar (2-7), set on its Edit page. Leave them empty if nobody knows yet: nothing made-up is shown.
+- **Metronome for the whole band.** On a song, tap "Metronome" (it shows the song's tempo, and a green dot while someone is playing it). Tap "Start for everyone": anyone else who opens that song's metronome sees "Playing at 120 BPM" and taps Join, and every phone clicks and flashes in time. Anyone can change the tempo (it switches on the next bar for everyone), tap Leave to stop just their phone, or Stop for everyone. "Save as song tempo" keeps the tempo on the song. If a phone sounds late (Bluetooth earphones lag), use "Calibrate this phone": move the slider, or tap along to 12 clicks and it measures the delay for you. With no connection it says so and plays on that phone only. An open metronome that you haven't joined checks for changes only every 10 seconds, and a phone with its screen off doesn't check at all, so it uses far less data.
+
+## Unreleased: Safer edits
+
+### Fixed
+
+- **Two people editing at once no longer overwrite each other.** If a bandmate saved a song or a setlist after you opened it, your save stops and says "Someone else changed this". Tap Reload to see their version. What you typed stays until you tap Reload.
+- **Editing a song no longer undoes a transpose.** Saving the edit form only changes what you edited, so a key a bandmate picked in the meantime stays.
+- **Fewer out-of-date pages after a change.** Saving or deleting a song, gig or recording now always forgets the app's saved copy of exactly what changed, so the next page you open shows the change.
+- **Deleting an original song can always be finished.** If deleting a recording or its song fails part-way (for example on a bad connection), deleting it again cleans up everything that is left.
+
 ## Unreleased: Import a Spotify playlist
 
 ### Added
@@ -23,6 +45,7 @@ What's new on Stereo Set, newest first.
 - **Original songs have a page.** In Original Songs, tap a title to open it. Play the recording, edit the song, and add lyrics and chords like any other song. Songs uploaded earlier get their page the first time you open them.
 - **Original songs show up in Songs.** They are in the list (marked "Original"), can be searched, and can go in a setlist.
 - **The title fills in from the file.** Pick an mp3 and the title becomes the file name, as long as the title is empty. A title you typed first is kept.
+- **Guitar tabs fit the phone screen.** A tab too wide for the screen is wrapped the way Ultimate Guitar does it: the first piece of all six strings, then the next piece, so the strings stay lined up under their chords instead of each one wrapping on its own.
 
 ### Changed
 

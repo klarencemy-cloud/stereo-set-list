@@ -1,5 +1,5 @@
 import type { Config } from "@netlify/functions";
-import type { GigInput } from "../../src/shared/types";
+import type { BaseVersion, GigInput } from "../../src/shared/types";
 import { guard, json, methodNotAllowed, noContent, notFound, readBody, routeParts } from "./lib/http";
 import { blobsKV } from "./lib/kv";
 import { makeRepo, type Repo } from "./lib/repo";
@@ -17,7 +17,7 @@ export function makeGigsHandler(repo: Repo) {
       const g = await repo.getGig(id);
       return g ? json(g) : notFound();
     }
-    if (req.method === "PUT") return json(await repo.updateGig(id, await readBody<Partial<GigInput>>(req)));
+    if (req.method === "PUT") return json(await repo.updateGig(id, await readBody<Partial<GigInput> & BaseVersion>(req)));
     if (req.method === "DELETE") {
       await repo.deleteGig(id);
       return noContent();
