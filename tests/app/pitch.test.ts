@@ -1,12 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  INSTRUMENTS,
-  analysisSize,
-  centsOff,
-  detectPitch,
-  nearestString,
-  noteFromFrequency,
-} from "../../src/app/tuner/pitch";
+import { analysisSize, centsOff, clampA4, detectPitch, noteFromFrequency } from "../../src/app/tuner/pitch";
 
 const SR = 48000;
 
@@ -25,15 +18,30 @@ function tone(freq: number, sampleRate = SR, size = analysisSize(sampleRate), ha
 
 const cents = (a: number, b: number) => 1200 * Math.log2(a / b);
 
+/** Notes from a 5-string bass's low B up to a guitar's high E, plus a low B tuned 20 cents flat. */
+const NOTES: [string, number][] = [
+  ["B0", 30.87],
+  ["B0 20 cents flat", 30.87 * Math.pow(2, -20 / 1200)],
+  ["E1", 41.2],
+  ["A1", 55],
+  ["D2", 73.42],
+  ["G2", 98],
+  ["E2", 82.41],
+  ["A2", 110],
+  ["D3", 146.83],
+  ["G3", 196],
+  ["B3", 246.94],
+  ["E4", 329.63],
+  ["A4", 440],
+];
+
 describe("detectPitch", () => {
-  for (const inst of Object.values(INSTRUMENTS)) {
-    for (const s of inst.strings) {
-      it(`finds ${inst.label} ${s.name} (${s.freq.toFixed(2)} Hz) within 2 cents`, () => {
-        const f = detectPitch(tone(s.freq), SR);
-        expect(f).not.toBeNull();
-        expect(Math.abs(cents(f!, s.freq))).toBeLessThan(2);
-      });
-    }
+  for (const [name, freq] of NOTES) {
+    it(`finds ${name} (${freq.toFixed(2)} Hz) within 0.5 cents`, () => {
+      const f = detectPitch(tone(freq), SR);
+      expect(f).not.toBeNull();
+      expect(Math.abs(cents(f!, freq))).toBeLessThan(0.5);
+    });
   }
 
   it("finds a pure sine and a slightly flat string at 44.1 kHz", () => {
@@ -60,32 +68,46 @@ describe("detectPitch", () => {
 
 describe("noteFromFrequency", () => {
   it("names the note, octave and cents", () => {
-    expect(noteFromFrequency(440)).toEqual({ name: "A", octave: 4, cents: 0, midi: 69 });
+    expect(noteFromFrequency(440)).toEqual({ name: "A", octave: 4, cents: 0, exactCents: 0, midi: 69 });
     expect(noteFromFrequency(41.2034)).toMatchObject({ name: "E", octave: 1, cents: 0 });
     const sharp = noteFromFrequency(440 * Math.pow(2, 10 / 1200));
     expect(sharp).toMatchObject({ name: "A", octave: 4, cents: 10 });
     expect(noteFromFrequency(277.18)).toMatchObject({ name: "C#", octave: 4 });
   });
+
+  it("gives the unrounded cents too", () => {
+    const n = noteFromFrequency(110 * Math.pow(2, 0.4 / 1200));
+    expect(n.cents).toBe(0);
+    expect(n.exactCents).toBeCloseTo(0.4, 6);
+    const m = noteFromFrequency(110 * Math.pow(2, -1.3 / 1200));
+    expect(m.cents).toBe(-1);
+    expect(m.exactCents).toBeCloseTo(-1.3, 6);
+    expect(noteFromFrequency(441, 440).exactCents).toBeCloseTo(3.93, 2);
+  });
 });
 
-describe("centsOff and nearestString", () => {
+describe("centsOff", () => {
   it("measures cents against a target", () => {
     expect(centsOff(110, 110)).toBe(0);
     expect(Math.round(centsOff(110 * Math.pow(2, 1 / 12), 110))).toBe(100);
     expect(Math.round(centsOff(108, 110))).toBe(-32);
   });
+});
 
-  it("picks the closest string of the instrument", () => {
-    const g = INSTRUMENTS.guitar.strings;
-    expect(nearestString(84, g).name).toBe("E2");
-    expect(nearestString(105, g).name).toBe("A2");
-    expect(nearestString(320, g).name).toBe("E4");
-    expect(nearestString(60, INSTRUMENTS.bass.strings).name).toBe("A1");
+describe("reference pitch A4", () => {
+  it("names notes against the chosen A4", () => {
+    expect(noteFromFrequency(432, 432)).toMatchObject({ name: "A", octave: 4, cents: 0 });
+    const n = noteFromFrequency(440, 432);
+    expect(n).toMatchObject({ name: "A", octave: 4 });
+    expect(n.cents).toBeGreaterThanOrEqual(31);
+    expect(n.cents).toBeLessThanOrEqual(32);
   });
 
-  it("has standard tunings", () => {
-    expect(INSTRUMENTS.guitar.strings.map((s) => s.name)).toEqual(["E2", "A2", "D3", "G3", "B3", "E4"]);
-    expect(INSTRUMENTS.bass.strings.map((s) => s.name)).toEqual(["E1", "A1", "D2", "G2"]);
-    expect(INSTRUMENTS.bass.strings[0].freq).toBeCloseTo(41.2, 1);
+  it("clamps to 415-466 Hz in whole Hz, with 440 for nonsense", () => {
+    expect(clampA4(414)).toBe(415);
+    expect(clampA4(500)).toBe(466);
+    expect(clampA4(441.6)).toBe(442);
+    expect(clampA4(NaN)).toBe(440);
+    expect(clampA4(440)).toBe(440);
   });
 });

@@ -14,6 +14,9 @@
   --accent-ink: #0072a3;
   --chord: var(--accent-ink);
   --error: #b00020;
+  /* Tuner: in tune, and the meter's track. */
+  --good: #1a9e45;
+  --track: #f1f1ec;
   color-scheme: light dark;
 }
 
@@ -30,6 +33,8 @@
     --accent-ink: var(--brand-yellow);
     --chord: var(--brand-blue);
     --error: #ff8a9b;
+    --good: #34c759;
+    --track: #26262b;
   }
 }
 
@@ -374,30 +379,73 @@ body.stage { padding-bottom: 0; }
 .tool h2 { margin-top: 4px; }
 .tool-note { font-size: 0.85rem; }
 
-.tuner-strings { display: flex; gap: 6px; list-style: none; margin: 8px 0; padding: 0; }
-.tuner-string {
-  flex: 1; text-align: center; padding: 8px 0; font-weight: 700;
-  border: 1px solid var(--border); border-radius: 8px; color: var(--muted);
+.tuner { padding-bottom: 16px; }
+.tuner-head { display: flex; align-items: center; justify-content: space-between; min-height: 28px; margin-top: 2px; }
+.tuner-head h2 { margin: 0; }
+.tuner-live { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.tuner-live-dot { width: 8px; height: 8px; border-radius: 50%; background: #ff453a; animation: tuner-pulse 1.4s ease-in-out infinite; }
+@keyframes tuner-pulse { 50% { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) { .tuner-live-dot { animation: none; } }
+
+/* Fixed height so the card doesn't jump between a note and the dash. */
+.tuner-note {
+  display: flex; align-items: center; justify-content: center; height: 104px; margin-top: 8px;
+  font-size: 96px; font-weight: 800; line-height: 1;
 }
-.tuner-string.near { color: var(--accent-text); background: var(--accent); border-color: var(--accent); }
-.tuner-display { text-align: center; padding: 8px 0; }
-.tuner-note { font-size: 64px; font-weight: 800; line-height: 1.1; min-height: 1.1em; }
-.tuner-note .muted { font-size: 20px; font-weight: 600; }
-.tuner-octave { font-size: 0.4em; vertical-align: sub; margin-left: 2px; }
-.tuner-meter {
-  position: relative; height: 36px; margin: 8px 0; border-radius: 8px;
-  background: linear-gradient(90deg, var(--border), transparent 40%, transparent 60%, var(--border));
-  border: 1px solid var(--border);
-}
-/* ±5 cents of the 100-cent meter. */
-.tuner-zone { position: absolute; top: 0; bottom: 0; left: 45%; width: 10%; background: color-mix(in srgb, #1a9e45 30%, transparent); }
+.tuner-note.idle { font-size: 64px; font-weight: 700; color: var(--muted); }
+.tuner-octave { position: relative; top: 24px; margin-left: 2px; font-size: 36px; font-weight: 700; }
+.tuner-cents { min-height: 24px; text-align: center; font-weight: 600; color: var(--muted); }
+.tuner-cents strong { color: var(--text); }
+.in-tune .tuner-note, .in-tune .tuner-cents { color: var(--good); }
+.tuner-check { font-weight: 800; }
+
+.tuner-meter { margin: 18px 0 6px; }
+.tuner-dir { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 18px; font-weight: 800; color: var(--muted); }
+.tuner-dir span { opacity: 0.45; transition: opacity 0.2s; }
+.tuner-dir span.on { opacity: 1; color: var(--accent-ink); }
+.tuner-track { position: relative; height: 44px; background: var(--track); border: 1px solid var(--border); border-radius: 8px; }
+/* The target area, +-5 cents of the 100-cent meter. (In tune itself is stricter: see tuner/lock.ts.) Stronger when
+   within a cent, strongest when locked. */
+.tuner-zone { position: absolute; top: 0; bottom: 0; left: 45%; width: 10%; background: color-mix(in srgb, var(--good) 22%, transparent); }
+.near .tuner-zone { background: color-mix(in srgb, var(--good) 34%, transparent); }
+.in-tune .tuner-zone { background: color-mix(in srgb, var(--good) 45%, transparent); }
+.tuner-tick { position: absolute; bottom: 0; width: 1px; height: 10px; margin-left: -0.5px; background: var(--muted); opacity: 0.6; }
+.tuner-tick.mid { top: 0; height: auto; width: 2px; margin-left: -1px; opacity: 0.9; }
+/* No CSS transition: Tuner.tsx glides `left` itself each animation frame. */
 .tuner-needle {
-  position: absolute; top: -4px; bottom: -4px; width: 4px; margin-left: -2px;
-  border-radius: 2px; background: var(--text); transition: left 0.1s linear;
+  position: absolute; top: -6px; bottom: -6px; left: 50%; width: 6px; margin-left: -3px; border-radius: 3px;
+  background: var(--accent-ink); box-shadow: 0 0 0 2px var(--surface);
 }
-.in-tune .tuner-needle { background: #1a9e45; }
-.in-tune .tuner-note { color: #1a9e45; }
-.tuner-cents { min-height: 1.4em; font-weight: 600; }
+.in-tune .tuner-needle { background: var(--good); }
+/* Fills over the second the pitch must be held at 0 before "In tune". */
+.tuner-hold { height: 4px; margin-top: 10px; border-radius: 2px; background: color-mix(in srgb, var(--border) 60%, transparent); overflow: hidden; }
+.tuner-hold-fill { display: block; height: 100%; width: 0; border-radius: 2px; background: var(--accent-ink); transition: width 50ms linear; }
+.in-tune .tuner-hold-fill { background: var(--good); }
+.tuner-scale { display: flex; justify-content: space-between; margin-top: 6px; font-size: 12px; color: var(--muted); }
+
+.tuner-go { width: 100%; height: 52px; margin-top: 16px; font-size: 17px; font-weight: 700; border-radius: 10px; }
+
+.tuner-ref {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px;
+  margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 14px; color: var(--muted);
+}
+.tuner-ref .tuner-step { width: 36px; height: 36px; min-height: 36px; padding: 0; font-size: 18px; }
+.tuner-ref-box {
+  display: inline-flex; align-items: center; gap: 4px; height: 36px; padding: 0 10px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px; cursor: text;
+}
+.tuner-ref-box:focus-within { outline: 3px solid var(--accent-ink); outline-offset: 2px; }
+/* The - / + buttons do the stepping, so the browser's spinners are hidden to keep the box narrow. */
+.tuner-ref-input {
+  width: 4ch; padding: 0; border: 0; background: transparent; color: var(--text); text-align: center;
+  font: inherit; font-size: 15px; font-weight: 700; outline: none; -moz-appearance: textfield; appearance: textfield;
+}
+.tuner-ref-input::-webkit-inner-spin-button, .tuner-ref-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.tuner-ref-unit { font-size: 13px; font-weight: 600; color: var(--muted); }
+.tuner-reset {
+  height: 36px; padding: 0 4px; background: none; border: 0; color: var(--accent-ink);
+  font: inherit; font-weight: 600; text-decoration: underline; cursor: pointer;
+}
 
 .metro-flash {
   display: flex; align-items: baseline; justify-content: center; gap: 8px;

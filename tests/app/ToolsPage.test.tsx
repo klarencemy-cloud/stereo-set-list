@@ -10,7 +10,7 @@ vi.mock("../../src/app/api", async () => {
 
 import ToolsPage from "../../src/app/pages/ToolsPage";
 import { AppRoutes } from "../../src/app/App";
-import { INSTRUMENTS, analysisSize } from "../../src/app/tuner/pitch";
+import { analysisSize } from "../../src/app/tuner/pitch";
 
 /** A stand-in AudioContext that records the clicks booked and lets tests move its clock. */
 class FakeAudioContext {
@@ -101,17 +101,200 @@ describe("Tools in the main nav", () => {
 });
 
 describe("Tuner", () => {
-  const strings = () => within(screen.getByRole("list", { name: "Strings" })).getAllByRole("listitem").map((li) => li.textContent);
+  const a4 = () => screen.getByRole("spinbutton", { name: "Reference pitch A4" }) as HTMLInputElement;
+  const reset = () => screen.queryByRole("button", { name: "Reset to 440" });
 
-  it("switches between guitar and bass strings, and remembers the choice", () => {
+  /** Starts the tuner and returns a function that plays a tone into the fake microphone. */
+  async function startListening() {
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "Start tuner" }));
+    await act(async () => {});
+    const ctx = FakeAudioContext.instances[0];
+    return async (input: Float32Array, ms = 350) => {
+      ctx.input = input;
+      await listen(ms);
+    };
+  }
+
+  /**
+   * Lets the fake clock run for `ms`, one 50 ms microphone reading per act(). In a browser each reading is its own
+   * task and renders on its own; one long act() would batch them all into one render, and the in-tune hold
+   * (which counts readings over time) would only see the last.
+   */
+  async function listen(ms: number) {
+    for (let t = 0; t < ms; t += 50) {
+      await act(async () => {
+        vi.advanceTimersByTime(Math.min(50, ms - t));
+      });
+    }
+  }
+
+  it("is chromatic: no instrument switch and no string list", () => {
+    renderTools();
+    expect(screen.queryByRole("button", { name: "Guitar" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Bass" })).toBeNull();
+    expect(screen.queryByRole("list", { name: "Strings" })).toBeNull();
+    expect(screen.queryByText("Chromatic tuner. Uses the microphone.")).toBeNull();
+  });
+
+  const cents = () => document.querySelector(".tuner-cents")!;
+  const needle = () => document.querySelector(".tuner-needle");
+  const lit = () => Array.from(document.querySelectorAll(".tuner-dir .on")).map((el) => el.textContent);
+
+  it("before Start, says what to do and shows no needle", () => {
+    renderTools();
+    expect(cents()).toHaveTextContent("Tap Start, then play a note");
+    expect(needle()).toBeNull();
+    expect(lit()).toEqual([]);
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("shows Listening while the microphone is on", async () => {
+    renderTools();
+    fireEvent.click(screen.getByRole("button", { name: "Start tuner" }));
+    await screen.findByRole("button", { name: "Stop tuner" });
+    expect(screen.getByRole("status")).toHaveTextContent("Listening");
+    // Listening but nothing heard yet: a prompt, still no needle.
+    expect(cents()).toHaveTextContent("Play a note");
+    expect(needle()).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Stop tuner" }));
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(cents()).toHaveTextContent("Tap Start, then play a note");
+  });
+
+  it("says which way to turn, and lights that side of the meter", async () => {
+    renderTools();
+    const play = await startListening();
+    await play(sine(110 * Math.pow(2, 20 / 1200))); // 20 cents sharp
+    expect(cents()).toHaveTextContent("+20 cents · tune down");
+    expect(cents().querySelector("strong")).toHaveTextContent("+20 cents");
+    expect(needle()).not.toBeNull();
+    expect(lit()).toEqual(["▶ ♯"]);
+
+    await play(sine(110), 1700); // glides to 0, then holds it for a second: in tune, neither side lit
+    expect(cents()).toHaveTextContent("In tune");
+    expect(lit()).toEqual([]);
+    expect(document.querySelector(".tuner.in-tune")).not.toBeNull();
+
+    // Silence: once the tuner stops holding the last note (1 s), the needle goes away.
+    for (let i = 0; i < 4; i++) await play(sine(0));
+    expect(needle()).toBeNull();
+    expect(cents()).toHaveTextContent("Play a note");
+  });
+
+  const fill = () => document.querySelector(".tuner-hold-fill") as HTMLElement;
+
+  it("holds 0 for a second before saying In tune", async () => {
+    renderTools();
+    const play = await startListening();
+    await play(sine(110), 350);
+    expect(cents()).toHaveTextContent("0 cents · hold…");
+    expect(cents()).not.toHaveTextContent("In tune");
+    expect(parseFloat(fill().style.width)).toBeGreaterThan(0);
+    await play(sine(110), 600); // 950 ms in: the hold started at the 3rd reading, so not yet
+    expect(cents()).toHaveTextContent("hold…");
+    expect(document.querySelector(".tuner.in-tune")).toBeNull();
+    expect(parseFloat(fill().style.width)).toBeLessThan(100);
+    await play(sine(110), 400);
+    expect(cents()).toHaveTextContent("In tune");
+    expect(document.querySelector(".tuner.in-tune")).not.toBeNull();
+    expect(fill().style.width).toBe("100%");
+  });
+
+  it("never calls 2 cents sharp in tune", async () => {
+    renderTools();
+    const play = await startListening();
+    for (let i = 0; i < 10; i++) {
+      await play(sine(110 * Math.pow(2, 2 / 1200)), 300);
+      expect(cents()).not.toHaveTextContent("In tune");
+      expect(cents()).not.toHaveTextContent("hold");
+    }
+    expect(cents()).toHaveTextContent("+2 cents · tune down");
+    expect(lit()).toEqual(["▶ ♯"]);
+  });
+
+  it("applies a new A4 at once, without restarting", async () => {
+    renderTools();
+    const play = await startListening();
+    await play(sine(440), 1300);
+    expect(cents()).toHaveTextContent("In tune");
+    fireEvent.click(screen.getByRole("button", { name: "Raise reference" }));
+    // 440 Hz against A4 = 441 is 3.9 cents flat: out of tune straight away.
+    expect(cents()).toHaveTextContent("-4 cents · tune up");
+    await play(sine(440), 50);
+    expect(cents()).toHaveTextContent("-4 cents · tune up");
+    expect(document.querySelector(".tuner.in-tune")).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop tuner" })).toBeInTheDocument();
+  });
+
+  it("applies a typed A4 while typing, without Enter", async () => {
+    renderTools();
+    fireEvent.change(a4(), { target: { value: "4" } });
+    fireEvent.change(a4(), { target: { value: "43" } });
+    expect(reset()).toBeNull(); // partial input: still 440
+    expect(localStorage.getItem("stereo-set:tuner-a4")).toBeNull();
+    fireEvent.change(a4(), { target: { value: "432" } });
+    expect(reset()).not.toBeNull();
+    expect(localStorage.getItem("stereo-set:tuner-a4")).toBe("432");
+    expect(a4().value).toBe("432"); // no Enter, no blur
+    const play = await startListening();
+    await play(sine(432), 1300);
+    expect(document.querySelector(".tuner-note")).toHaveTextContent("A4");
+    expect(cents()).toHaveTextContent("In tune");
+  });
+
+  it("raises A4 with + and resets it to 440", () => {
+    renderTools();
+    expect(a4().value).toBe("440");
+    expect(reset()).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Raise reference" }));
+    expect(a4().value).toBe("441");
+    fireEvent.click(reset()!);
+    expect(a4().value).toBe("440");
+    expect(reset()).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Lower reference" }));
+    expect(a4().value).toBe("439");
+  });
+
+  it("takes a typed A4, clamps it, and remembers it on this device", () => {
     const { unmount } = renderTools();
-    expect(strings()).toEqual(["E2", "A2", "D3", "G3", "B3", "E4"]);
-    fireEvent.click(screen.getByRole("button", { name: "Bass" }));
-    expect(strings()).toEqual(["E1", "A1", "D2", "G2"]);
-    expect(screen.getByRole("button", { name: "Bass" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.change(a4(), { target: { value: "432" } });
+    fireEvent.keyDown(a4(), { key: "Enter" });
+    expect(a4().value).toBe("432");
     unmount();
     renderTools();
-    expect(strings()).toEqual(["E1", "A1", "D2", "G2"]);
+    expect(a4().value).toBe("432");
+
+    fireEvent.change(a4(), { target: { value: "999" } });
+    fireEvent.blur(a4());
+    expect(a4().value).toBe("466");
+    expect(screen.getByRole("button", { name: "Raise reference" })).toBeDisabled();
+
+    fireEvent.change(a4(), { target: { value: "" } });
+    fireEvent.blur(a4());
+    expect(a4().value).toBe("466");
+  });
+
+  it("falls back to 440 for an unreadable stored A4", () => {
+    localStorage.setItem("stereo-set:tuner-a4", "banana");
+    renderTools();
+    expect(a4().value).toBe("440");
+  });
+
+  it("names notes against the chosen A4", async () => {
+    localStorage.setItem("stereo-set:tuner-a4", "432");
+    renderTools();
+    const play = await startListening();
+    await play(sine(432), 1300);
+    expect(document.querySelector(".tuner-note")).toHaveTextContent("A4");
+    expect(screen.getByText("In tune")).toBeInTheDocument();
+  });
+
+  it("hears a 5-string bass's low B", async () => {
+    renderTools();
+    const play = await startListening();
+    await play(sine(30.87));
+    expect(document.querySelector(".tuner-note")).toHaveTextContent("B0");
   });
 
   it("asks for the microphone only after Start, with voice processing off", async () => {
@@ -124,25 +307,22 @@ describe("Tuner", () => {
     });
   });
 
-  it("shows the note heard, its cents and the nearest string", async () => {
+  it("shows the note heard and its cents", async () => {
     vi.useFakeTimers();
     renderTools();
     fireEvent.click(screen.getByRole("button", { name: "Start tuner" }));
     await act(async () => {});
     const ctx = FakeAudioContext.instances[0];
-    ctx.input = sine(INSTRUMENTS.guitar.strings[1].freq); // A2, in tune
-    await act(async () => {
-      vi.advanceTimersByTime(350);
-    });
+    ctx.input = sine(110); // A2, in tune once held for a second
+    await listen(1300);
     expect(screen.getByText("In tune")).toBeInTheDocument();
     expect(document.querySelector(".tuner-note")).toHaveTextContent("A2");
-    expect(document.querySelector(".tuner-string.near")).toHaveTextContent("A2");
 
     ctx.input = sine(110 * Math.pow(2, -20 / 1200)); // 20 cents flat
-    await act(async () => {
-      vi.advanceTimersByTime(350);
-    });
-    expect(screen.getByText(/-20 cents \(flat, tune up\)/)).toBeInTheDocument();
+    await listen(1000);
+    expect(cents()).toHaveTextContent("-20 cents · tune up");
+    expect(cents().querySelector("strong")).toHaveTextContent("-20 cents");
+    expect(lit()).toEqual(["♭ ◀"]);
   });
 
   it("turns the microphone off on Stop and when leaving the page", async () => {

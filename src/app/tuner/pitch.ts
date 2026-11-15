@@ -1,32 +1,23 @@
 // Pitch detection for the tuner. Pure maths: no React, no browser APIs, so it can be tested with synthetic tones.
 
-export interface TunerString {
-  /** Note and octave, e.g. "E2". */
-  name: string;
-  freq: number;
-}
-
-export type InstrumentId = "guitar" | "bass";
-
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"] as const;
-const A4 = 440;
 
-function freqOfMidi(midi: number): number {
-  return A4 * Math.pow(2, (midi - 69) / 12);
+/** Reference pitch for A4 in Hz: the default, and the range the tuner lets you pick, in whole Hz. */
+export const DEFAULT_A4 = 440;
+export const MIN_A4 = 415;
+export const MAX_A4 = 466;
+
+/** A usable A4: rounded to whole Hz and kept within MIN_A4-MAX_A4. Anything not a number is DEFAULT_A4. */
+export function clampA4(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_A4;
+  return Math.min(MAX_A4, Math.max(MIN_A4, Math.round(n)));
 }
 
-function stringOf(midi: number): TunerString {
-  return { name: `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`, freq: freqOfMidi(midi) };
-}
-
-/** Standard tunings, low string first. */
-export const INSTRUMENTS: Record<InstrumentId, { label: string; strings: TunerString[] }> = {
-  guitar: { label: "Guitar", strings: [40, 45, 50, 55, 59, 64].map(stringOf) },
-  bass: { label: "Bass", strings: [28, 33, 38, 43].map(stringOf) },
-};
-
-/** Lowest pitch looked for: below a bass's low E (41.2 Hz), with room for a string tuned well flat. */
-export const MIN_FREQ = 35;
+/**
+ * Lowest pitch looked for: below a 5-string bass's low B (30.87 Hz), with room for it tuned well flat. Still
+ * needs only 4096 samples at 44.1 and 48 kHz (see analysisSize).
+ */
+export const MIN_FREQ = 28;
 export const MAX_FREQ = 1100;
 /** Readings quieter than this (RMS) are ignored: nothing is being played. */
 const MIN_RMS = 0.01;
@@ -93,23 +84,22 @@ export function centsOff(freq: number, target: number): number {
   return 1200 * Math.log2(freq / target);
 }
 
-/** The nearest equal-tempered note (A4 = 440 Hz) and how many cents away it is. */
-export function noteFromFrequency(freq: number): { name: string; octave: number; cents: number; midi: number } {
-  const exact = 69 + 12 * Math.log2(freq / A4);
+/**
+ * The nearest equal-tempered note, tuned to `a4` Hz, and how far off it is: `cents` rounded to whole cents for
+ * display, `exactCents` unrounded for the needle and the in-tune check.
+ */
+export function noteFromFrequency(
+  freq: number,
+  a4: number = DEFAULT_A4,
+): { name: string; octave: number; cents: number; exactCents: number; midi: number } {
+  const exact = 69 + 12 * Math.log2(freq / a4);
   const midi = Math.round(exact);
+  const exactCents = (exact - midi) * 100 || 0;
   return {
     name: NOTE_NAMES[((midi % 12) + 12) % 12],
     octave: Math.floor(midi / 12) - 1,
-    cents: Math.round((exact - midi) * 100) || 0,
+    cents: Math.round(exactCents) || 0,
+    exactCents,
     midi,
   };
-}
-
-/** The instrument string closest in pitch to `freq`. */
-export function nearestString(freq: number, strings: TunerString[]): TunerString {
-  let best = strings[0];
-  for (const s of strings) {
-    if (Math.abs(centsOff(freq, s.freq)) < Math.abs(centsOff(freq, best.freq))) best = s;
-  }
-  return best;
 }

@@ -1,18 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createAudioContext } from "../audio";
 import { analysisSize, detectPitch } from "./pitch";
+import { createSmoother } from "./smooth";
 
 /** How often the microphone is read. */
-const READ_MS = 100;
+export const READ_MS = 50;
 /** Keep showing the last note this long after the sound stops, so the display doesn't flicker. */
 const HOLD_MS = 1000;
-/** Readings smoothed over (median), which drops one-off octave jumps. */
-const SMOOTH = 3;
-
-function median(values: number[]): number {
-  const s = [...values].sort((a, b) => a - b);
-  return s[Math.floor(s.length / 2)];
-}
 
 export function micErrorMessage(e: unknown): string {
   const name = e instanceof Error || (typeof e === "object" && e !== null) ? (e as { name?: string }).name : "";
@@ -34,7 +28,9 @@ interface Running {
 export function useTuner() {
   const [listening, setListening] = useState(false);
   const [starting, setStarting] = useState(false);
-  const [freq, setFreq] = useState<number | null>(null);
+  /** The steady pitch heard (Hz, or null) and when it was read (ms). Each reading is a new object, so a pitch
+   * that holds exactly still still re-renders: the in-tune hold counts time between readings. */
+  const [reading, setReading] = useState<{ freq: number | null; at: number }>({ freq: null, at: 0 });
   const [error, setError] = useState("");
   const running = useRef<Running | null>(null);
   const alive = useRef(true);
@@ -49,7 +45,7 @@ export function useTuner() {
     }
     if (alive.current) {
       setListening(false);
-      setFreq(null);
+      setReading({ freq: null, at: Date.now() });
     }
   }, []);
 
@@ -94,20 +90,20 @@ export function useTuner() {
     analyser.fftSize = analysisSize(ctx.sampleRate);
     ctx.createMediaStreamSource(stream).connect(analyser);
     const buf = new Float32Array(analyser.fftSize);
-    const recent: number[] = [];
+    const smoother = createSmoother();
     let lastHeard = 0;
     const timer = setInterval(() => {
       analyser.getFloatTimeDomainData(buf);
       const f = detectPitch(buf, ctx.sampleRate);
       const now = Date.now();
-      if (f !== null) {
-        recent.push(f);
-        if (recent.length > SMOOTH) recent.shift();
-        lastHeard = now;
-        setFreq(median(recent));
+      const steady = smoother.push(f, now);
+      if (f !== null) lastHeard = now;
+      if (steady !== null) {
+        setReading({ freq: steady, at: now });
       } else if (now - lastHeard > HOLD_MS) {
-        recent.length = 0;
-        setFreq(null);
+        // Silent for a while: forget the note. (A short gap, or a note's skipped attack, keeps the last one shown.)
+        smoother.reset();
+        setReading((r) => (r.freq === null ? r : { freq: null, at: now }));
       }
     }, READ_MS);
     running.current = { stream, ctx, timer };
@@ -115,5 +111,5 @@ export function useTuner() {
     setListening(true);
   }
 
-  return { listening, starting, freq, error, start, stop };
+  return { listening, starting, freq: reading.freq, at: reading.at, error, start, stop };
 }
