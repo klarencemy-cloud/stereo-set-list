@@ -1,14 +1,10 @@
 // Metronome timing maths. Pure: it only knows "what beat happens when" on whatever clock it is given (seconds),
 // so the Web Audio clock drives it today and a shared band clock can drive it later.
 
-export const MIN_BPM = 30;
-export const MAX_BPM = 300;
-export const BEATS_PER_BAR = [2, 3, 4, 5, 6, 7] as const;
+import { clampBpm } from "../../shared/metronome";
 
-export function clampBpm(bpm: number): number {
-  if (!Number.isFinite(bpm)) return MIN_BPM;
-  return Math.min(MAX_BPM, Math.max(MIN_BPM, Math.round(bpm)));
-}
+// The tempo limits are shared with the server (song tempo and synced sessions).
+export { BEATS_PER_BAR, MAX_BPM, MIN_BPM, clampBpm } from "../../shared/metronome";
 
 export interface Beat {
   /** When the click sounds, on the scheduler's clock (seconds). */

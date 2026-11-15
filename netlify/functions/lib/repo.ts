@@ -3,6 +3,7 @@ import type { BaseVersion, Gig, GigInput, SetlistItem, Song, SongInput, SongSumm
 import { fromSongIds, setlistOf, songIdsOf } from "../../../src/shared/setlist";
 import { toSongSummary } from "../../../src/shared/song";
 import { isValidKey } from "../../../src/shared/transpose";
+import { applyChange, BEATS_PER_BAR, MAX_BPM, MIN_BPM, type MetroChange, type MetroSession } from "../../../src/shared/metronome";
 import { songMatchKey, songsByMatchKey, uniqueTracks, type PlaylistTrack } from "../../../src/shared/playlist";
 import type { KV } from "./kv";
 
@@ -42,7 +43,9 @@ export const LIMITS = {
   breakLabel: 100,
 } as const;
 
-const SONG_FIELDS = ["title", "artist", "sourceUrl", "originalKey", "bandKey", "capo", "content"] as const;
+const SONG_FIELDS = ["title", "artist", "sourceUrl", "originalKey", "bandKey", "capo", "content", "bpm", "beatsPerBar"] as const;
+/** Song fields an older client may leave out of a create; they are stored as null (unknown). */
+const OPTIONAL_SONG_FIELDS: readonly string[] = ["bpm", "beatsPerBar"];
 
 function checkString(field: string, v: unknown, max: number): string {
   if (typeof v !== "string") throw new ValidationError(`${field} must be text`);
@@ -73,6 +76,16 @@ function checkSongField(field: (typeof SONG_FIELDS)[number], v: unknown): unknow
         throw new ValidationError("capo must be a whole number from 0 to 12");
       }
       return v;
+    case "bpm":
+      if (v !== null && (typeof v !== "number" || !Number.isInteger(v) || v < MIN_BPM || v > MAX_BPM)) {
+        throw new ValidationError(`bpm must be empty or a whole number from ${MIN_BPM} to ${MAX_BPM}`);
+      }
+      return v;
+    case "beatsPerBar":
+      if (v !== null && !(BEATS_PER_BAR as readonly unknown[]).includes(v)) {
+        throw new ValidationError(`beatsPerBar must be empty or a whole number from ${BEATS_PER_BAR[0]} to ${BEATS_PER_BAR[BEATS_PER_BAR.length - 1]}`);
+      }
+      return v;
   }
 }
 
@@ -83,6 +96,10 @@ function cleanSong(input: unknown, partial: boolean): Partial<SongInput> {
   for (const f of SONG_FIELDS) {
     if (!(f in src)) {
       if (partial) continue;
+      if (OPTIONAL_SONG_FIELDS.includes(f)) {
+        out[f] = null;
+        continue;
+      }
       throw new ValidationError(`${f} is required`);
     }
     out[f] = checkSongField(f, src[f]);
@@ -229,9 +246,57 @@ function blankSong({ id, title, artist, trackId }: { id: string; title: string; 
     bandKey: "",
     capo: 0,
     content: "",
+    // Nor its tempo.
+    bpm: null,
+    beatsPerBar: null,
     ...(trackId !== undefined ? { trackId } : {}),
     updatedAt: new Date().toISOString(),
   };
+}
+
+/**
+ * A running metronome nobody has changed (start, stop, tempo) for 2 hours reads as stopped, so a
+ * forgotten one doesn't trap people.
+ */
+export const METRO_STALE_MS = 2 * 60 * 60 * 1000;
+
+/** Checks a metronome change from a client: at least one of bpm, beatsPerBar and running. */
+function checkMetroChange(input: unknown): MetroChange {
+  const src = (input ?? {}) as Record<string, unknown>;
+  const out: MetroChange = {};
+  if (src.bpm !== undefined) {
+    const v = src.bpm;
+    if (typeof v !== "number" || !Number.isInteger(v) || v < MIN_BPM || v > MAX_BPM) {
+      throw new ValidationError(`bpm must be a whole number from ${MIN_BPM} to ${MAX_BPM}`);
+    }
+    out.bpm = v;
+  }
+  if (src.beatsPerBar !== undefined) {
+    if (!(BEATS_PER_BAR as readonly unknown[]).includes(src.beatsPerBar)) {
+      throw new ValidationError(`beatsPerBar must be a whole number from ${BEATS_PER_BAR[0]} to ${BEATS_PER_BAR[BEATS_PER_BAR.length - 1]}`);
+    }
+    out.beatsPerBar = src.beatsPerBar as number;
+  }
+  if (src.running !== undefined) {
+    if (typeof src.running !== "boolean") throw new ValidationError("running must be true or false");
+    out.running = src.running;
+  }
+  if (Object.keys(out).length === 0) throw new ValidationError("send bpm, beatsPerBar or running");
+  return out;
+}
+
+/** The session as everyone reads it: a forgotten running one counts as stopped. */
+function toMetroSession(stored: MetroSession, nowMs: number): MetroSession {
+  const age = nowMs - Date.parse(stored.updatedAt);
+  return stored.running && !(age <= METRO_STALE_MS) ? { ...stored, running: false } : stored;
+}
+
+/** A song as stored; songs saved before tempo existed have no bpm or beatsPerBar. */
+type StoredSong = Omit<Song, "bpm" | "beatsPerBar"> & Partial<Pick<Song, "bpm" | "beatsPerBar">>;
+
+/** Every song read goes through this, so get, list, update and import can't disagree. */
+function toSong(stored: StoredSong): Song {
+  return { ...stored, bpm: stored.bpm ?? null, beatsPerBar: stored.beatsPerBar ?? null };
 }
 
 type StoredGig = {
@@ -288,7 +353,11 @@ export function makeRepo(kv: KV) {
     throw new Error(`${key} kept changing while saving`);
   }
 
-  const getSong = (id: string) => readJson<Song>(`songs/${id}`);
+  async function getSong(id: string): Promise<Song | null> {
+    const stored = await readJson<StoredSong>(`songs/${id}`);
+    return stored && toSong(stored);
+  }
+  const readSongs = async () => (await readAll<StoredSong>("songs/")).map(toSong);
   const getTrack = (id: string) => readJson<Track>(`tracks/${id}`);
 
   /** Takes a song out of every setlist (the song record itself is deleted by the caller). */
@@ -312,6 +381,7 @@ export function makeRepo(kv: KV) {
    */
   async function deleteSongAndTrack(songId: string | null, trackId: string | null, last: "song" | "track") {
     if (songId) await removeSongFromGigs(songId);
+    if (songId) await kv.delete(`metronome/${songId}`);
     if (trackId) for (const k of await kv.list(`audio/${trackId}/`)) await kv.delete(k);
     const song = songId ? [`songs/${songId}`] : [];
     const track = trackId ? [`tracks/${trackId}`] : [];
@@ -363,9 +433,37 @@ export function makeRepo(kv: KV) {
     return withoutMissingSongs(gig, (sid) => exists.get(sid) === true);
   }
 
+  /**
+   * The song's metronome session (null when nobody has started one). 404 when the song doesn't exist.
+   * Reads the session first: a session implies the song exists (deleting a song deletes its session),
+   * so the song is only looked up when there's no session. One storage read per check while playing.
+   */
+  async function getMetronome(songId: string, nowMs: number): Promise<MetroSession | null> {
+    const stored = await readJson<MetroSession>(`metronome/${songId}`);
+    if (stored) return toMetroSession(stored, nowMs);
+    if ((await kv.getText(`songs/${songId}`)) === null) throw new NotFoundError("song not found");
+    return null;
+  }
+
   return {
+    getMetronome,
+    /**
+     * Applies a change on the server's clock (see applyChange) and stores it. The last change wins.
+     * Resolves null when asked to stop a session that was never started.
+     */
+    async setMetronome(songId: string, input: unknown, nowMs: number): Promise<MetroSession | null> {
+      const change = checkMetroChange(input);
+      const current = await getMetronome(songId, nowMs);
+      if (!current && (change.bpm === undefined || change.beatsPerBar === undefined)) {
+        if (change.running === false) return null;
+        throw new ValidationError("bpm and beatsPerBar are needed to start the metronome");
+      }
+      const next = applyChange(current, change, nowMs);
+      if (next !== current) await writeJson(`metronome/${songId}`, next);
+      return next;
+    },
     async listSongs(): Promise<SongSummary[]> {
-      const songs = await readAll<Song>("songs/");
+      const songs = await readSongs();
       return songs
         .map(toSongSummary)
         .sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
@@ -386,7 +484,7 @@ export function makeRepo(kv: KV) {
      */
     async importSongs(input: unknown): Promise<Song[]> {
       const tracks = uniqueTracks(checkTracks(input));
-      const byKey = songsByMatchKey(await readAll<Song>("songs/"));
+      const byKey = songsByMatchKey(await readSongs());
       const out: Song[] = [];
       for (const t of tracks) {
         const found = byKey.get(songMatchKey(t.title, t.artist));
@@ -404,7 +502,8 @@ export function makeRepo(kv: KV) {
     async updateSong(id: string, patch: Partial<SongInput> & BaseVersion): Promise<Song> {
       const clean = cleanSong(patch, true);
       const base = checkBaseVersion(patch);
-      const next = await modify<Song>(`songs/${id}`, (cur) => {
+      const next = await modify<Song>(`songs/${id}`, (stored) => {
+        const cur = toSong(stored);
         checkVersion(cur.updatedAt, base, "song", cur);
         return withKeys({ ...cur, ...clean, id, updatedAt: nextStamp(cur.updatedAt) });
       });

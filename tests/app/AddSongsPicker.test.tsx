@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import AddSongsPicker from "../../src/app/components/AddSongsPicker";
 
 const mk = (id: string, title: string, artist = "Band") => ({
-  id, title, artist, sourceUrl: null, originalKey: "A", bandKey: "A", capo: 0, updatedAt: "x",
+  id, title, artist, sourceUrl: null, originalKey: "A", bandKey: "A", capo: 0, bpm: null, beatsPerBar: null, updatedAt: "x",
 });
 const songs = [mk("s1", "Alpha"), mk("s4", "Delta"), mk("s3", "Gamma", "Zed")];
 

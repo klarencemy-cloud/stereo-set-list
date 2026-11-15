@@ -169,7 +169,7 @@ export default function Tuner() {
             </>
           ) : holding ? (
             <>
-              <strong>0 cents</strong> · hold…
+              <strong>{`${cents > 0 ? "+" : ""}${cents} cents`}</strong> · hold…
             </>
           ) : (
             <>

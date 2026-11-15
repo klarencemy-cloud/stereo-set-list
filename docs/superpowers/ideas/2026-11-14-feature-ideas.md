@@ -21,9 +21,9 @@ Five feature ideas for the band site, collected in one place. Each idea has four
 | 3 | Metronome v1 (one phone) | Adds the Tools page and the first Web Audio code. | ✅ Done (2026-11-14), awaiting review |
 | 4 | Guitar Tuner | Lives on the same Tools page and reuses its audio setup. | ✅ Done (2026-11-14), awaiting review |
 | 5 | Playable Audio | Needs research first, and adds new Song fields. | Not started |
-| 6 | Synced Metronome v2 | Builds on v1 and adds a server clock and shared state. | Not started |
+| 6 | Synced Metronome v2 | Builds on v1 and adds a server clock and shared state. | ✅ Done (2026-11-15), awaiting review |
 
-Features 1-4 were built together on branch `feat/lyrics-and-tools` (not committed). The open questions were settled with the recommended or simplest option; each feature's **Built** note says how, so they can be changed in review.
+Features 1-4 were built together on branch `feat/lyrics-and-tools` and committed in `10c38d2` (lyrics mode, printable lyrics, tuner, metronome v1) and `0d3c50f` (the chromatic tuner). Metronome v2 is on the same branch, not committed yet. The open questions were settled with the recommended or simplest option; each feature's **Built** note says how, so they can be changed in review.
 
 ## Rules that apply to every feature
 
@@ -243,7 +243,8 @@ Build test-first. Follow CLAUDE.md. Run npm run build and npm test before saying
 
 > **Status: ✅ Done (2026-11-14), awaiting review.**
 > **Built:** `/tools` page with a "Tools" nav link; YIN pitch detection in `src/app/tuner/pitch.ts`; microphone handling in `src/app/tuner/useTuner.ts`; UI in `src/app/components/Tuner.tsx`.
-> **Open questions settled:** **standard tuning only** (no drop D or 5-string bass yet). **A4 fixed at 440 Hz.** A **needle meter** with a green ±5-cent zone. The display shows the nearest chromatic note and its cents, and highlights the nearest string.
+> **Now a chromatic tuner (2026-11-15, `0d3c50f`; spec `docs/superpowers/specs/2026-11-15-chromatic-tuner-design.md`):** the Guitar/Bass switch and the string row were removed. It hears any note down to 28 Hz (a 5-string bass's low B) and shows the nearest of the 12 notes (sharps only) with its octave and cents, on a **needle meter** that calls ±5 cents "In tune" after a short hold. The **reference pitch A4 is adjustable from 415 to 466 Hz** (−/+ in 1 Hz steps, or type it), remembered on the device, with "Reset to 440" when it isn't 440.
+> The original request below (two instruments, standard tuning) is kept as it was asked.
 > **Not yet done:** testing on a real iPhone (Safari) and Android (Chrome).
 
 ### Idea (as given)
@@ -307,9 +308,12 @@ Follow CLAUDE.md. Run npm run build and npm test before saying it works. Don't c
 
 ## 5. Metronome
 
-> **Status: v1 ✅ Done (2026-11-14), awaiting review. v2 not started.**
+> **Status: v1 ✅ Done (2026-11-14). v2 ✅ Done (2026-11-15), awaiting review.**
 > **Built (v1):** pure look-ahead scheduler and tap tempo in `src/app/metronome/schedule.ts` (works on any clock, ready for v2); Web Audio in `src/app/metronome/useMetronome.ts`; UI in `src/app/components/Metronome.tsx` on the Tools page.
-> **Open questions settled (v1):** **no `bpm`/time-signature fields on Song yet**, so there is **no SongPage launcher**; that needs your answer to "should Song get bpm?". One click sound: a high click on beat 1, a lower click on the other beats. **No subdivisions.** Beats per bar: 2-7. Tempo and beats per bar are remembered per device.
+> **Built (v2):** spec `docs/superpowers/specs/2026-11-15-synced-metronome-design.md`, plan `docs/superpowers/plans/2026-11-15-synced-metronome.md`. Songs got optional `bpm` (30-300) and `beatsPerBar` (2-7), `null` when unknown, on the song form. A "Metronome" pill on SongPage opens a per-song shared session (`/api/metronome/:songId`, `/api/time`): anyone can start, change or stop it, and a change lands on the next bar for everyone about 2 s ahead. Phones sync clocks with Cristian's algorithm and book clicks plus a beat flash locally. There's a per-phone nudge slider plus a tap-along that measures it, "Save as song tempo", and a local v1 fallback when it can't sync. Shared maths in `src/shared/metronome.ts`; clock maths in `src/app/metronome/clock.ts`; hooks `useClockSync`, `useSyncedMetronome`; UI `SongMetronome.tsx`, `BeatDisplay.tsx`.
+> **Decided for v2 (by the user):** anyone controls the tempo, last change wins; sessions are per song; click plus flash; calibration is a nudge slider plus tap-along.
+> **Not yet done (v2):** testing on real phones over the band's Wi-Fi (sync accuracy depends on the deployed `/api/time` round trip; local `netlify dev` is slow, about ±170 ms).
+> **Open questions settled (v1):** at the time, **no `bpm`/time-signature fields on Song**, so no SongPage launcher (v2 added both). One click sound: a high click on beat 1, a lower click on the other beats. **No subdivisions.** Beats per bar: 2-7. Tempo and beats per bar are remembered per device.
 
 Split into two parts: **v1** is a metronome on one phone. **v2** keeps several phones in time with each other, based on the research you pasted, summarised below.
 

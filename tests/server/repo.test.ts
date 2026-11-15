@@ -12,6 +12,8 @@ const song = (over: Partial<SongInput> = {}): SongInput => ({
   bandKey: "Em",
   capo: 0,
   content: "[Em]Today is gonna be",
+  bpm: null,
+  beatsPerBar: null,
   ...over,
 });
 
@@ -837,5 +839,72 @@ describe("versions (lost-update protection)", () => {
     const kv = interleave(base, `songs/${songId}`, () => setup.updateSong(songId, { content: "[C]la" }));
     await makeRepo(kv).renameTrack(t.id, "New");
     expect(await setup.getSong(songId)).toMatchObject({ title: "New", content: "[C]la" });
+  });
+});
+
+describe("song tempo (bpm, beatsPerBar)", () => {
+  it("stores a tempo and clears it with null", async () => {
+    const repo = makeRepo(memoryKV());
+    const s = await repo.createSong(song({ bpm: 96, beatsPerBar: 3 }));
+    expect(s).toMatchObject({ bpm: 96, beatsPerBar: 3 });
+    const u = await repo.updateSong(s.id, { bpm: null, beatsPerBar: null });
+    expect(u).toMatchObject({ bpm: null, beatsPerBar: null });
+    expect(await repo.getSong(s.id)).toMatchObject({ bpm: null, beatsPerBar: null });
+  });
+
+  it("stores null when a create leaves the tempo out (older clients)", async () => {
+    const repo = makeRepo(memoryKV());
+    const { bpm: _b, beatsPerBar: _p, ...old } = song();
+    const s = await repo.createSong(old as SongInput);
+    expect(s).toMatchObject({ bpm: null, beatsPerBar: null });
+  });
+
+  it.each([
+    [{ bpm: 29 }, /bpm/],
+    [{ bpm: 301 }, /bpm/],
+    [{ bpm: 120.5 }, /bpm/],
+    [{ bpm: "120" }, /bpm/],
+    [{ beatsPerBar: 1 }, /beatsPerBar/],
+    [{ beatsPerBar: 8 }, /beatsPerBar/],
+    [{ beatsPerBar: 3.5 }, /beatsPerBar/],
+  ])("refuses %o", async (bad, message) => {
+    const repo = makeRepo(memoryKV());
+    const s = await repo.createSong(song());
+    await expect(repo.updateSong(s.id, bad as Partial<SongInput>)).rejects.toThrow(message);
+    await expect(repo.createSong(song(bad as Partial<SongInput>))).rejects.toThrow(ValidationError);
+  });
+
+  it("accepts the limits", async () => {
+    const repo = makeRepo(memoryKV());
+    expect(await repo.createSong(song({ bpm: 30, beatsPerBar: 2 }))).toMatchObject({ bpm: 30, beatsPerBar: 2 });
+    expect(await repo.createSong(song({ bpm: 300, beatsPerBar: 7 }))).toMatchObject({ bpm: 300, beatsPerBar: 7 });
+  });
+
+  it("reads a song stored before tempo existed as null through get, list, update and import", async () => {
+    const kv = memoryKV();
+    const { bpm: _b, beatsPerBar: _p, ...old } = song();
+    await kv.setText("songs/old", JSON.stringify({ ...old, id: "old", updatedAt: "2026-01-01T00:00:00.000Z" }));
+    const repo = makeRepo(kv);
+    expect(await repo.getSong("old")).toMatchObject({ bpm: null, beatsPerBar: null });
+    expect((await repo.listSongs())[0]).toMatchObject({ bpm: null, beatsPerBar: null });
+    const [imported] = await repo.importSongs([{ title: old.title, artist: old.artist }]);
+    expect(imported).toMatchObject({ id: "old", bpm: null, beatsPerBar: null });
+    expect(await repo.updateSong("old", { capo: 1 })).toMatchObject({ bpm: null, beatsPerBar: null });
+  });
+
+  it("gives the conflict copy the same shape as a read", async () => {
+    const kv = memoryKV();
+    const { bpm: _b, beatsPerBar: _p, ...old } = song();
+    await kv.setText("songs/old", JSON.stringify({ ...old, id: "old", updatedAt: "2026-01-01T00:00:00.000Z" }));
+    const repo = makeRepo(kv);
+    const err = await repo.updateSong("old", { capo: 1, baseVersion: "stale" }).catch((e) => e);
+    expect(err).toBeInstanceOf(ConflictError);
+    expect(err.current).toMatchObject({ bpm: null, beatsPerBar: null });
+  });
+
+  it("gives playlist-imported songs no tempo rather than a made-up one", async () => {
+    const repo = makeRepo(memoryKV());
+    const [s] = await repo.importSongs([{ title: "New", artist: "Band" }]);
+    expect(s).toMatchObject({ bpm: null, beatsPerBar: null });
   });
 });

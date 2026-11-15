@@ -20,6 +20,31 @@ class FakeAudioContext {
   destination = {};
   state = "running";
   started: number[] = [];
+  /** Looped bars of clicks: when they start, how far into the bar, the bar length, and when they stop. */
+  loops: { loop: boolean; loopEnd: number; when?: number; offset?: number; stoppedAt?: number }[] = [];
+  createBuffer(_channels: number, length: number) {
+    const data = new Float32Array(length);
+    return { length, getChannelData: () => data };
+  }
+  createBufferSource() {
+    const node = {
+      loop: false,
+      loopEnd: 0,
+      when: undefined as number | undefined,
+      offset: undefined as number | undefined,
+      stoppedAt: undefined as number | undefined,
+      connect: (n: unknown) => n,
+      start: (when: number, offset: number) => {
+        node.when = when;
+        node.offset = offset;
+        this.loops.push(node);
+      },
+      stop: (at: number) => {
+        node.stoppedAt = at;
+      },
+    };
+    return node;
+  }
   /** What the fake microphone "hears". */
   input: Float32Array | null = null;
   constructor() {
@@ -201,16 +226,25 @@ describe("Tuner", () => {
     expect(fill().style.width).toBe("100%");
   });
 
-  it("never calls 2 cents sharp in tune", async () => {
+  it("never calls 4 cents sharp in tune", async () => {
     renderTools();
     const play = await startListening();
     for (let i = 0; i < 10; i++) {
-      await play(sine(110 * Math.pow(2, 2 / 1200)), 300);
+      await play(sine(110 * Math.pow(2, 4 / 1200)), 300);
       expect(cents()).not.toHaveTextContent("In tune");
       expect(cents()).not.toHaveTextContent("hold");
     }
-    expect(cents()).toHaveTextContent("+2 cents · tune down");
+    expect(cents()).toHaveTextContent("+4 cents · tune down");
     expect(lit()).toEqual(["▶ ♯"]);
+  });
+
+  it("calls 2 cents sharp in tune once held, showing the real cents while holding", async () => {
+    renderTools();
+    const play = await startListening();
+    await play(sine(110 * Math.pow(2, 2 / 1200)), 350);
+    expect(cents()).toHaveTextContent("+2 cents · hold…");
+    await play(sine(110 * Math.pow(2, 2 / 1200)), 1000);
+    expect(cents()).toHaveTextContent("In tune");
   });
 
   it("applies a new A4 at once, without restarting", async () => {
@@ -374,33 +408,79 @@ describe("Metronome", () => {
     now.mockRestore();
   });
 
-  it("starts and stops, booking accented clicks ahead on the audio clock", async () => {
+  const loopsOf = (ctx: FakeAudioContext) =>
+    ctx.loops.map((l) => ({
+      when: +l.when!.toFixed(4),
+      offset: +l.offset!.toFixed(4),
+      loopEnd: +l.loopEnd.toFixed(4),
+      stoppedAt: l.stoppedAt === undefined ? undefined : +l.stoppedAt.toFixed(4),
+    }));
+
+  it("plays one looped bar, which keeps going with no timers (screen off), and stops", async () => {
     vi.useFakeTimers();
     renderTools();
     fireEvent.click(screen.getByRole("button", { name: "3" }));
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     const ctx = FakeAudioContext.instances[0];
-    expect(ctx.started).toEqual([0.05]);
+    // 3 beats at 120 BPM: a 1.5 s bar, looped by the audio engine from 0.05 s.
+    expect(loopsOf(ctx)).toEqual([{ when: 0.05, offset: 0, loopEnd: 1.5, stoppedAt: undefined }]);
+    expect(ctx.loops[0].loop).toBe(true);
+    // The beat dots follow the audio clock.
     ctx.currentTime = 1.0;
     await act(async () => {
       vi.advanceTimersByTime(30);
     });
-    expect(ctx.started).toEqual([0.05, 0.55, 1.05]);
-    // The beat dots follow the booked beats.
-    await act(async () => {
-      vi.advanceTimersByTime(100);
-    });
     expect(document.querySelectorAll(".metro-dot")).toHaveLength(3);
-    expect(document.querySelector(".metro-dot.lit")).not.toBeNull();
+    expect(document.querySelectorAll(".metro-dot")[1]).toHaveClass("lit");
+    expect(ctx.loops).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    expect(ctx.loops[0].stoppedAt).toBeDefined();
     expect(ctx.suspend).toHaveBeenCalled();
-    ctx.currentTime = 5;
-    await act(async () => {
-      vi.advanceTimersByTime(500);
-    });
-    expect(ctx.started).toHaveLength(3);
     expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument();
+  });
+
+  it("changes tempo on the next beat, keeping its place in the bar", async () => {
+    vi.useFakeTimers();
+    renderTools();
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    const ctx = FakeAudioContext.instances[0];
+    ctx.currentTime = 0.6; // beat 2 (index 1) sounded at 0.55; the next beat is index 2 at 1.05
+    fireEvent.click(screen.getByRole("button", { name: "Faster" }));
+    const beat = 60 / 121;
+    expect(loopsOf(ctx)).toEqual([
+      { when: 0.05, offset: 0, loopEnd: 2, stoppedAt: 1.05 },
+      { when: 1.05, offset: +(2 * beat).toFixed(4), loopEnd: +(4 * beat).toFixed(4), stoppedAt: undefined },
+    ]);
+  });
+
+  it("starts a new bar on the next beat when beats per bar changes", async () => {
+    vi.useFakeTimers();
+    renderTools();
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    const ctx = FakeAudioContext.instances[0];
+    ctx.currentTime = 0.6;
+    fireEvent.click(screen.getByRole("button", { name: "3" }));
+    expect(loopsOf(ctx)).toEqual([
+      { when: 0.05, offset: 0, loopEnd: 2, stoppedAt: 1.05 },
+      { when: 1.05, offset: 0, loopEnd: 1.5, stoppedAt: undefined },
+    ]);
+  });
+
+  it("replaces a change that hasn't started yet instead of stacking them", async () => {
+    vi.useFakeTimers();
+    renderTools();
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    const ctx = FakeAudioContext.instances[0];
+    ctx.currentTime = 0.6;
+    fireEvent.click(screen.getByRole("button", { name: "Faster" }));
+    fireEvent.click(screen.getByRole("button", { name: "Faster" }));
+    const playingAt = (t: number) =>
+      ctx.loops.filter((l) => l.when! <= t && (l.stoppedAt === undefined || l.stoppedAt > t));
+    // Only one loop sounds at any moment, and from 1.05 it is the 122 BPM one.
+    expect(playingAt(0.8)).toHaveLength(1);
+    expect(playingAt(1.2)).toHaveLength(1);
+    expect(playingAt(1.2)[0].loopEnd).toBeCloseTo(4 * (60 / 122));
   });
 
   it("remembers tempo and beats per bar on this device", () => {

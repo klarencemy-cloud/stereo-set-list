@@ -50,7 +50,7 @@ describe("baseVersion and conflicts", () => {
 
 describe("mutations clear the song cache themselves", () => {
   const song = (id: string) => ({
-    id, title: id, artist: "", sourceUrl: null, originalKey: "A", bandKey: "A", capo: 0, content: "", updatedAt: "v1",
+    id, title: id, artist: "", sourceUrl: null, originalKey: "A", bandKey: "A", capo: 0, content: "", bpm: null, beatsPerBar: null, updatedAt: "v1",
   });
   const gig = (id: string) => ({ id, name: id, date: "2026-01-01", setlist: [], songIds: [] });
 
@@ -143,5 +143,25 @@ describe("mutations clear the song cache themselves", () => {
     expect(peekSong("s1")).toBeUndefined();
     await expect(api.updateGig("g1", { name: "N" }, "old")).rejects.toBeInstanceOf(ApiError);
     expect(await refetchedSetlists(fetch)).toEqual(["/api/gigs/g1"]);
+  });
+});
+
+describe("synced metronome calls", () => {
+  it("reads the server clock and the session, never from a cache", async () => {
+    const fetch = stubFetch();
+    await api.getTime();
+    await api.getMetronome("s 1");
+    expect(fetch.mock.calls.map((c) => [c[0], c[1]?.cache])).toEqual([
+      ["/api/time", "no-store"],
+      ["/api/metronome/s%201", "no-store"],
+    ]);
+  });
+
+  it("sends a change as a PUT", async () => {
+    const fetch = stubFetch();
+    await api.putMetronome("s1", { bpm: 100 });
+    expect(fetch.mock.calls[0][0]).toBe("/api/metronome/s1");
+    expect(fetch.mock.calls[0][1]!.method).toBe("PUT");
+    expect(JSON.parse(fetch.mock.calls[0][1]!.body as string)).toEqual({ bpm: 100 });
   });
 });

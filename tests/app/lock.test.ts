@@ -22,20 +22,25 @@ function locked(): LockState {
 }
 
 describe("nextLock", () => {
-  it("is off with no reading, or more than 1 cent out", () => {
+  it("is off with no reading, or more than 5 cents out", () => {
     expect(nextLock(LOCK_OFF, null, 0).phase).toBe("off");
-    expect(nextLock(LOCK_OFF, { cents: 3, midi: 45 }, 0)).toMatchObject({ phase: "off", progress: 0 });
-    expect(nextLock(LOCK_OFF, { cents: -1.01, midi: 45 }, 0).phase).toBe("off");
+    expect(nextLock(LOCK_OFF, { cents: 8, midi: 45 }, 0)).toMatchObject({ phase: "off", progress: 0 });
+    expect(nextLock(LOCK_OFF, { cents: -5.01, midi: 45 }, 0).phase).toBe("off");
   });
 
-  it("is near within 1 cent but not under 0.5", () => {
-    expect(nextLock(LOCK_OFF, { cents: 1, midi: 45 }, 0)).toMatchObject({ phase: "near", progress: 0 });
-    expect(nextLock(LOCK_OFF, { cents: -0.8, midi: 45 }, 0).phase).toBe("near");
-    expect(nextLock(LOCK_OFF, { cents: 0.5, midi: 45 }, 0).phase).toBe("near");
+  it("is near within 5 cents but past 3", () => {
+    expect(nextLock(LOCK_OFF, { cents: 5, midi: 45 }, 0)).toMatchObject({ phase: "near", progress: 0 });
+    expect(nextLock(LOCK_OFF, { cents: -4, midi: 45 }, 0).phase).toBe("near");
+    expect(nextLock(LOCK_OFF, { cents: 3.01, midi: 45 }, 0).phase).toBe("near");
   });
 
-  it("locks only after 1000 ms continuously under 0.5 cents, with progress going 0 to 1", () => {
-    const states = run(Array(22).fill(0.3)); // t = 0 .. 1050
+  it("holds within 3 cents either way, inclusive", () => {
+    expect(nextLock(LOCK_OFF, { cents: 3, midi: 45 }, 0).phase).toBe("holding");
+    expect(nextLock(LOCK_OFF, { cents: -3, midi: 45 }, 0).phase).toBe("holding");
+  });
+
+  it("locks only after 1000 ms continuously within 3 cents, with progress going 0 to 1", () => {
+    const states = run(Array(22).fill(2.5)); // t = 0 .. 1050
     expect(states[0]).toMatchObject({ phase: "holding", progress: 0 });
     expect(states[10]).toMatchObject({ phase: "holding", progress: 0.5 }); // t = 500
     expect(states[19].phase).toBe("holding"); // t = 950
@@ -45,23 +50,23 @@ describe("nextLock", () => {
     expect(LOCK_HOLD_MS).toBe(1000);
   });
 
-  it("starts the hold again if the pitch leaves the 0.5 band before 1000 ms", () => {
-    // Under 0.5 from 0 to 550 ms, 0.8 at 600 ms, then back under 0.5.
-    const states = run([...Array(12).fill(0.2), 0.8, ...Array(21).fill(0.2)]);
+  it("starts the hold again if the pitch leaves the 3-cent band before 1000 ms", () => {
+    // Within 3 from 0 to 550 ms, 4 at 600 ms, then back within 3.
+    const states = run([...Array(12).fill(-2), 4, ...Array(21).fill(-2)]);
     expect(states[12]).toMatchObject({ phase: "near", progress: 0 });
     expect(states[13]).toMatchObject({ phase: "holding", progress: 0 }); // t = 650: from scratch
     expect(states[13 + 19].phase).toBe("holding"); // t = 1600: only 950 ms of the new hold
     expect(states[13 + 20].phase).toBe("locked"); // t = 1650
   });
 
-  it("stays locked up to 1.5 cents and unlocks past it", () => {
-    const states = run([1.2, -1.4, 1.5, 0.9, 1.6], locked(), 2000);
+  it("stays locked up to 4 cents and unlocks past it", () => {
+    const states = run([3.5, -3.8, 4, 2, 4.1], locked(), 2000);
     expect(states.slice(0, 4).map((s) => s.phase)).toEqual(["locked", "locked", "locked", "locked"]);
-    expect(states[4]).toMatchObject({ phase: "off", progress: 0 });
+    expect(states[4]).toMatchObject({ phase: "near", progress: 0 });
   });
 
   it("after unlocking, needs a fresh 1000 ms hold", () => {
-    const states = run([1.6, 0.1, 0.1], locked(), 2000);
+    const states = run([6, 0.1, 0.1], locked(), 2000);
     expect(states.map((s) => s.phase)).toEqual(["off", "holding", "holding"]);
     expect(states[1].progress).toBe(0);
   });

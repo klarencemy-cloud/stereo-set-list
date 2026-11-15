@@ -1,26 +1,43 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createAudioContext, preferPlaybackAudio } from "../audio";
-import { BeatScheduler } from "./schedule";
+import { createAudioContext, preferPlaybackAudio, startClickLoop, type ClickLoop } from "../audio";
+import { clampBpm } from "./schedule";
 
-/** How often the scheduler wakes up. */
+/** How often the flash checks the audio clock. The clicks don't depend on it. */
 const TICK_MS = 25;
-/** How far ahead clicks are booked on the audio clock. Covers a late timer without the clicks drifting. */
-const LOOK_AHEAD_S = 0.12;
+/** A change is put on the first beat at least this far ahead, so the audio engine gets it in time. */
+const CHANGE_MARGIN_S = 0.03;
 
-function click(ctx: AudioContext, time: number, accent: boolean) {
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  osc.frequency.value = accent ? 1600 : 1000;
-  gain.gain.setValueAtTime(accent ? 1 : 0.6, time);
-  gain.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
-  osc.connect(gain).connect(ctx.destination);
-  osc.start(time);
-  osc.stop(time + 0.06);
+/** A looped bar playing (or booked to start). */
+interface Run {
+  loop: ClickLoop;
+  /** Audio time it starts. */
+  when: number;
+  /** Audio time of its bar 0, so its beats are origin + k·beatS. */
+  origin: number;
+  beatS: number;
+  beatsPerBar: number;
+  /** Audio time it is set to stop, if any. */
+  stopAt?: number;
+}
+
+function book(ctx: AudioContext, bpm: number, beatsPerBar: number, at: number, beatInBar: number): Run {
+  const beatS = 60 / clampBpm(bpm);
+  const offset = beatInBar * beatS;
+  return { loop: startClickLoop(ctx, clampBpm(bpm), beatsPerBar, at, offset), when: at, origin: at - offset, beatS, beatsPerBar };
+}
+
+/** Stops a run at `at`, unless it is already set to stop sooner. */
+function stopBy(r: Run, at: number) {
+  const t = r.stopAt === undefined ? at : Math.min(r.stopAt, at);
+  r.loop.stop(t);
+  r.stopAt = t;
 }
 
 /**
- * A look-ahead metronome: a short timer books clicks a little ahead on AudioContext.currentTime, so the clicks
- * keep perfect time even when the timer itself is late. The visual beat follows the same booked times.
+ * A metronome on this phone. The clicks are one bar the audio engine loops by itself, so they keep perfect time
+ * and keep going when the screen is off and the page's timers stop. A tempo change starts on the next beat, in
+ * the same place in the bar; a beats-per-bar change starts a new, accented bar on the next beat. The visual beat
+ * follows the audio clock.
  */
 export function useMetronome(bpm: number, beatsPerBar: number) {
   const [running, setRunning] = useState(false);
@@ -28,25 +45,48 @@ export function useMetronome(bpm: number, beatsPerBar: number) {
   const [beat, setBeat] = useState<{ index: number; n: number } | null>(null);
   const [error, setError] = useState("");
   const ctxRef = useRef<AudioContext | null>(null);
-  const scheduler = useRef<BeatScheduler | null>(null);
+  /** Loops booked, oldest first. */
+  const runs = useRef<Run[]>([]);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const flashes = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const shown = useRef({ key: "", count: 0 });
   const settings = useRef({ bpm, beatsPerBar });
   settings.current = { bpm, beatsPerBar };
 
+  /** Moves to the current settings on the next beat. `newBar`: that beat starts a new bar. */
+  const change = useCallback((newBar: boolean) => {
+    const ctx = ctxRef.current;
+    const last = runs.current[runs.current.length - 1];
+    if (!ctx || !last) return;
+    const t = ctx.currentTime + CHANGE_MARGIN_S;
+    let at: number;
+    let beatInBar: number;
+    if (last.when > t) {
+      // The last change hasn't started yet: replace it, from the same beat.
+      at = last.when;
+      beatInBar = Math.round((last.when - last.origin) / last.beatS) % last.beatsPerBar;
+    } else {
+      const k = Math.ceil((t - last.origin) / last.beatS - 1e-9);
+      at = last.origin + k * last.beatS;
+      beatInBar = k % last.beatsPerBar;
+    }
+    const { bpm: nextBpm, beatsPerBar: nextBeats } = settings.current;
+    if (newBar || beatInBar >= nextBeats) beatInBar = 0;
+    for (const r of runs.current) stopBy(r, at);
+    runs.current.push(book(ctx, nextBpm, nextBeats, at, beatInBar));
+  }, []);
+
   useEffect(() => {
-    scheduler.current?.setBpm(bpm);
-  }, [bpm]);
+    change(false);
+  }, [bpm, change]);
   useEffect(() => {
-    scheduler.current?.setBeatsPerBar(beatsPerBar);
-  }, [beatsPerBar]);
+    change(true);
+  }, [beatsPerBar, change]);
 
   const stop = useCallback(() => {
     if (timer.current) clearInterval(timer.current);
     timer.current = null;
-    flashes.current.forEach(clearTimeout);
-    flashes.current = [];
-    scheduler.current = null;
+    for (const r of runs.current) r.loop.stop();
+    runs.current = [];
     ctxRef.current?.suspend().catch(() => {});
     setRunning(false);
     setBeat(null);
@@ -73,20 +113,17 @@ export function useMetronome(bpm: number, beatsPerBar: number) {
     }
     ctxRef.current = ctx;
     ctx.resume().catch(() => {});
-    const s = new BeatScheduler(ctx.currentTime + 0.05, settings.current.bpm, settings.current.beatsPerBar);
-    scheduler.current = s;
-    let n = 0;
+    runs.current = [book(ctx, settings.current.bpm, settings.current.beatsPerBar, ctx.currentTime + 0.05, 0)];
     const tick = () => {
-      for (const b of s.due(ctx.currentTime + LOOK_AHEAD_S)) {
-        click(ctx, b.time, b.accent);
-        const count = n++;
-        const delay = Math.max(0, (b.time - ctx.currentTime) * 1000);
-        const id = setTimeout(() => {
-          flashes.current = flashes.current.filter((x) => x !== id);
-          setBeat({ index: b.beat, n: count });
-        }, delay);
-        flashes.current.push(id);
-      }
+      const now = ctx.currentTime;
+      runs.current = runs.current.filter((r) => r.stopAt === undefined || r.stopAt > now);
+      const playing = [...runs.current].reverse().find((r) => r.when <= now);
+      if (!playing) return;
+      const n = Math.floor((now - playing.origin) / playing.beatS);
+      const key = `${playing.when}:${n}`;
+      if (key === shown.current.key) return;
+      shown.current = { key, count: shown.current.count + 1 };
+      setBeat({ index: n % playing.beatsPerBar, n: shown.current.count });
     };
     tick();
     timer.current = setInterval(tick, TICK_MS);

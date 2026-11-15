@@ -13,7 +13,7 @@ import type { PlaylistTrack } from "../../src/shared/playlist";
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 const summary = (id: string, title: string, artist: string) => ({
-  id, title, artist, sourceUrl: null, originalKey: "", bandKey: "", capo: 0, updatedAt: "x",
+  id, title, artist, sourceUrl: null, originalKey: "", bandKey: "", capo: 0, bpm: null, beatsPerBar: null, updatedAt: "x",
 });
 const songs = [summary("s1", "Wonderwall", "Oasis"), summary("s2", "Creep", "Radiohead")];
 const LINK = "https://open.spotify.com/playlist/abc";

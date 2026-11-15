@@ -4,7 +4,10 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 vi.mock("../../src/app/api", async () => {
   const actual = await vi.importActual<typeof import("../../src/app/api")>("../../src/app/api");
-  return { ...actual, api: { getSong: vi.fn(), updateSong: vi.fn(), getGig: vi.fn(), listSongs: vi.fn(), getTrack: vi.fn(), getTrackPart: vi.fn() } };
+  return { ...actual, api: {
+      getSong: vi.fn(), updateSong: vi.fn(), getGig: vi.fn(), listSongs: vi.fn(), getTrack: vi.fn(), getTrackPart: vi.fn(),
+      getMetronome: vi.fn(), putMetronome: vi.fn(), getTime: vi.fn(),
+    } };
 });
 
 import { api, ApiError } from "../../src/app/api";
@@ -43,6 +46,7 @@ beforeEach(() => {
   clearSongCache();
   Object.values(mocked).forEach((f) => f.mockReset());
   mocked.getSong.mockResolvedValue({ ...song });
+  mocked.getMetronome.mockResolvedValue(null);
 });
 
 describe("SongPage", () => {
@@ -574,5 +578,52 @@ describe("SongPage print lyrics", () => {
     await waitFor(() => expect(print).toHaveBeenCalled());
     expect(printed()).toHaveTextContent("No lyrics yet");
     print.mockRestore();
+  });
+});
+
+describe("SongPage metronome pill", () => {
+  const pill = () => screen.getByRole("button", { name: /^Metronome/ });
+
+  it("says Metronome with no number when the song has no tempo", async () => {
+    renderPage();
+    await screen.findByText("[Intro]");
+    expect(pill()).toHaveTextContent(/^Metronome$/);
+  });
+
+  it("shows the song's tempo", async () => {
+    mocked.getSong.mockResolvedValue({ ...song, bpm: 96, beatsPerBar: 3 });
+    renderPage();
+    await screen.findByText("[Intro]");
+    expect(pill()).toHaveTextContent("Metronome · 96");
+  });
+
+  it("shows a live dot when someone is playing it", async () => {
+    mocked.getMetronome.mockResolvedValue({ bpm: 120, beatsPerBar: 4, startAt: 1, running: true, updatedAt: "t" });
+    renderPage();
+    await screen.findByText("[Intro]");
+    await waitFor(() => expect(pill().querySelector(".live-dot")).not.toBeNull());
+    expect(pill()).toHaveAccessibleName("Metronome (playing)");
+  });
+
+  it("opens and closes the metronome panel", async () => {
+    renderPage();
+    await screen.findByText("[Intro]");
+    expect(screen.queryByRole("region", { name: "Metronome" })).toBeNull();
+    fireEvent.click(pill());
+    expect(pill()).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByRole("button", { name: "Start for everyone" })).toBeInTheDocument();
+    fireEvent.click(pill());
+    expect(screen.queryByRole("region", { name: "Metronome" })).toBeNull();
+  });
+
+  it("shows a tempo saved from the panel at once", async () => {
+    mocked.getMetronome.mockResolvedValue({ bpm: 100, beatsPerBar: 4, startAt: 1, running: true, updatedAt: "t" });
+    mocked.updateSong.mockResolvedValue({ ...song, bpm: 100, beatsPerBar: 4, updatedAt: "y" });
+    renderPage();
+    await screen.findByText("[Intro]");
+    fireEvent.click(pill());
+    fireEvent.click(await screen.findByRole("button", { name: "Save as song tempo" }));
+    await waitFor(() => expect(pill()).toHaveTextContent("Metronome · 100"));
+    expect(peekSong("s1")?.bpm).toBe(100);
   });
 });

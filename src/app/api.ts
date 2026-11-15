@@ -1,4 +1,5 @@
 import type { PlaylistResult, PlaylistTrack } from "../shared/playlist";
+import type { MetroChange, MetroSession } from "../shared/metronome";
 import type { Gig, GigInput, ImportedSong, Song, SongInput, SongSummary, Track } from "../shared/types";
 
 export class ApiError extends Error {
@@ -138,6 +139,15 @@ export const api = {
     changing({ songs: "all", setlists: "all" }, async () => {
       await request(`/api/tracks/${id}`, { method: "DELETE" });
     }),
+
+  /** The server's clock (ms), for the synced metronome. */
+  getTime: () => json<{ now: number }>("/api/time", { cache: "no-store" }),
+  /** The song's shared metronome, or null when nobody has started one. */
+  getMetronome: (songId: string) =>
+    json<MetroSession | null>(`/api/metronome/${encodeURIComponent(songId)}`, { cache: "no-store" }),
+  /** Starts, changes or stops the song's metronome for everyone; the server picks when it takes effect. */
+  putMetronome: (songId: string, change: MetroChange) =>
+    json<MetroSession | null>(`/api/metronome/${encodeURIComponent(songId)}`, send("PUT", change)),
 
   importSong: (url: string) => json<ImportedSong>("/api/import", send("POST", { url })),
   readPlaylist: (url: string) => json<PlaylistResult>("/api/playlist", send("POST", { url })),

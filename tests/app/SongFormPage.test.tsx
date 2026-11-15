@@ -486,3 +486,61 @@ describe("SongFormPage import while editing", () => {
     expect((screen.getByLabelText("Chords") as HTMLTextAreaElement).value).toContain("G");
   });
 });
+
+describe("SongFormPage tempo", () => {
+  it("saves an empty tempo as null on a new song", async () => {
+    mocked.createSong.mockResolvedValue({ id: "s2" });
+    renderForm();
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Hello" } });
+    expect(screen.getByLabelText("Tempo (BPM)")).toHaveValue(null);
+    expect(screen.getByLabelText("Beats per bar")).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocked.createSong).toHaveBeenCalledTimes(1));
+    expect(mocked.createSong.mock.calls[0][0]).toMatchObject({ bpm: null, beatsPerBar: null });
+  });
+
+  it("saves a typed tempo and beats per bar", async () => {
+    mocked.createSong.mockResolvedValue({ id: "s2" });
+    renderForm();
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Hello" } });
+    fireEvent.change(screen.getByLabelText("Tempo (BPM)"), { target: { value: "96" } });
+    fireEvent.change(screen.getByLabelText("Beats per bar"), { target: { value: "3" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocked.createSong).toHaveBeenCalledTimes(1));
+    expect(mocked.createSong.mock.calls[0][0]).toMatchObject({ bpm: 96, beatsPerBar: 3 });
+  });
+
+  it("shows a stored tempo and sends only what changed", async () => {
+    mocked.getSong.mockResolvedValue({ ...stored, bpm: 120, beatsPerBar: 4 });
+    mocked.updateSong.mockResolvedValue({ ...stored, id: "s1" });
+    renderEdit();
+    await waitFor(() => expect(screen.getByLabelText("Tempo (BPM)")).toHaveValue(120));
+    expect(screen.getByLabelText("Beats per bar")).toHaveValue("4");
+    fireEvent.change(screen.getByLabelText("Tempo (BPM)"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(1));
+    expect(mocked.updateSong.mock.calls[0]).toEqual(["s1", { bpm: null }, "x"]);
+  });
+
+  it("shows an older song with no tempo fields as blank, and doesn't send them", async () => {
+    // `stored` has no bpm or beatsPerBar at all, like a copy saved before they existed.
+    mocked.getSong.mockResolvedValue({ ...stored });
+    mocked.updateSong.mockResolvedValue({ ...stored, id: "s1" });
+    renderEdit();
+    await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("Stored"));
+    expect(screen.getByLabelText("Tempo (BPM)")).toHaveValue(null);
+    expect(screen.getByLabelText("Beats per bar")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("Beats per bar"), { target: { value: "6" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(1));
+    expect(mocked.updateSong.mock.calls[0]).toEqual(["s1", { beatsPerBar: 6 }, "x"]);
+  });
+
+  it("won't save a tempo out of range", async () => {
+    renderForm();
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Hello" } });
+    fireEvent.change(screen.getByLabelText("Tempo (BPM)"), { target: { value: "500" } });
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByText("Tempo must be a whole number from 30 to 300.")).toBeInTheDocument();
+  });
+});

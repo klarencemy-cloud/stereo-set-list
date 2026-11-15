@@ -61,6 +61,10 @@ describe("routeFor", () => {
     ["GET", "/api/tracks", false, "pass"],
     ["GET", "/api/tracks/t1/parts/0", false, "pass"],
     ["GET", "/api/import", false, "pass"],
+    // The synced metronome needs live answers: never from the saved copy.
+    ["GET", "/api/time", false, "pass"],
+    ["GET", "/api/metronome/s1", false, "pass"],
+    ["PUT", "/api/metronome/s1", false, "pass"],
     ["GET", "/api/songs/s1/extra", false, "pass"],
     ["GET", "/assets/index-abc.js", false, "asset"],
     ["GET", "/songs/s1", true, "navigate"],

@@ -1,0 +1,412 @@
+import { useEffect, useRef, useState } from "react";
+import { api, ApiError, conflictOf } from "../api";
+import { audioLink, click, createAudioContext, preferPlaybackAudio } from "../audio";
+import { BEATS_PER_BAR, MAX_BPM, MIN_BPM, clampBpm, type MetroSession } from "../../shared/metronome";
+import { songTempo } from "../../shared/song";
+import type { Song } from "../../shared/types";
+import { bpmFromTaps } from "../metronome/schedule";
+import { MAX_NUDGE_MS, NUDGE_STEP_MS, nudgeFromTaps } from "../metronome/clock";
+import { useMetronome } from "../metronome/useMetronome";
+import { useSyncedMetronome } from "../metronome/useSyncedMetronome";
+import BeatDisplay from "./BeatDisplay";
+import ConflictNotice from "./ConflictNotice";
+import { readSavedMetronome, saveMetronome } from "./Metronome";
+
+/** This phone's calibration in ms (plus = plays earlier). */
+export const NUDGE_KEY = "stereo-set:metronome-nudge";
+/** A tempo dragged or tapped while playing is sent once it settles, not on every step. */
+const SEND_DELAY_MS = 400;
+const OFFLINE = "Can't sync: playing on this phone only";
+
+function readNudge(): number {
+  try {
+    const v = Number(localStorage.getItem(NUDGE_KEY));
+    if (Number.isFinite(v) && Math.abs(v) <= MAX_NUDGE_MS) return Math.round(v / NUDGE_STEP_MS) * NUDGE_STEP_MS;
+  } catch {
+    // Storage blocked: no nudge.
+  }
+  return 0;
+}
+
+const signed = (ms: number) => (ms > 0 ? `+${ms}` : `${ms}`);
+
+interface Tempo {
+  bpm: number;
+  beatsPerBar: number;
+}
+
+/** −/+, slider, tap tempo and beats per bar. */
+function TempoControls({ tempo, onChange }: { tempo: Tempo; onChange: (next: Partial<Tempo>) => void }) {
+  const taps = useRef<number[]>([]);
+  const { bpm, beatsPerBar } = tempo;
+  function tap() {
+    taps.current = [...taps.current, performance.now()].slice(-8);
+    const t = bpmFromTaps(taps.current);
+    if (t !== null) onChange({ bpm: t });
+  }
+  return (
+    <>
+      <div className="metro-tempo">
+        <button type="button" className="btn" aria-label="Slower" disabled={bpm <= MIN_BPM} onClick={() => onChange({ bpm: bpm - 1 })}>
+          {"−"}
+        </button>
+        <input
+          className="metro-slider"
+          type="range"
+          min={MIN_BPM}
+          max={MAX_BPM}
+          step={1}
+          value={bpm}
+          aria-label="Tempo"
+          aria-valuetext={`${bpm} BPM`}
+          onChange={(e) => onChange({ bpm: Number(e.target.value) })}
+        />
+        <button type="button" className="btn" aria-label="Faster" disabled={bpm >= MAX_BPM} onClick={() => onChange({ bpm: bpm + 1 })}>
+          +
+        </button>
+      </div>
+      <div className="metro-row">
+        <div className="seg" role="group" aria-label="Beats per bar">
+          {BEATS_PER_BAR.map((n) => (
+            <button
+              key={n}
+              type="button"
+              className={n === beatsPerBar ? "active" : ""}
+              aria-pressed={n === beatsPerBar}
+              onClick={() => onChange({ beatsPerBar: n })}
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+        <button type="button" className="btn" onClick={tap}>Tap tempo</button>
+      </div>
+    </>
+  );
+}
+
+/** v1's metronome, on this phone only: used when the session can't be reached or the clock can't be synced. */
+function LocalMetronome({ tempo, onChange, onRetry }: { tempo: Tempo; onChange: (t: Partial<Tempo>) => void; onRetry: () => void }) {
+  const metro = useMetronome(tempo.bpm, tempo.beatsPerBar);
+  return (
+    <>
+      <p className="metro-status warn" role="status">{OFFLINE}</p>
+      <BeatDisplay bpm={tempo.bpm} beatsPerBar={tempo.beatsPerBar} beat={metro.beat} />
+      <TempoControls tempo={tempo} onChange={onChange} />
+      {metro.error && <p role="alert" className="error">{metro.error}</p>}
+      <p className="actions">
+        {metro.running ? (
+          <button type="button" className="btn" onClick={metro.stop}>Stop</button>
+        ) : (
+          <button type="button" className="btn primary" onClick={metro.start}>Start on this phone</button>
+        )}
+        <button type="button" className="btn" onClick={() => { metro.stop(); onRetry(); }}>Try syncing again</button>
+      </p>
+    </>
+  );
+}
+
+const TAP_ALONG_CLICKS = 12;
+const TAP_ALONG_BPM = 90;
+
+/** The nudge slider and the tap-along that measures it. */
+function Calibrate({ nudge, onNudge }: { nudge: number; onNudge: (ms: number) => void }) {
+  const [tapping, setTapping] = useState(false);
+  const [message, setMessage] = useState("");
+  const ctxRef = useRef<AudioContext | null>(null);
+  const clicks = useRef<number[]>([]);
+  const taps = useRef<number[]>([]);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(
+    () => () => {
+      clearTimeout(timer.current);
+      ctxRef.current?.close().catch(() => {});
+    },
+    [],
+  );
+
+  function begin() {
+    setMessage("");
+    preferPlaybackAudio();
+    const ctx = ctxRef.current ?? createAudioContext();
+    if (!ctx) {
+      setMessage("This browser can't play sound.");
+      return;
+    }
+    ctxRef.current = ctx;
+    ctx.resume().catch(() => {});
+    const link = audioLink(ctx);
+    const first = ctx.currentTime + 1;
+    const gap = 60 / TAP_ALONG_BPM;
+    clicks.current = [];
+    taps.current = [];
+    for (let i = 0; i < TAP_ALONG_CLICKS; i++) {
+      const at = first + i * gap;
+      click(ctx, at, i % 4 === 0);
+      // When this click is heard, on performance.now(): the clock the taps are timed on.
+      clicks.current.push(link.perfMs + (at - link.audioS) * 1000);
+    }
+    setTapping(true);
+    const doneIn = (first + TAP_ALONG_CLICKS * gap - ctx.currentTime) * 1000 + 500;
+    timer.current = setTimeout(finish, doneIn);
+  }
+
+  function finish() {
+    setTapping(false);
+    const measured = nudgeFromTaps(clicks.current, taps.current);
+    if (measured === null) {
+      setMessage("Couldn't measure, try again");
+      return;
+    }
+    onNudge(measured);
+    setMessage(`Measured ${signed(measured)} ms, saved`);
+  }
+
+  const tap = () => taps.current.push(performance.now());
+
+  return (
+    <div className="metro-calibrate">
+      <label className="field">
+        Nudge
+        <input
+          className="metro-slider"
+          type="range"
+          min={-MAX_NUDGE_MS}
+          max={MAX_NUDGE_MS}
+          step={NUDGE_STEP_MS}
+          value={nudge}
+          aria-label="Nudge"
+          aria-valuetext={`${signed(nudge)} ms`}
+          onChange={(e) => onNudge(Number(e.target.value))}
+        />
+      </label>
+      <p className="muted">
+        <strong>{nudge === 0 ? "0 ms" : `${signed(nudge)} ms (plays ${nudge > 0 ? "earlier" : "later"})`}</strong>
+        {" · "}Move it right if this phone sounds late next to the others.
+      </p>
+      {tapping ? (
+        <button
+          type="button"
+          className="btn primary metro-tap"
+          onPointerDown={tap}
+          onKeyDown={(e) => {
+            if (e.key === " " || e.key === "Enter") {
+              e.preventDefault();
+              tap();
+            }
+          }}
+        >
+          Tap
+        </button>
+      ) : (
+        <button type="button" className="btn" onClick={begin}>Tap along</button>
+      )}
+      <p className="muted tool-note">
+        Tap along plays 12 clicks on this phone. Tap the big button on each click you hear; the first few don't count.
+      </p>
+      {message && <p role="status">{message}</p>}
+    </div>
+  );
+}
+
+interface Props {
+  song: Song;
+  /** A saved song (Save as song tempo), or the stored copy after a conflict's Reload. */
+  onSongChange: (song: Song) => void;
+  /** The session whenever it is checked, for the pill's live dot. */
+  onSession?: (session: MetroSession | null) => void;
+}
+
+/** The song's shared metronome: anyone can start, change or stop it, and every joined phone clicks in time. */
+export default function SongMetronome({ song, onSongChange, onSession }: Props) {
+  const [nudge, setNudgeState] = useState(readNudge);
+  const m = useSyncedMetronome(song.id, nudge);
+  const songT = songTempo(song);
+  const [tempo, setTempo] = useState<Tempo>(() => {
+    const saved = readSavedMetronome();
+    return { bpm: songT.bpm ?? saved.bpm, beatsPerBar: songT.beatsPerBar ?? saved.beatsPerBar };
+  });
+  /** A tempo being changed while playing, until it is sent. */
+  const [pendingBpm, setPendingBpm] = useState<number | null>(null);
+  const sendTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const [localOnly, setLocalOnly] = useState(false);
+  const [calibrating, setCalibrating] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [conflict, setConflict] = useState<Song | null>(null);
+
+  const { session } = m;
+  const running = !!session?.running;
+
+  useEffect(() => {
+    if (session !== undefined) onSession?.(session);
+  }, [session, onSession]);
+  useEffect(() => () => clearTimeout(sendTimer.current), []);
+
+  // When it stops, the controls keep the tempo it was playing at: that is this phone's last-used tempo now.
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && session && !session.running) {
+      setTempo({ bpm: session.bpm, beatsPerBar: session.beatsPerBar });
+    }
+    wasRunning.current = !!session?.running;
+  }, [session]);
+
+  // The clock can't be synced: play on this phone instead.
+  const { joined, leave } = m;
+  useEffect(() => {
+    if (joined && m.clock.status === "failed") {
+      leave();
+      setLocalOnly(true);
+    }
+  }, [joined, m.clock.status, leave]);
+
+  function setNudge(ms: number) {
+    setNudgeState(ms);
+    try {
+      localStorage.setItem(NUDGE_KEY, String(ms));
+    } catch {
+      // Not saved; still applies now.
+    }
+  }
+
+  function changeIdle(next: Partial<Tempo>) {
+    setTempo((t) => ({ ...t, ...next, bpm: clampBpm(next.bpm ?? t.bpm) }));
+  }
+
+  function changeRunning(next: Partial<Tempo>) {
+    if (next.beatsPerBar !== undefined) m.change({ beatsPerBar: next.beatsPerBar });
+    if (next.bpm !== undefined) {
+      const bpm = clampBpm(next.bpm);
+      setPendingBpm(bpm);
+      clearTimeout(sendTimer.current);
+      sendTimer.current = setTimeout(async () => {
+        await m.change({ bpm });
+        setPendingBpm((p) => (p === bpm ? null : p));
+      }, SEND_DELAY_MS);
+    }
+  }
+
+  function startForEveryone() {
+    saveMetronome(tempo);
+    m.start(tempo.bpm, tempo.beatsPerBar);
+  }
+
+  async function saveTempo(s: Tempo) {
+    setSaving(true);
+    setSaveError("");
+    setConflict(null);
+    try {
+      onSongChange(await api.updateSong(song.id, { bpm: s.bpm, beatsPerBar: s.beatsPerBar }, song.updatedAt));
+    } catch (e) {
+      setConflict(conflictOf<Song>(e));
+      setSaveError(e instanceof ApiError ? e.message : "Could not save the tempo.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const offline = localOnly || (session === undefined && !m.reachable);
+  let body;
+  if (offline) {
+    body = (
+      <LocalMetronome
+        tempo={tempo}
+        onChange={changeIdle}
+        onRetry={() => setLocalOnly(false)}
+      />
+    );
+  } else if (session === undefined) {
+    body = <p className="muted">Checking whether it's playing...</p>;
+  } else if (running && !m.joined) {
+    body = (
+      <>
+        <p className="metro-playing">{`Playing at ${session!.bpm} BPM`}</p>
+        <p className="actions">
+          <button type="button" className="btn primary" onClick={m.join}>Join</button>
+          <button type="button" className="btn" onClick={m.stopAll}>Stop for everyone</button>
+        </p>
+      </>
+    );
+  } else if (running) {
+    const shown = { bpm: pendingBpm ?? session!.bpm, beatsPerBar: session!.beatsPerBar };
+    body = (
+      <>
+        <BeatDisplay bpm={shown.bpm} beatsPerBar={shown.beatsPerBar} beat={m.beat} />
+        <TempoControls tempo={shown} onChange={changeRunning} />
+        <p className="muted tool-note">A change starts on the next bar for everyone.</p>
+        <p className="actions">
+          <button type="button" className="btn" onClick={m.leave}>Leave</button>
+          <button type="button" className="btn" onClick={m.stopAll}>Stop for everyone</button>
+        </p>
+      </>
+    );
+  } else {
+    body = (
+      <>
+        <BeatDisplay bpm={tempo.bpm} beatsPerBar={tempo.beatsPerBar} beat={null} />
+        <TempoControls tempo={tempo} onChange={changeIdle} />
+        <p className="actions">
+          <button type="button" className="btn primary" onClick={startForEveryone}>Start for everyone</button>
+          {m.joined && <button type="button" className="btn" onClick={m.leave}>Leave</button>}
+        </p>
+        {m.joined && <p className="muted tool-note">You'll hear it here when someone starts it.</p>}
+      </>
+    );
+  }
+
+  let status = "";
+  if (!offline && m.joined) {
+    if (m.clock.status === "synced") status = `Synced ±${Math.max(1, Math.round(m.clock.rttMs / 2))} ms`;
+    else if (m.clock.status === "syncing") status = "Syncing...";
+  }
+  // Save as song tempo saves what is on screen: the shared tempo while it plays, else the controls'.
+  // Only once it has been played: before that the controls' starting value is nobody's choice.
+  const onScreen: Tempo | null = offline || !session ? null : running ? session : tempo;
+  const differs = onScreen && (onScreen.bpm !== songT.bpm || onScreen.beatsPerBar !== songT.beatsPerBar);
+
+  return (
+    <section className="tool song-metronome" aria-label="Metronome">
+      {status && <p className="metro-status" role="status">{status}</p>}
+      {m.noSound && m.joined && <p className="muted">No sound on this phone: follow the flash.</p>}
+      {!offline && session !== undefined && !m.reachable && (
+        <p className="muted">Can't reach the server: changes from others won't show until it's back.</p>
+      )}
+      {body}
+      {m.error && <p role="alert" className="error">{m.error}</p>}
+      {differs && (
+        <p className="actions">
+          <button type="button" className="btn" disabled={saving} onClick={() => saveTempo(onScreen!)}>
+            Save as song tempo
+          </button>
+        </p>
+      )}
+      {saveError && conflict ? (
+        <ConflictNotice
+          message={saveError}
+          onReload={() => {
+            onSongChange(conflict);
+            setConflict(null);
+            setSaveError("");
+          }}
+        />
+      ) : (
+        saveError && <p role="alert" className="error">{saveError}</p>
+      )}
+      <button
+        type="button"
+        className="metro-disclose"
+        aria-expanded={calibrating}
+        onClick={() => setCalibrating((v) => !v)}
+      >
+        Calibrate this phone
+      </button>
+      {calibrating && <Calibrate nudge={nudge} onNudge={setNudge} />}
+      <p className="muted tool-note">
+        Bluetooth earphones lag 150–300 ms: use wired ones, or calibrate. On iPhone, check the silent switch.
+        Keep the screen on while it plays.
+      </p>
+    </section>
+  );
+}

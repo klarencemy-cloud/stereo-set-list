@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { toSongSummary } from "../../src/shared/song";
+import { songTempo, toSongSummary } from "../../src/shared/song";
 import type { Song } from "../../src/shared/types";
 
 const song: Song = {
-  id: "s", title: "T", artist: "A", sourceUrl: null, originalKey: "", bandKey: "", capo: 0, content: "", updatedAt: "x",
+  id: "s", title: "T", artist: "A", sourceUrl: null, originalKey: "", bandKey: "", capo: 0, content: "", bpm: null, beatsPerBar: null, updatedAt: "x",
 };
 
 describe("toSongSummary", () => {
@@ -14,5 +14,14 @@ describe("toSongSummary", () => {
   });
   it("treats a blank sheet as no chords", () => {
     expect(toSongSummary({ ...song, content: "  \n " }).hasChords).toBe(false);
+  });
+});
+
+describe("songTempo", () => {
+  it("reads a missing tempo (an older offline copy) as unknown", () => {
+    expect(songTempo({} as Pick<Song, "bpm" | "beatsPerBar">)).toEqual({ bpm: null, beatsPerBar: null });
+  });
+  it("passes a known tempo through", () => {
+    expect(songTempo({ bpm: 100, beatsPerBar: 6 })).toEqual({ bpm: 100, beatsPerBar: 6 });
   });
 });
