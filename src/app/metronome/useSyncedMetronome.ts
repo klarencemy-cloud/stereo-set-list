@@ -3,9 +3,9 @@ import { api, ApiError } from "../api";
 import { audioLink, createAudioContext, preferPlaybackAudio, startClickLoop, type ClickLoop } from "../audio";
 import { deviceId } from "../device";
 import type { MetroChange, MetroSession } from "../../shared/metronome";
-import { toAudioTime } from "./clock";
+import { linkSmoother, toAudioTime } from "./clock";
 import { listen } from "./listen";
-import { loopStart, phaseError } from "./loop";
+import { loopStart, phaseError, REALIGN_TICKS, shouldRealign } from "./loop";
 import { detectOnsets, matchShift } from "./match";
 import { useClockSync } from "./useClockSync";
 
@@ -20,8 +20,6 @@ export const POLL_IDLE_MS = 10_000;
 const TICK_MS = 25;
 /** A loop never starts sooner than this from now, so the audio engine gets it in time. */
 const START_MARGIN_S = 0.05;
-/** A loop further than this from the grid is moved back onto it, at the next bar line. */
-const REALIGN_S = 0.01;
 
 /** A joining phone listens to the band for this many bars (and at least LISTEN_MIN_S) before it plays. */
 const LISTEN_BARS = 2;
@@ -65,6 +63,8 @@ interface Playing {
   when: number;
   /** Audio time it is set to stop, if any. */
   stopAt?: number;
+  /** Its phase error (s) on each of the last REALIGN_TICKS ticks since it started playing, oldest first. */
+  errors: number[];
 }
 
 /** Stops a loop at `at`, unless it is already set to stop sooner. */
@@ -121,6 +121,10 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
   const [matchView, setMatchView] = useState<MatchView | null>(null);
   /** True while listening: no loops are booked. */
   const listening = useRef(false);
+  /** The audio link, averaged over the last LINK_WINDOW_MS, so its jitter doesn't move the loops. */
+  const smoother = useRef(linkSmoother());
+  /** Takes a reading of the audio link and gives back the smoothed link. */
+  const smoothedLink = (ctx: AudioContext) => smoother.current.add(audioLink(ctx));
   /** Bumped by "Listen again" (and by a listen spoilt by a tempo change), to listen once more. */
   const [attempt, setAttempt] = useState(0);
 
@@ -240,23 +244,29 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     }
     const { offsetMs, nudgeMs: nudge } = aligned();
     const now = ctx.currentTime;
-    const startS = toAudioTime(cur.startAt, offsetMs, audioLink(ctx), nudge);
+    const startS = toAudioTime(cur.startAt, offsetMs, smoothedLink(ctx), nudge);
     const barS = (cur.beatsPerBar * 60) / cur.bpm;
     const loops = (audio.current = audio.current.filter((p) => p.stopAt === undefined || p.stopAt > now));
     const last = loops[loops.length - 1];
     if (last?.grid === cur) {
-      // Booked for this grid already. Once it plays, check it hasn't drifted (clock offset, nudge or audio clock).
-      if (last.when > now || Math.abs(phaseError(startS, last.loop.origin, barS)) <= REALIGN_S) return;
-      const at = startS + Math.ceil((now + 0.1 - startS) / barS) * barS;
+      // Booked for this grid already. Once it plays, check it hasn't drifted (clock offset, nudge or audio clock):
+      // only a lasting error moves it, onto the grid itself, at the next bar line.
+      if (last.when > now) return;
+      last.errors = [...last.errors, phaseError(startS, last.loop.origin, barS)].slice(-REALIGN_TICKS);
+      if (!shouldRealign(last.errors)) return;
+      // The error lasted, so the clocks really moved: place the new loop from the readings of those ticks only,
+      // which are all from after the move, not from the full average, which is still catching up.
+      const gridS = toAudioTime(cur.startAt, offsetMs, smoother.current.keepNewest(REALIGN_TICKS), nudge);
+      const at = gridS + Math.ceil((now + 0.1 - gridS) / barS) * barS;
       stopBy(last, at);
-      loops.push({ loop: startClickLoop(ctx, cur.bpm, cur.beatsPerBar, at, 0), grid: cur, when: at });
+      loops.push({ loop: startClickLoop(ctx, cur.bpm, cur.beatsPerBar, at, 0), grid: cur, when: at, errors: [] });
       return;
     }
     // A new grid: book it from its start (or join it part-way). Whatever is booked so far plays until then;
     // a loop that would only start after it never plays.
     const { when, offset } = loopStart(startS, barS, now + START_MARGIN_S);
     for (const p of loops) stopBy(p, when);
-    loops.push({ loop: startClickLoop(ctx, cur.bpm, cur.beatsPerBar, when, offset), grid: cur, when });
+    loops.push({ loop: startClickLoop(ctx, cur.bpm, cur.beatsPerBar, when, offset), grid: cur, when, errors: [] });
   }, [stopAudio]);
 
   /** Lights the beat this phone is playing now, from the grid alone. */
@@ -299,7 +309,7 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     const atMs = performance.now();
     const beatS = 60 / cur.bpm;
     const barS = cur.beatsPerBar * beatS;
-    const gridStartS = () => toAudioTime(cur.startAt, offsetMs, audioLink(ctx), nudge);
+    const gridStartS = () => toAudioTime(cur.startAt, offsetMs, smoothedLink(ctx), nudge);
     // Don't count the silence before a session that hasn't started yet.
     const waitS = Math.max(0, gridStartS() - ctx.currentTime);
     const seconds = waitS + Math.max(LISTEN_MIN_S, LISTEN_BARS * barS);
@@ -388,6 +398,8 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     joinedRef.current = false;
     setJoined(false);
     setBeat(null);
+    // Suspended, the audio clock stands still while performance.now() runs on: the old readings are wrong now.
+    smoother.current.clear();
     ctxRef.current?.suspend().catch(() => {});
   }, [stopAudio]);
 

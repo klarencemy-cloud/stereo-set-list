@@ -300,8 +300,11 @@ describe("SongMetronome, a session is running", () => {
 
     it("pulls a loop that drifted back onto the grid at the next bar line", async () => {
       await moveTo(4010);
-      // The audio clock runs 30 ms ahead of where it was: the loop now sounds 30 ms early.
+      // The audio clock runs 30 ms ahead of where it was: the loop now sounds 30 ms early. One tick of it isn't
+      // enough (that could be jitter); it is moved once the error has lasted a few ticks.
       await moveTo(6000, 0.03);
+      expect(ctx.loops).toHaveLength(1);
+      for (let ms = 6030; ms <= 6300; ms += 30) await moveTo(ms, 0.03);
       expect(ctx.loops).toHaveLength(2);
       const [old, fresh] = ctx.loops;
       expect(fresh.offset).toBe(0);

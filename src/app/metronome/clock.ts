@@ -60,6 +60,46 @@ export interface ClockLink {
   audioS: number;
 }
 
+/** How far back the link smoother looks (ms of performance.now()). */
+export const LINK_WINDOW_MS = 1500;
+/** And never more readings than this (a tick every 25 ms fills the window with 60). */
+const MAX_LINK_READINGS = 120;
+
+/**
+ * Smooths the link between performance.now() and the audio clock: one getOutputTimestamp() reading can be
+ * several ms off. `add` takes a reading and gives back the link averaged over the last LINK_WINDOW_MS of them.
+ * The two clocks are taken to run at the same rate (they differ by ~100 ppm, less than a rate fitted over so short
+ * a window would be off by), so the average is of the offset between them.
+ */
+export function linkSmoother() {
+  let readings: ClockLink[] = [];
+  const link = (perfMs: number): ClockLink => {
+    const meanOffsetS = readings.reduce((a, r) => a + (r.audioS - r.perfMs / 1000), 0) / readings.length;
+    return { perfMs, audioS: perfMs / 1000 + meanOffsetS };
+  };
+  return {
+    add(reading: ClockLink): ClockLink {
+      readings.push(reading);
+      // performanceTime may itself be jittered, so readings aren't kept in order: drop by time, not by position.
+      const newest = Math.max(...readings.map((r) => r.perfMs));
+      readings = readings.filter((r) => r.perfMs > newest - LINK_WINDOW_MS).slice(-MAX_LINK_READINGS);
+      return link(reading.perfMs);
+    },
+    /**
+     * Forgets all but the newest `n` readings and gives back the link from those. After the clocks really moved,
+     * the older readings are from before the move, so the full average is still catching up.
+     */
+    keepNewest(n: number): ClockLink {
+      readings = readings.slice(-n);
+      return link(readings[readings.length - 1].perfMs);
+    },
+    /** Forgets every reading, e.g. when the audio clock was paused. */
+    clear() {
+      readings = [];
+    },
+  };
+}
+
 /**
  * When to play a server-time beat on the AudioContext clock. `nudgeMs` is this phone's calibration:
  * plus means "my phone sounds late", so the click is played that much earlier.

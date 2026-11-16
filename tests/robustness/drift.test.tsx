@@ -98,9 +98,30 @@ describe("H8: jitter in the audio link re-aligns the loop", () => {
     expect(realigns).toBe(0);
   });
 
-  it.fails("BUG H8: ±15 ms of getOutputTimestamp jitter re-aligns the loop over and over (each one audible)", async () => {
-    const { realigns } = await realignsWithJitter(15, 60);
-    expect(realigns).toBe(0);
+  it("H8 fixed: ±15 ms of getOutputTimestamp jitter re-aligns the loop at most a few times in 60 s", async () => {
+    for (const seed of [1, 2, 3]) {
+      cleanup();
+      teardownWorld();
+      w = await setupWorld();
+      const { realigns } = await realignsWithJitter(15, 60, seed);
+      expect(realigns).toBeLessThanOrEqual(3);
+    }
+  });
+
+  it("H8 regression: a real 30 ms jump of the audio clock is still corrected within a couple of bars, despite jitter", async () => {
+    const r = rng(4);
+    FakeAudioContext.outputTimestampJitter = () => (r() * 2 - 1) * 15;
+    world.latency = { getTime: [0, 0], getMetronome: [0, 0], putMetronome: [0, 0] };
+    const { ctx, s } = await joined();
+    await advance(10_000, 25); // settled
+    const before = ctx.loops.length;
+    ctx.skewS -= 0.03; // the audio clock falls 30 ms behind: the loop now plays 30 ms late
+    await advance(4000, 25); // two bars
+    expect(ctx.loops.length).toBe(before + 1);
+    await advance(10_000, 25); // and it stays put: one jump, one correction (each one can be heard)
+    expect(ctx.loops.length).toBe(before + 1);
+    const errs = barErrorsMs(ctx, s, ctx.currentTime, ctx.currentTime + 6);
+    expect(errs.every((e) => Math.abs(e) < 8)).toBe(true);
   });
 
   it("H8 measure: re-alignments and audible glitches in 60 s against link jitter (logged)", async () => {
@@ -114,7 +135,7 @@ describe("H8: jitter in the audio link re-aligns the loop", () => {
     }
     console.log(`[H8] 120 BPM 4/4, 60 s, uniform jitter on getOutputTimestamp().performanceTime:\n${rows.join("\n")}`);
     expect(rows).toHaveLength(8);
-  });
+  }, 30_000); // 8 runs of 60 s each: near the 5 s default on a busy machine
 });
 
 describe("H9: re-aligning a loop that runs early cuts its bar-line click and flams", () => {
