@@ -9,8 +9,8 @@ vi.mock("../../src/app/api", async () => {
   return {
     ...actual,
     api: {
-      getMetronome: vi.fn(), putMetronome: vi.fn(), getTime: vi.fn(), updateSong: vi.fn(), getSong: vi.fn(),
-      getGig: vi.fn(), getTrack: vi.fn(), getTrackPart: vi.fn(), listSongs: vi.fn(),
+      ...actual.api,
+      updateSong: vi.fn(), getSong: vi.fn(), getGig: vi.fn(), getTrack: vi.fn(), getTrackPart: vi.fn(), listSongs: vi.fn(),
     },
   };
 });

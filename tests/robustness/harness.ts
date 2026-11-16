@@ -1,22 +1,25 @@
 // Shared test world for the synced-metronome robustness tests (not a test file itself).
 //
 // One virtual clock drives everything: this phone's performance.now(), the fake timers, Date (the phone's wall
-// clock) and the fake AudioContext's currentTime. A fake network sends api calls to the REAL server code (repo
-// over memoryKV) after a configurable one-way delay each way, so out-of-order and slow answers come from timing,
-// not from hand-written mock answers. The fakes follow tests/app/SongMetronome.test.tsx (fake AudioContext and
-// buffer sources, api mocks, fake timers) but record enough to say what a listener would hear.
+// clock) and the fake AudioContext's currentTime. A fake network replaces fetch: the real api client's metronome
+// and time requests reach the REAL Netlify handlers (over the real repo on memoryKV) after a configurable one-way
+// delay each way, so out-of-order and slow answers come from timing, not from hand-written mock answers. The
+// fakes follow tests/app/SongMetronome.test.tsx (fake AudioContext and buffer sources, fake timers) but record
+// enough to say what a listener would hear.
 //
-// Each test file must declare the api mock itself (vi.mock is hoisted per file):
+// Only the song calls are mocked (answered straight from the repo). A test file that renders the app declares
+// that mock itself (vi.mock is hoisted per file), keeping the real metronome and time calls:
 //   vi.mock("../../src/app/api", async () => {
 //     const actual = await vi.importActual<typeof import("../../src/app/api")>("../../src/app/api");
-//     return { ...actual, api: { getMetronome: vi.fn(), putMetronome: vi.fn(), getTime: vi.fn(), updateSong: vi.fn(),
-//       getSong: vi.fn(), getGig: vi.fn() } };
+//     return { ...actual, api: { ...actual.api, updateSong: vi.fn(), getSong: vi.fn() } };
 //   });
 import { vi } from "vitest";
 import { act } from "@testing-library/react";
 import { api, ApiError } from "../../src/app/api";
 import { memoryKV } from "../../netlify/functions/lib/kv";
-import { makeRepo, NotFoundError, ValidationError } from "../../netlify/functions/lib/repo";
+import { makeRepo } from "../../netlify/functions/lib/repo";
+import { makeMetronomeHandler } from "../../netlify/functions/metronome";
+import { makeTimeHandler } from "../../netlify/functions/time";
 import type { MetroChange } from "../../src/shared/metronome";
 import type { Song, SongInput } from "../../src/shared/types";
 
@@ -37,6 +40,8 @@ export const world = {
   driftPpm: 0,
   /** One-way delays in ms, per endpoint. A function is called once per request. */
   latency: {} as Partial<Record<Endpoint, Leg | (() => Leg)>>,
+  /** Requests to anything but the metronome and time endpoints (a mistake in the test world). */
+  unrouted: [] as string[],
   /** Every request fails at once, as fetch does with no network. */
   offline: false,
   /** Requests never answer (a dead Wi-Fi that still looks connected). */
@@ -56,33 +61,57 @@ const songBody: SongInput = {
   bpm: 96, beatsPerBar: 3,
 };
 
-/** The fake network: up-leg, run the real server code at the server's "now", down-leg. */
-function net<T>(name: Endpoint, run: () => Promise<T>): Promise<T> {
-  world.sent[name]++;
-  const l = world.latency[name];
-  const [up, down] = typeof l === "function" ? l() : (l ?? [0, 0]);
-  return new Promise<T>((resolve, reject) => {
-    if (world.offline) {
-      reject(new ApiError(0, "Can't reach the server. Check your connection."));
-      return;
+/** Which endpoint a request is for, by method and path; undefined for anything the world doesn't serve. */
+function endpointOf(method: string, path: string): Endpoint | undefined {
+  if (path === "/api/time" && method === "GET") return "getTime";
+  if (path.startsWith("/api/metronome/")) return method === "PUT" ? "putMetronome" : method === "GET" ? "getMetronome" : undefined;
+  return undefined;
+}
+
+const abortError = () => new DOMException("This operation was aborted", "AbortError");
+/** What fetch rejects with when there is no network. */
+const offlineError = () => new TypeError("Failed to fetch");
+
+/**
+ * The fake network, in place of fetch: up-leg, the real handler at the server's "now", down-leg. Fails at once
+ * while offline (as fetch does with no network), never settles while hung, and rejects when aborted.
+ */
+function makeFetch(handlers: Record<Endpoint, (req: Request) => Promise<Response>>) {
+  return (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const req = new Request(new URL(input instanceof Request ? input.url : String(input), "http://localhost"), init);
+    const name = endpointOf(req.method, new URL(req.url).pathname);
+    if (!name) {
+      world.unrouted.push(`${req.method} ${req.url}`);
+      return Promise.reject(new TypeError(`the test world doesn't serve ${req.method} ${req.url}`));
     }
-    if (world.hang) return; // never settles
-    setTimeout(async () => {
-      if (world.offline) {
-        reject(new ApiError(0, "Can't reach the server. Check your connection."));
-        return;
-      }
-      world.served[name].push(serverNow());
-      let out: { ok: true; v: T } | { ok: false; e: unknown };
-      try {
-        out = { ok: true, v: await run() };
-      } catch (e) {
-        const status = e instanceof NotFoundError ? 404 : e instanceof ValidationError ? 400 : 500;
-        out = { ok: false, e: new ApiError(status, e instanceof Error ? e.message : String(e)) };
-      }
-      setTimeout(() => (out.ok ? resolve(out.v) : reject(out.e)), down);
-    }, up);
-  });
+    world.sent[name]++;
+    const l = world.latency[name];
+    const [up, down] = typeof l === "function" ? l() : (l ?? [0, 0]);
+    const signal = init?.signal;
+    return new Promise<Response>((resolve, reject) => {
+      if (signal?.aborted) return reject(abortError());
+      if (world.offline) return reject(offlineError());
+      const timers: ReturnType<typeof setTimeout>[] = [];
+      signal?.addEventListener(
+        "abort",
+        () => {
+          timers.forEach(clearTimeout);
+          reject(abortError());
+        },
+        { once: true },
+      );
+      if (world.hang) return; // never settles (unless aborted)
+      timers.push(
+        setTimeout(async () => {
+          if (world.offline) return reject(offlineError());
+          world.served[name].push(serverNow());
+          const res = await handlers[name](req);
+          if (signal?.aborted) return; // aborted while the server worked: it keeps the change, the phone never hears
+          timers.push(setTimeout(() => resolve(res), down));
+        }, up),
+      );
+    });
+  };
 }
 
 export type Repo = ReturnType<typeof makeRepo>;
@@ -277,7 +306,10 @@ export async function advanceUntil(cond: () => boolean, maxMs = 30_000, step = 1
   return spent;
 }
 
-export const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
+/** The api calls a test file mocked (the song calls); the rest are real functions, left alone. */
+const songMocks = () =>
+  Object.values(api).filter((f): f is ReturnType<typeof vi.fn> => vi.isMockFunction(f));
+const songMock = (name: keyof typeof api) => (vi.isMockFunction(api[name]) ? api[name] : undefined);
 
 /** Resets the world and wires the api mocks to a fresh server. Call from beforeEach. */
 export async function setupWorld(opts: { perf?: number } = {}) {
@@ -287,6 +319,7 @@ export async function setupWorld(opts: { perf?: number } = {}) {
   world.latency = {};
   world.offline = false;
   world.hang = false;
+  world.unrouted = [];
   world.served = { getTime: [], getMetronome: [], putMetronome: [] };
   world.sent = { getTime: 0, getMetronome: 0, putMetronome: 0 };
   FakeAudioContext.instances = [];
@@ -301,16 +334,17 @@ export async function setupWorld(opts: { perf?: number } = {}) {
   vi.setSystemTime(serverNow()); // this phone's wall clock happens to be right
   vi.spyOn(performance, "now").mockImplementation(() => world.perf);
 
-  Object.values(mocked).forEach((f) => f.mockReset?.());
-  mocked.getTime.mockImplementation(() => net("getTime", async () => ({ now: serverNow() })));
-  mocked.getMetronome.mockImplementation((id: string) => net("getMetronome", () => repo.getMetronome(id, serverNow())));
-  mocked.putMetronome.mockImplementation((id: string, change: MetroChange) =>
-    net("putMetronome", () => repo.setMetronome(id, change, serverNow())),
+  const metronome = makeMetronomeHandler(repo, serverNow);
+  vi.stubGlobal(
+    "fetch",
+    makeFetch({ getTime: makeTimeHandler(serverNow), getMetronome: metronome, putMetronome: metronome }),
   );
-  mocked.updateSong?.mockImplementation(async (id: string, patch: Partial<SongInput>, baseVersion?: string) =>
+
+  songMocks().forEach((f) => f.mockReset());
+  songMock("updateSong")?.mockImplementation(async (id: string, patch: Partial<SongInput>, baseVersion?: string) =>
     repo.updateSong(id, { ...patch, ...(baseVersion ? { baseVersion } : {}) }),
   );
-  mocked.getSong?.mockImplementation(async (id: string) => {
+  songMock("getSong")?.mockImplementation(async (id: string) => {
     const s = await repo.getSong(id);
     if (!s) throw new ApiError(404, "song not found");
     return s;
@@ -325,7 +359,9 @@ export async function setupWorld(opts: { perf?: number } = {}) {
 export function teardownWorld() {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   delete (document as unknown as { visibilityState?: string }).visibilityState;
+  if (world.unrouted.length) throw new Error(`the test world was sent requests it doesn't serve: ${world.unrouted.join(", ")}`);
 }
 
 export function setHidden(hidden: boolean) {

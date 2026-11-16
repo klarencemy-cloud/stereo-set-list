@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 vi.mock("../../src/app/api", async () => {
   const actual = await vi.importActual<typeof import("../../src/app/api")>("../../src/app/api");
-  return { ...actual, api: { getMetronome: vi.fn(), putMetronome: vi.fn(), getTime: vi.fn(), updateSong: vi.fn() } };
+  return { ...actual, api: { ...actual.api, updateSong: vi.fn() } };
 });
 
 import SongMetronome from "../../src/app/components/SongMetronome";
