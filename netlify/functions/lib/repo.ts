@@ -262,6 +262,9 @@ function blankSong({ id, title, artist, trackId }: { id: string; title: string; 
  */
 export const METRO_STALE_MS = 2 * 60 * 60 * 1000;
 
+/** How many times a conditional write is re-applied to a record that changed under it before giving up. */
+export const WRITE_ATTEMPTS = 5;
+
 /** Checks a metronome change from a client: at least one of bpm, beatsPerBar and running, plus an optional leader. */
 function checkMetroChange(input: unknown): MetroChange {
   const src = (input ?? {}) as Record<string, unknown>;
@@ -355,7 +358,7 @@ export function makeRepo(kv: KV) {
    * Resolves null when the record doesn't exist.
    */
   async function modify<T>(key: string, change: (cur: T) => T | null): Promise<T | null> {
-    for (let attempt = 0; attempt < 5; attempt++) {
+    for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
       const got = await kv.getTextTagged(key);
       if (!got) return null;
       const cur = JSON.parse(got.value) as T;
@@ -461,19 +464,33 @@ export function makeRepo(kv: KV) {
   return {
     getMetronome,
     /**
-     * Applies a change on the server's clock (see applyChange) and stores it. The last change wins.
-     * Resolves null when asked to stop a session that was never started.
+     * Applies a change on the server's clock (see applyChange) to the latest stored session. Changes
+     * arriving together are all applied, one after another in the order their writes land: a write only lands if nobody wrote the
+     * session since it was read, otherwise the change is re-applied to the newer one. Resolves null
+     * when asked to stop a session that was never started. A conflict that outlasts the retries is a
+     * ConflictError (409) carrying the latest session, never a silently dropped change.
      */
     async setMetronome(songId: string, input: unknown, nowMs: number): Promise<MetroSession | null> {
       const change = checkMetroChange(input);
-      const current = await getMetronome(songId, nowMs);
-      if (!current && (change.bpm === undefined || change.beatsPerBar === undefined)) {
-        if (change.running === false) return null;
-        throw new ValidationError("bpm and beatsPerBar are needed to start the metronome");
+      const key = `metronome/${songId}`;
+      for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
+        const got = await kv.getTextTagged(key);
+        if (!got) {
+          if ((await kv.getText(`songs/${songId}`)) === null) throw new NotFoundError("song not found");
+          if (change.bpm === undefined || change.beatsPerBar === undefined) {
+            if (change.running === false) return null;
+            throw new ValidationError("bpm and beatsPerBar are needed to start the metronome");
+          }
+          const next = applyChange(null, change, nowMs);
+          if (await kv.setTextIfNew(key, JSON.stringify(next))) return toMetroSession(next, nowMs);
+          continue;
+        }
+        const current = toMetroSession(JSON.parse(got.value) as MetroSession, nowMs);
+        const next = applyChange(current, change, nowMs);
+        if (next === current) return current;
+        if (await kv.setTextIfMatch(key, JSON.stringify(next), got.etag)) return toMetroSession(next, nowMs);
       }
-      const next = applyChange(current, change, nowMs);
-      if (next !== current) await writeJson(`metronome/${songId}`, next);
-      return toMetroSession(next, nowMs);
+      throw new ConflictError("The metronome kept changing. Try again.", await getMetronome(songId, nowMs));
     },
     async listSongs(): Promise<SongSummary[]> {
       const songs = await readSongs();

@@ -26,8 +26,8 @@ async function setup() {
   return { repo, clock, put, get, id: song.id };
 }
 
-describe("H5: two phones change it at the same moment (read-modify-write, no compare-and-swap)", () => {
-  it.fails("BUG H5: Stop for everyone sent at the same moment as a tempo change is lost; it keeps playing", async () => {
+describe("H5: two phones change it at the same moment", () => {
+  it("H5: Stop for everyone sent at the same moment as a tempo change wins; it ends stopped", async () => {
     const { clock, put, get } = await setup();
     await put({ bpm: 120, beatsPerBar: 4, running: true });
     clock.now += 10_000;
@@ -35,6 +35,39 @@ describe("H5: two phones change it at the same moment (read-modify-write, no com
     const [stopAnswer, tempoAnswer] = await Promise.all([put({ running: false }), put({ bpm: 140 })]);
     console.log(`[H5] answers: stopper got running=${stopAnswer.running}; tempo phone got running=${tempoAnswer.running}`);
     expect((await get())!.running).toBe(false);
+  });
+
+  it("H5: two tempo changes at the same moment both apply, in arrival order", async () => {
+    const { clock, put, get } = await setup();
+    await put({ bpm: 120, beatsPerBar: 4, running: true });
+    clock.now += 10_000;
+    await Promise.all([put({ bpm: 130 }), put({ bpm: 140 })]);
+    expect((await get())!.bpm).toBe(140);
+  });
+
+  it("H5: a beats-per-bar change and a tempo change at the same moment both apply", async () => {
+    const { clock, put, get } = await setup();
+    await put({ bpm: 120, beatsPerBar: 4, running: true });
+    clock.now += 10_000;
+    await Promise.all([put({ beatsPerBar: 3 }), put({ bpm: 140 })]);
+    const s = (await get())!;
+    expect({ bpm: s.bpm, beatsPerBar: s.beatsPerBar, running: s.running }).toEqual({ bpm: 140, beatsPerBar: 3, running: true });
+  });
+
+  it("H5: a conflict that outlasts the retries is a 409 with the latest session, and nothing is written", async () => {
+    const kv = memoryKV();
+    const repo = makeRepo({ ...kv, setTextIfMatch: async () => false }); // someone else always writes first
+    const now = Date.UTC(2026, 10, 15, 18);
+    const metro = makeMetronomeHandler(repo, () => now);
+    const song = await repo.createSong({
+      title: "Song", artist: "Band", sourceUrl: null, originalKey: "C", bandKey: "C", capo: 0, content: "", bpm: null, beatsPerBar: null,
+    });
+    await metro(req("PUT", `/api/metronome/${song.id}`, { bpm: 120, beatsPerBar: 4, running: true }));
+    const res = await metro(req("PUT", `/api/metronome/${song.id}`, { running: false }));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { message: string; current: MetroSession };
+    expect(body.current).toMatchObject({ bpm: 120, running: true });
+    expect((await repo.getMetronome(song.id, now))!.running).toBe(true);
   });
 
   it("H5 regression: a stop and a tempo change one after the other leave it stopped, in either order", async () => {
