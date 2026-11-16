@@ -1,6 +1,6 @@
 // Clock maths for the synced metronome. Pure: no browser APIs, so it is unit-tested directly.
 
-/** One /api/time call: local times (performance.now()) around it, and the server's answer. */
+/** One clock sample: local times (performance.now()) around a call to /api/time or a metronome answer, and the server's time in its answer. */
 export interface TimeSample {
   sentMs: number;
   serverMs: number;

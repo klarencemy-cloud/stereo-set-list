@@ -124,10 +124,11 @@ describe("H2: a joined follower hears of a restart too late for the count-in", (
 
 describe("H11: the sync status is a fair bound but never warns", () => {
   it("a lopsided link (10 ms up, 70 ms down) puts the clicks 30 ms late and calls it 'Synced ±40 ms'", async () => {
-    world.latency = { getTime: [10, 70], getMetronome: [10, 10], putMetronome: [10, 10] };
+    // One link for every call: the metronome answers carry the server's time too, so they are clock samples.
+    world.latency = { getTime: [10, 70], getMetronome: [10, 70], putMetronome: [10, 70] };
     await w.other({ bpm: 120, beatsPerBar: 4, running: true });
     render(<SongMetronome song={w.song} onSongChange={() => {}} />);
-    await advance(50, 10);
+    await advance(100, 10);
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     await advance(4000, 10);
     const s = (await w.stored())!;
@@ -143,10 +144,10 @@ describe("H11: the sync status is a fair bound but never warns", () => {
   });
 
   it("at a 400 ms round trip it shows 'Synced ±200 ms' with no warning style", async () => {
-    world.latency = { getTime: [200, 200], getMetronome: [10, 10], putMetronome: [10, 10] };
+    world.latency = { getTime: [200, 200], getMetronome: [200, 200], putMetronome: [200, 200] };
     await w.other({ bpm: 120, beatsPerBar: 4, running: true });
     render(<SongMetronome song={w.song} onSongChange={() => {}} />);
-    await advance(50, 10);
+    await advance(450, 10);
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     // 20 serial samples at 400 ms each before the first estimate.
     await advance(8500, 10);

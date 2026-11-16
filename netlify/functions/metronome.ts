@@ -2,10 +2,15 @@ import type { Config } from "@netlify/functions";
 import { guard, json, methodNotAllowed, notFound, readBody, routeParts } from "./lib/http";
 import { blobsKV } from "./lib/kv";
 import { makeRepo, type Repo } from "./lib/repo";
+import type { MetroAnswer, MetroSession } from "../../src/shared/metronome";
 
-/** A response a browser must never reuse: the session changes under it. */
-function live(body: unknown): Response {
-  const res = json(body);
+/**
+ * A session answer (see MetroAnswer), with the server's time read as it answers. A browser must never reuse it:
+ * the session changes under it, and its time is a clock sample.
+ */
+function live(session: MetroSession | null, clock: () => number): Response {
+  const answer: MetroAnswer = { session, now: clock() };
+  const res = json(answer);
   res.headers.set("Cache-Control", "no-store");
   return res;
 }
@@ -15,8 +20,8 @@ export function makeMetronomeHandler(repo: Repo, clock: () => number) {
   return guard(async (req) => {
     const [songId, extra] = routeParts(req);
     if (songId === undefined || extra !== undefined) return notFound();
-    if (req.method === "GET") return live(await repo.getMetronome(songId, clock()));
-    if (req.method === "PUT") return live(await repo.setMetronome(songId, await readBody(req), clock()));
+    if (req.method === "GET") return live(await repo.getMetronome(songId, clock()), clock);
+    if (req.method === "PUT") return live(await repo.setMetronome(songId, await readBody(req), clock()), clock);
     return methodNotAllowed();
   });
 }

@@ -5,6 +5,10 @@ import { makeMetronomeHandler } from "../../netlify/functions/metronome";
 import { makeTimeHandler } from "../../netlify/functions/time";
 import { makeSongsHandler } from "../../netlify/functions/songs";
 import type { SongInput } from "../../src/shared/types";
+import { LEAD_MS } from "../../src/shared/metronome";
+
+/** The session from a metronome answer (the envelope is tested on its own). */
+const sessionOf = async (res: Response) => (await res.json()).session;
 
 const U = "http://localhost";
 const req = (method: string, path: string, body?: unknown) =>
@@ -42,11 +46,28 @@ describe("time API", () => {
 });
 
 describe("metronome API", () => {
+  it("answers GET and PUT with the session and the server's time when it answered", async () => {
+    const { metro, clock, id } = await setup();
+    const none = await metro(req("GET", `/api/metronome/${id}`));
+    expect(await none.json()).toEqual({ session: null, now: 1_000_000 });
+    clock.now = 1_000_250;
+    const put = await (await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }))).json();
+    expect(put).toEqual({
+      session: { bpm: 120, beatsPerBar: 4, startAt: 1_000_250 + LEAD_MS, running: true, updatedAt: new Date(1_000_250).toISOString() },
+      now: 1_000_250,
+    });
+    clock.now = 1_000_900;
+    const got = await (await metro(req("GET", `/api/metronome/${id}`))).json();
+    expect(got).toEqual({ session: put.session, now: 1_000_900 });
+    const stop = await (await metro(req("PUT", `/api/metronome/missing-${id}`, { running: false }))).json();
+    expect(stop).toMatchObject({ message: expect.any(String) }); // still a 404, not an envelope
+  });
+
   it("has no session until someone starts one", async () => {
     const { metro, id } = await setup();
     const res = await metro(req("GET", `/api/metronome/${id}`));
     expect(res.status).toBe(200);
-    expect(await res.json()).toBeNull();
+    expect(await sessionOf(res)).toBeNull();
     expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 
@@ -54,18 +75,18 @@ describe("metronome API", () => {
     const { metro, id } = await setup();
     const put = await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
     expect(put.status).toBe(200);
-    const started = await put.json();
+    const started = await sessionOf(put);
     expect(started).toMatchObject({ bpm: 120, beatsPerBar: 4, startAt: 1_003_000, running: true });
-    expect(await (await metro(req("GET", `/api/metronome/${id}`))).json()).toEqual(started);
+    expect(await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).toEqual(started);
   });
 
   it("puts a tempo change on the next bar line and stops on request", async () => {
     const { metro, clock, id } = await setup();
     await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
     clock.now = 1_010_100; // bars of 2000 ms from 1 003 000; now + lead = 1 013 100
-    const changed = await (await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90 }))).json();
+    const changed = await sessionOf(await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90 })));
     expect(changed).toMatchObject({ bpm: 90, beatsPerBar: 4, startAt: 1_015_000, running: true });
-    const stopped = await (await metro(req("PUT", `/api/metronome/${id}`, { running: false }))).json();
+    const stopped = await sessionOf(await metro(req("PUT", `/api/metronome/${id}`, { running: false })));
     expect(stopped).toMatchObject({ running: false, bpm: 90 });
   });
 
@@ -92,11 +113,11 @@ describe("metronome API", () => {
   it("keeps the leader that started it, and everyone reads it", async () => {
     const { metro, clock, id } = await setup();
     const put = await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true, leader: "phone-a" }));
-    expect(await put.json()).toMatchObject({ leader: "phone-a" });
+    expect(await sessionOf(put)).toMatchObject({ leader: "phone-a" });
     clock.now += 5000;
-    const changed = await (await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90 }))).json();
+    const changed = await sessionOf(await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90 })));
     expect(changed.leader).toBe("phone-a");
-    expect((await (await metro(req("GET", `/api/metronome/${id}`))).json()).leader).toBe("phone-a");
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).leader).toBe("phone-a");
   });
 
   it("reads a session stored before leaders existed, or with a bad leader, as having none", async () => {
@@ -104,7 +125,7 @@ describe("metronome API", () => {
     const base = { bpm: 120, beatsPerBar: 4, startAt: 1_002_000, running: true, updatedAt: new Date(1_000_000).toISOString() };
     for (const stored of [base, { ...base, leader: 42 }, { ...base, leader: "x".repeat(500) }, { ...base, extra: "junk" }]) {
       await kv.setText(`metronome/${id}`, JSON.stringify(stored));
-      const got = await (await metro(req("GET", `/api/metronome/${id}`))).json();
+      const got = await sessionOf(await metro(req("GET", `/api/metronome/${id}`)));
       expect(got).toEqual(base);
       // Every read path agrees: a change read back through setMetronome is normalised the same way.
       const set = await repo.setMetronome(id, { beatsPerBar: 4 }, 1_000_100);
@@ -123,7 +144,7 @@ describe("metronome API", () => {
     const { metro, id } = await setup();
     const res = await metro(req("PUT", `/api/metronome/${id}`, { running: false }));
     expect(res.status).toBe(200);
-    expect(await res.json()).toBeNull();
+    expect(await sessionOf(res)).toBeNull();
   });
 
   it("404 for a song that doesn't exist, for bad paths and 405 for other methods", async () => {
@@ -175,12 +196,12 @@ describe("metronome API", () => {
     const { metro, clock, id } = await setup();
     await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
     clock.now += METRO_STALE_MS - 1;
-    expect((await (await metro(req("GET", `/api/metronome/${id}`))).json()).running).toBe(true);
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(true);
     clock.now += 2;
-    expect((await (await metro(req("GET", `/api/metronome/${id}`))).json()).running).toBe(false);
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(false);
     // A tempo change on a forgotten session doesn't restart it; Start does, from now.
-    expect((await (await metro(req("PUT", `/api/metronome/${id}`, { bpm: 80 }))).json()).running).toBe(false);
-    const restarted = await (await metro(req("PUT", `/api/metronome/${id}`, { running: true }))).json();
+    expect((await sessionOf(await metro(req("PUT", `/api/metronome/${id}`, { bpm: 80 })))).running).toBe(false);
+    const restarted = await sessionOf(await metro(req("PUT", `/api/metronome/${id}`, { running: true })));
     expect(restarted).toMatchObject({ running: true, bpm: 80, startAt: clock.now + 3000 });
   });
 
@@ -188,9 +209,9 @@ describe("metronome API", () => {
     const { metro, clock, id } = await setup();
     await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
     clock.now += 2 * 60 * 60 * 1000 - 1;
-    expect((await (await metro(req("GET", `/api/metronome/${id}`))).json()).running).toBe(true);
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(true);
     clock.now += 2;
-    expect((await (await metro(req("GET", `/api/metronome/${id}`))).json()).running).toBe(false);
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(false);
   });
 
   it("restarts the 2 hours on every change", async () => {
@@ -199,6 +220,6 @@ describe("metronome API", () => {
     clock.now += 90 * 60 * 1000;
     await metro(req("PUT", `/api/metronome/${id}`, { bpm: 100 }));
     clock.now += 90 * 60 * 1000;
-    expect((await (await metro(req("GET", `/api/metronome/${id}`))).json()).running).toBe(true);
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(true);
   });
 });

@@ -25,6 +25,15 @@ export interface MetroSession {
   leader?: string;
 }
 
+/**
+ * Every metronome answer (GET and PUT): the session, or null when nobody has started one, and the server's time
+ * (ms) when it answered, so each answer is also a clock sample.
+ */
+export interface MetroAnswer {
+  session: MetroSession | null;
+  now: number;
+}
+
 /** What a client asks for. Anything left out stays as it is. */
 export interface MetroChange {
   bpm?: number;

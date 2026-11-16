@@ -108,8 +108,11 @@ interface MetroSession {
   before anyone taps. After the first round, the check answers supply the samples (#9), so the separate 60 s
   rounds stop; not joined, the panel's 10 s check keeps feeding samples. A full round still runs after a paused
   clock is detected (#18).
-- **Planned (#9): the server's time in every answer.** The metronome GET and PUT answers become an envelope
-  (see API), and the phone uses each answer as a clock sample, with its own send and receive times.
+- **The server's time in every answer.** Each metronome GET and PUT answer carries the server's time (see API),
+  so while joined each answer is also a clock sample, with the phone's own send and receive times around the call.
+  It joins the latest round, so it competes with that round's samples and ages out with it. Answers that land
+  while the first round runs join it when it lands; if every time call of a round failed, the answers start a
+  round of their own, so the phone still syncs.
 - **Planned (#18): a paused clock is detected.** When the page is visible again and the wall clock and
   `performance.now()` moved apart by over about 50 ms, `performance.now()` paused during sleep. A phone syncing
   by the clock then drops its old samples and takes a full round; a matched phone clears its match and listens
@@ -217,21 +220,24 @@ Before the first round finishes it shows "Syncing...".
 ## API
 
 - `GET /api/time` → `{ now }` with `Cache-Control: no-store`.
-- `GET /api/metronome/:songId` → the session or `null`. 404 when the song doesn't exist. One storage read
+- Every metronome answer (GET and PUT) is an envelope, `MetroAnswer`: `{ session, now }`, the session (or
+  `null`) and the server's time when it answered. The client and server ship together; older offline copies
+  are not a concern for this endpoint. Errors (400, 404, 409) are not envelopes: they answer `{ message }` (and
+  `current` on a 409) as before.
+- `GET /api/metronome/:songId` → the envelope, with the session or `null`. 404 when the song doesn't exist. One storage read
   when a session exists (`metronome/<songId>` is read first; a session implies its song exists); the song is
   only looked up, for the 404, when there is no session.
-- `PUT /api/metronome/:songId` with `{ bpm?, beatsPerBar?, running?, leader? }` → the new session.
+- `PUT /api/metronome/:songId` with `{ bpm?, beatsPerBar?, running?, leader? }` → the envelope, with the new session.
   - `bpm` whole 30–300, `beatsPerBar` whole 2–7, `running` boolean, at least one of them; otherwise 400.
   - `leader` is optional text of 1–64 characters (`LIMITS.metroLeader`); it is used by a start only.
   - Starting when there is no stored session needs `bpm` and `beatsPerBar` (no invented default); otherwise 400.
-  - A stop when there was never a session answers `null`.
+  - A stop when there was never a session answers the envelope with `session: null`.
   - 404 when the song doesn't exist.
 - Both metronome answers are `Cache-Control: no-store`.
 - Every read path goes through one normaliser (`toMetroSession`): it keeps only the known fields, a leader only
   when it is valid, and applies staleness, the same way on GET and PUT.
-- **Planned (#9): an envelope.** GET and PUT answer with the session (or `null`) plus the server's time when it
-  answered, and, for a start, whether it was applied (#11). The client and server ship together; older offline copies are not a
-  concern for this endpoint. The normaliser also keeps a valid `prev` (#13) and seen-at (#12).
+- **Planned (#11, #13, #12):** the envelope also says, for a start, whether it was applied (#11). The normaliser
+  also keeps a valid `prev` (#13) and seen-at (#12).
 - **Planned (#25): shared answers behind a switch.** A Netlify environment switch, off by default. When on, the
   GET answer may be served from Netlify's cache for about 1 s under a per-song cache tag, and every stored change
   purges that tag. Check answers are then not used as clock samples (a cached server time can be 1 s old), so the

@@ -43,13 +43,15 @@ describe("the world's network", () => {
   it("sends putMetronome to the real handler, and getMetronome reads what it stored", async () => {
     world.latency = { putMetronome: [20, 20], getMetronome: [10, 10] };
     const put = watch(api.putMetronome(w.song.id, { bpm: 132, beatsPerBar: 4, running: true }));
+    const putAt = serverNow() + 20; // the server answers when the request arrives
     await advance(50, 1);
-    expect(put.value).toMatchObject({ bpm: 132, beatsPerBar: 4, running: true });
-    expect(await w.stored()).toEqual(put.value);
+    expect(put.value).toMatchObject({ session: { bpm: 132, beatsPerBar: 4, running: true }, now: putAt });
+    expect(await w.stored()).toEqual(put.value!.session);
 
+    const getAt = serverNow() + 10;
     const get = watch(api.getMetronome(w.song.id));
     await advance(30, 1);
-    expect(get.value).toEqual(put.value);
+    expect(get.value).toEqual({ session: put.value!.session, now: getAt });
   });
 
   it("turns a handler's refusal into the api's ApiError with the server's status and message", async () => {

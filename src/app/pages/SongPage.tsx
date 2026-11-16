@@ -59,7 +59,7 @@ export default function SongPage() {
     setMetroSession(null);
     window.scrollTo?.(0, 0);
     api.getMetronome(id).then(
-      (s) => alive && setMetroSession(s),
+      (a) => alive && setMetroSession(a.session),
       () => {
         // Only the live dot depends on this; the panel checks again when opened.
       },

@@ -108,6 +108,19 @@ describe("useClockSync", () => {
     getTime.mockImplementation(async () => ({ now: 1000 }));
   });
 
+  it("takes samples handed in from other answers, and syncs from them even when every time call failed", async () => {
+    getTime.mockRejectedValue(new Error("offline"));
+    const { result } = renderHook(() => useClockSync(true));
+    await advance(0);
+    expect(result.current.status).toBe("failed");
+    act(() => result.current.addSample({ sentMs: 100, serverMs: 5130, receivedMs: 160 }));
+    expect(result.current).toMatchObject({ status: "synced", offsetMs: 5000, rttMs: 60 });
+    // A faster one wins.
+    act(() => result.current.addSample({ sentMs: 200, serverMs: 5205, receivedMs: 210 }));
+    expect(result.current).toMatchObject({ offsetMs: 5000, rttMs: 10 });
+    getTime.mockImplementation(async () => ({ now: 1000 }));
+  });
+
   it("caps the drift at what a clock can really do (200 ppm)", async () => {
     let perf = 0;
     vi.spyOn(performance, "now").mockImplementation(() => perf);

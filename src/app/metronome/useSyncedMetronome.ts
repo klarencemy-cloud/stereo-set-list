@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import { audioLink, createAudioContext, preferPlaybackAudio, startClickLoop, type ClickLoop } from "../audio";
 import { deviceId } from "../device";
-import type { MetroChange, MetroSession } from "../../shared/metronome";
-import { toAudioTime } from "./clock";
+import type { MetroAnswer, MetroChange, MetroSession } from "../../shared/metronome";
+import { toAudioTime, type TimeSample } from "./clock";
 import { listen } from "./listen";
 import { loopStart, phaseError } from "./loop";
 import { detectOnsets, matchShift } from "./match";
@@ -74,6 +74,18 @@ function stopBy(p: Playing, at: number) {
   p.stopAt = t;
 }
 
+/**
+ * Makes a metronome call and hands its answer to `addSample` as a clock sample (local send and receive times, and
+ * the server's time in the answer). Resolves the session.
+ */
+async function sampled(call: () => Promise<MetroAnswer>, addSample: (s: TimeSample) => void): Promise<MetroSession | null> {
+  const sentMs = performance.now();
+  const answer = await call();
+  const receivedMs = performance.now();
+  if (typeof answer.now === "number") addSample({ sentMs, serverMs: answer.now, receivedMs });
+  return answer.session;
+}
+
 const sameSession = (a: MetroSession | null, b: MetroSession | null) =>
   a === b ||
   (!!a && !!b && a.updatedAt === b.updatedAt && a.startAt === b.startAt && a.running === b.running &&
@@ -101,6 +113,7 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
   const [error, setError] = useState("");
   const [noSound, setNoSound] = useState(false);
   const clock = useClockSync(joined);
+  const { addSample } = clock;
 
   const ctxRef = useRef<AudioContext | null>(null);
   /** Mirrors `joined` for the session checks, which pick their next delay without restarting. */
@@ -188,8 +201,7 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
         due = true;
         if (settled && current(gen)) check(gen);
       }, joinedRef.current ? POLL_JOINED_MS : POLL_IDLE_MS);
-      api
-        .getMetronome(songId)
+      sampled(() => api.getMetronome(songId), addSample)
         .then(
           (s) => {
             if (!current(gen)) return;
@@ -228,7 +240,7 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
       checkNowRef.current = null;
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [songId, accept]);
+  }, [songId, accept, addSample]);
 
   /** Makes the loops match the current grid. Safe to call any time; does nothing when they already match. */
   const reconcile = useCallback(() => {
@@ -404,7 +416,7 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     async (change: MetroChange): Promise<boolean> => {
       setError("");
       try {
-        accept(await api.putMetronome(songId, change));
+        accept(await sampled(() => api.putMetronome(songId, change), addSample));
         setReachable(true);
         return true;
       } catch (e) {
@@ -412,7 +424,7 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
         return false;
       }
     },
-    [songId, accept],
+    [songId, accept, addSample],
   );
 
   /** Starts the session for everyone, and joins it on this phone. */

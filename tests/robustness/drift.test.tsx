@@ -80,6 +80,37 @@ describe("H7: performance.now() pausing while the server's clock runs (device sl
   });
 });
 
+describe("every metronome answer is a clock sample (#9)", () => {
+  it("the clock estimate improves from the session checks alone, with no more time calls", async () => {
+    // A slow, lopsided network (150 ms up, 50 ms down) while the first round of time calls runs: every sample
+    // says the server answered 50 ms before it really did, so the phone plays 50 ms early, within its ±100 ms.
+    world.latency = { getTime: [150, 50], getMetronome: [150, 50], putMetronome: [150, 50] };
+    await w.other({ bpm: 120, beatsPerBar: 4, running: true });
+    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    await advance(300, 10);
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    await advance(4500, 10);
+    const status = () => screen.getByRole("status").textContent;
+    expect(status()).toContain("Synced ±100 ms");
+    const ctx = FakeAudioContext.instances[0];
+    const s = (await w.stored()) as MetroSession;
+    const before = barErrorsMs(ctx, s, ctx.currentTime, ctx.currentTime + 4);
+    expect(before.length).toBeGreaterThan(0);
+    expect(before.every((e) => Math.abs(e + 50) < 1)).toBe(true);
+    // Then the network gets quick and even (10 ms network round trips). Only the session checks see it: no time
+    // calls are due.
+    world.latency = { getTime: [5, 5], getMetronome: [5, 5], putMetronome: [5, 5] };
+    const timeCalls = world.sent.getTime;
+    await advance(5000);
+    expect(world.sent.getTime).toBe(timeCalls);
+    expect(status()).toContain("Synced ±5 ms");
+    // And the offset it plays by is right now: the clicks land on the grid.
+    const after = barErrorsMs(ctx, s, ctx.currentTime, ctx.currentTime + 4);
+    expect(after.length).toBeGreaterThan(0);
+    expect(after.every((e) => Math.abs(e) < 1)).toBe(true);
+  });
+});
+
 /** Counts re-alignments (a fresh loop booked for the same grid) over `seconds`, with getOutputTimestamp jitter. */
 async function realignsWithJitter(jitterMs: number, seconds: number, seed = 1) {
   const r = rng(seed);

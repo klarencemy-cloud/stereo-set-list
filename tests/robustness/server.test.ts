@@ -4,7 +4,7 @@ import { memoryKV } from "../../netlify/functions/lib/kv";
 import { makeRepo, METRO_STALE_MS } from "../../netlify/functions/lib/repo";
 import { makeMetronomeHandler } from "../../netlify/functions/metronome";
 import { routeFor } from "../../src/sw/strategy";
-import type { MetroSession } from "../../src/shared/metronome";
+import type { MetroAnswer, MetroSession } from "../../src/shared/metronome";
 
 const U = "http://localhost";
 const req = (method: string, path: string, body?: unknown) =>
@@ -21,8 +21,9 @@ async function setup() {
   const song = await repo.createSong({
     title: "Song", artist: "Band", sourceUrl: null, originalKey: "C", bandKey: "C", capo: 0, content: "", bpm: null, beatsPerBar: null,
   });
-  const put = async (body: unknown) => (await metro(req("PUT", `/api/metronome/${song.id}`, body))).json() as Promise<MetroSession>;
-  const get = async () => (await metro(req("GET", `/api/metronome/${song.id}`))).json() as Promise<MetroSession | null>;
+  const put = async (body: unknown) =>
+    ((await (await metro(req("PUT", `/api/metronome/${song.id}`, body))).json()) as MetroAnswer).session as MetroSession;
+  const get = async () => ((await (await metro(req("GET", `/api/metronome/${song.id}`))).json()) as MetroAnswer).session;
   return { repo, clock, put, get, id: song.id };
 }
 
