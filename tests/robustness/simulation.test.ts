@@ -206,13 +206,13 @@ describe("Phase 2: protocol simulation", () => {
 
   it("share of changes heard by all 5 phones before startAt; and with a longer lead or faster poll (logged)", () => {
     const lines: string[] = [];
-    const header = "  profile                     kind   | lead 2 s/poll 1.5 s (now) | lead 3 s | lead 4 s | poll 1 s | poll 0.75 s";
+    const header = `  profile                     kind   | lead ${LEAD_MS / 1000} s/poll ${POLL_JOINED_MS / 1000} s (now) | lead 2 s | lead 4 s | poll 1 s | poll 0.75 s`;
     for (const { name, leg } of PROFILES) {
       for (const kind of ["start", "tempo"] as const) {
         const now = runReach(leg, { kind });
         const cells = [
           now,
-          runReach(leg, { kind, lead: 3000 }),
+          runReach(leg, { kind, lead: 2000 }),
           runReach(leg, { kind, lead: 4000 }),
           runReach(leg, { kind, poll: 1000 }),
           runReach(leg, { kind, poll: 750 }),

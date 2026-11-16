@@ -46,14 +46,13 @@ interface MetroSession {
 
 - Beat *n* (n ≥ 0) is at `startAt + n·60000/bpm` on the **server's clock**, accented when `n % beatsPerBar === 0`.
   Every phone in a session plays this one grid.
-- **The server works out `startAt`** on every change (`applyChange`), with a lead of 2000 ms:
+- **The server works out `startAt`** on every change (`applyChange`), with a lead of 3000 ms (`LEAD_MS`), so
+  a joined phone on a slow downlink still hears about a start or a change before its beat 1:
   - start (from stopped or no session): `startAt = now + lead`;
   - tempo or beats-per-bar change while running: the first bar line of the current grid at or after
     `now + lead`. The new tempo starts there on beat 1, so the grid never jumps;
   - change while stopped: the new tempo is stored, nothing starts;
   - stop: `running = false`, immediately.
-- **Planned (#10): the lead becomes 3 s**, for starts and changes alike, so a joined phone on a slow downlink
-  still hears about a change before its bar line.
 - **Planned (#8): every change goes through compare-and-swap.** The server reads the session with its version tag
   (the store's ETag) and writes only if the tag still matches, with a short retry loop. A Stop is applied to the latest session, so a
   tempo change sent at the same moment can't overwrite it. Today the last write wins outright.
@@ -79,7 +78,7 @@ interface MetroSession {
 ### Checking the session
 
 - While the panel is open, the phone checks `GET /api/metronome/:songId`: every 1.5 s while joined (also while
-  the session is stopped, so a restart reaches it), and every 10 s while not joined. With the 2 s lead, every
+  the session is stopped, so a restart reaches it), and every 10 s while not joined. With the 3 s lead, every
   joined phone hears about a change before it happens. No checks while the page is hidden (screen off, app in
   the background); one check straight away when it is visible again, and one on Join, and one after this
   phone's Start answer. No WebSockets.

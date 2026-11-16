@@ -43,7 +43,7 @@ export interface GridBeat {
 }
 
 /** How far ahead of "now" the server puts a start or a change, so every polling phone hears of it first. */
-export const LEAD_MS = 2000;
+export const LEAD_MS = 3000;
 
 // Absorbs floating-point error, so a beat that falls exactly on a window edge isn't lost or doubled.
 const EPS = 1e-9;

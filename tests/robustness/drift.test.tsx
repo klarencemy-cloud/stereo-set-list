@@ -114,7 +114,7 @@ describe("H8: jitter in the audio link re-aligns the loop", () => {
     }
     console.log(`[H8] 120 BPM 4/4, 60 s, uniform jitter on getOutputTimestamp().performanceTime:\n${rows.join("\n")}`);
     expect(rows).toHaveLength(8);
-  });
+  }, 30_000); // many simulated seconds; slow on a loaded machine
 });
 
 describe("H9: re-aligning a loop that runs early cuts its bar-line click and flams", () => {

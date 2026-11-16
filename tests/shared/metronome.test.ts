@@ -80,7 +80,7 @@ describe("applyChange", () => {
 
   it("starts a new session the lead time ahead", () => {
     const s = applyChange(null, { bpm: 90, beatsPerBar: 3, running: true }, now);
-    expect(s).toEqual({ bpm: 90, beatsPerBar: 3, startAt: 52_000, running: true, updatedAt: new Date(now).toISOString() });
+    expect(s).toEqual({ bpm: 90, beatsPerBar: 3, startAt: 53_000, running: true, updatedAt: new Date(now).toISOString() });
   });
 
   it("restarts a stopped session from now + lead with the stored tempo", () => {
@@ -89,13 +89,14 @@ describe("applyChange", () => {
   });
 
   it("puts a tempo change on the first bar line at or after now + lead", () => {
-    // Bars are 2000 ms long from 10 000: bar lines at ..., 50 000, 52 000, 54 000. now + lead = 52 100.
-    const s = applyChange(session(), { bpm: 100 }, 50_100);
-    expect(s).toMatchObject({ bpm: 100, beatsPerBar: 4, startAt: 54_000, running: true });
+    // Bars are 2000 ms long from 10 000: bar lines at ..., 52 000, 54 000, 56 000. now + lead = 54 100.
+    const s = applyChange(session(), { bpm: 100 }, 51_100);
+    expect(s).toMatchObject({ bpm: 100, beatsPerBar: 4, startAt: 56_000, running: true });
   });
 
   it("keeps a bar line that falls exactly on now + lead", () => {
-    expect(applyChange(session(), { bpm: 100 }, 50_000).startAt).toBe(52_000);
+    // now + lead = 54 000, a bar line.
+    expect(applyChange(session(), { bpm: 100 }, 51_000).startAt).toBe(54_000);
   });
 
   it("puts a beats-per-bar change on the next bar line of the old bar length", () => {

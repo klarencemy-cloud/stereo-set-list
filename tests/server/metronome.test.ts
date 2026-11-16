@@ -50,21 +50,21 @@ describe("metronome API", () => {
     expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 
-  it("starts 2 s ahead on the server clock, and everyone reads the same session", async () => {
+  it("starts 3 s ahead on the server clock, and everyone reads the same session", async () => {
     const { metro, id } = await setup();
     const put = await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
     expect(put.status).toBe(200);
     const started = await put.json();
-    expect(started).toMatchObject({ bpm: 120, beatsPerBar: 4, startAt: 1_002_000, running: true });
+    expect(started).toMatchObject({ bpm: 120, beatsPerBar: 4, startAt: 1_003_000, running: true });
     expect(await (await metro(req("GET", `/api/metronome/${id}`))).json()).toEqual(started);
   });
 
   it("puts a tempo change on the next bar line and stops on request", async () => {
     const { metro, clock, id } = await setup();
     await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
-    clock.now = 1_010_100; // bars of 2000 ms from 1 002 000; now + lead = 1 012 100
+    clock.now = 1_010_100; // bars of 2000 ms from 1 003 000; now + lead = 1 013 100
     const changed = await (await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90 }))).json();
-    expect(changed).toMatchObject({ bpm: 90, beatsPerBar: 4, startAt: 1_014_000, running: true });
+    expect(changed).toMatchObject({ bpm: 90, beatsPerBar: 4, startAt: 1_015_000, running: true });
     const stopped = await (await metro(req("PUT", `/api/metronome/${id}`, { running: false }))).json();
     expect(stopped).toMatchObject({ running: false, bpm: 90 });
   });
@@ -181,7 +181,7 @@ describe("metronome API", () => {
     // A tempo change on a forgotten session doesn't restart it; Start does, from now.
     expect((await (await metro(req("PUT", `/api/metronome/${id}`, { bpm: 80 }))).json()).running).toBe(false);
     const restarted = await (await metro(req("PUT", `/api/metronome/${id}`, { running: true }))).json();
-    expect(restarted).toMatchObject({ running: true, bpm: 80, startAt: clock.now + 2000 });
+    expect(restarted).toMatchObject({ running: true, bpm: 80, startAt: clock.now + 3000 });
   });
 
   it("treats a session nobody changed for 2 hours as stopped", async () => {

@@ -9,7 +9,7 @@ vi.mock("../../src/app/api", async () => {
 });
 
 import SongMetronome from "../../src/app/components/SongMetronome";
-import type { MetroSession } from "../../src/shared/metronome";
+import { LEAD_MS, type MetroSession } from "../../src/shared/metronome";
 import { advance, advanceUntil, FakeAudioContext, heard, setupWorld, teardownWorld, world } from "./harness";
 
 let w: Awaited<ReturnType<typeof setupWorld>>;
@@ -66,7 +66,7 @@ describe("H1: the starter waits for 20 serial clock samples before it plays anyt
       const { missed, want } = await starter(rtt);
       rows.push(`  RTT ${String(rtt).padStart(4)} ms: missed ${missed} of ${want} beats in bar 1`);
     }
-    console.log(`[H1] starter, 96 BPM 3/4 (bar = 1.875 s), 2 s lead:\n${rows.join("\n")}`);
+    console.log(`[H1] starter, 96 BPM 3/4 (bar = 1.875 s), ${LEAD_MS / 1000} s lead:\n${rows.join("\n")}`);
     expect(rows).toHaveLength(8);
   });
 });
@@ -98,12 +98,12 @@ describe("H2: a joined follower hears of a restart too late for the count-in", (
     expect(Math.abs(got[0].t - first)).toBeLessThan(0.002);
   });
 
-  it.fails("BUG H2: 1 s round trip (500 ms each way, congested 4G) misses beat 1 of the restart", async () => {
+  it("H2 fixed: 1 s round trip (500 ms each way, congested 4G) hears beat 1 of the restart", async () => {
     const { got, want } = await followerOfRestart([500, 500]);
     expect(got).toHaveLength(want);
   });
 
-  it.fails("BUG H2: a slow downlink (100 ms up, 600 ms down) misses beat 1 of the restart", async () => {
+  it("H2 fixed: a slow downlink (100 ms up, 600 ms down) hears beat 1 of the restart", async () => {
     const { got, want } = await followerOfRestart([100, 600]);
     expect(got).toHaveLength(want);
   });

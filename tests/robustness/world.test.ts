@@ -96,7 +96,7 @@ describe("the world's mic", () => {
 
   it("hears the leader's clicks one loopback delay after they sound on this phone's clock", async () => {
     world.mic.loopbackMs = 80;
-    const startAt = serverNow() + LEAD_MS;
+    const startAt = serverNow() + 2000;
     await led(startAt);
     const ctx = new FakeAudioContext();
     const rec = watch(listen(ctx as unknown as AudioContext, 4));

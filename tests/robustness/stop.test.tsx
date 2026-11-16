@@ -66,7 +66,7 @@ describe("H4: a poll in flight when this phone sends a change comes back after i
     const clicks = heard(ctx, t0 + 0.2, t0 + 3).map((h) => Math.round((h.t - t0) * 1000));
     console.log(`[H4] Stop for everyone with a poll in flight:\n${log.join("\n")}\n  clicks after the stop at +ms: ${clicks.join(", ")}`);
     expect(log.length).toBeGreaterThan(0);
-  });
+  }, 30_000); // many simulated seconds; slow on a loaded machine
 
   it.fails("BUG H4: a beats-per-bar change shows the old value again before the next poll fixes it", async () => {
     await joinedPhone();

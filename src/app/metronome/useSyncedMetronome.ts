@@ -11,7 +11,7 @@ import { useClockSync } from "./useClockSync";
 
 /**
  * How often a joined phone checks the session, also while it is stopped, so a restart reaches it in time.
- * Shorter than the server's 2 s lead.
+ * Shorter than the server's 3 s lead (LEAD_MS).
  */
 export const POLL_JOINED_MS = 1500;
 /** How often an open panel checks the session while this phone isn't joined. */
