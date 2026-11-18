@@ -157,8 +157,21 @@ describe("H18: Start for everyone from a panel whose view is old", () => {
   });
 });
 
-describe("H23 (new): two changes inside one lead put phones on different grids for a bar", () => {
-  it.fails("BUG H23: a phone that polled between the two changes plays a different bar from one that didn't", async () => {
+describe("H23: two changes inside one lead keep every phone on the same bar", () => {
+  /** The accents a phone plays in server time [from, to), rounded to the ms. */
+  const accents = (ctx: FakeAudioContext, from: number, to: number) =>
+    heard(ctx, ctx.audioAt(from) - 0.001, ctx.audioAt(to) - 0.001)
+      .filter((h) => h.accent)
+      .map((h) => Math.round(ctx.serverAtAudio(h.t)));
+  /** The bar lines of a grid in [from, to). */
+  const barLines = (g: { bpm: number; beatsPerBar: number; startAt: number }, from: number, to: number) => {
+    const barMs = (g.beatsPerBar * 60000) / g.bpm;
+    const out: number[] = [];
+    for (let t = g.startAt + Math.ceil((from - g.startAt) / barMs) * barMs; t < to; t += barMs) out.push(Math.round(t));
+    return out;
+  };
+
+  it("H23: a phone that polled between the two changes plays the same accents as one that didn't", async () => {
     world.latency = { getTime: [10, 10], getMetronome: [10, 10], putMetronome: [10, 10] };
     // Short bars, so the second change always lands after the first one's bar line.
     await w.other({ bpm: 240, beatsPerBar: 2, running: true });
@@ -172,23 +185,53 @@ describe("H23 (new): two changes inside one lead put phones on different grids f
     // Phone A's polls are read at joinA + 10 + 1500k; phone B's 750 ms later.
     const justAfterA = joinA + 10 + 1500 * 4 + 2;
     await advance(justAfterA - serverNow(), 1);
-    const s1 = (await w.other({ beatsPerBar: 3 }))!; // change 1: A won't hear of it, B will (its read is 748 ms later)
+    const changedAt = serverNow();
+    await w.other({ beatsPerBar: 3 }); // change 1: A won't hear of it, B will (its read is 748 ms later)
     await advance(800, 5);
-    const s2 = (await w.other({ bpm: 200 }))!; // change 2, worked out from change 1's grid
+    const s2 = (await w.other({ bpm: 200 }))!; // change 2, before change 1 has started: it replaces it
     await advance(6000, 10);
     const [ctxA, ctxB] = FakeAudioContext.instances;
-    const accents = (ctx: FakeAudioContext, from: number, to: number) =>
-      heard(ctx, ctx.audioAt(from) - 0.001, ctx.audioAt(to) - 0.001)
-        .filter((h) => h.accent)
-        .map((h) => Math.round(ctx.serverAtAudio(h.t) - from));
-    const from = s1.startAt;
-    console.log(
-      `[H23] change 1 starts at +0, change 2 at +${s2.startAt - from} ms. Accents heard in between (ms):
-` +
-        `  A (missed change 1): ${accents(ctxA, from, s2.startAt)}
-  B (saw change 1):    ${accents(ctxB, from, s2.startAt)}`,
-    );
-    const from_ = from;
-    expect(accents(ctxA, from_, s2.startAt)).toEqual(accents(ctxB, from_, s2.startAt));
+    const to = s2.startAt + 2 * ((s2.beatsPerBar * 60000) / s2.bpm);
+    const heardA = accents(ctxA, changedAt, to);
+    expect(heardA.length).toBeGreaterThan(4);
+    expect(accents(ctxB, changedAt, to)).toEqual(heardA);
+  });
+
+  it("H23: a change replaced too close to its start never plays; the phone keeps the sounding grid until the new start", async () => {
+    world.latency = { getTime: [10, 10], getMetronome: [10, 10], putMetronome: [10, 10] };
+    const s0 = (await w.other({ bpm: 240, beatsPerBar: 2, running: true }))!;
+    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    await advance(100, 10);
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    await advance(4000, 10);
+    const s1 = (await w.other({ beatsPerBar: 3 }))!;
+    await advance(2100, 5); // this phone has heard of change 1, which is now under 1.5 s away
+    const s2 = (await w.other({ bpm: 200 }))!;
+    expect(s2.startAt).toBeGreaterThan(s1.startAt); // moved to a later bar line of the sounding grid
+    expect(s2.prev).toEqual({ bpm: 240, beatsPerBar: 2, startAt: s0.startAt });
+    await advance(6000, 10);
+    const [ctx] = FakeAudioContext.instances;
+    expect(accents(ctx, s1.startAt - 1000, s2.startAt)).toEqual(barLines(s0, s1.startAt - 1000, s2.startAt));
+    expect(accents(ctx, s2.startAt, s2.startAt + 100)).toEqual([s2.startAt]);
+  });
+
+  it("H23: a phone that joins during a change's lead plays the previous grid until the new start", async () => {
+    world.latency = { getTime: [10, 10], getMetronome: [10, 10], putMetronome: [10, 10] };
+    const s0 = (await w.other({ bpm: 240, beatsPerBar: 2, running: true }))!;
+    const a = render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    await advance(100, 10);
+    fireEvent.click(within(a.container).getByRole("button", { name: "Join" }));
+    await advance(4000, 10);
+    const s1 = (await w.other({ beatsPerBar: 3 }))!;
+    const c = render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    await advance(100, 10);
+    fireEvent.click(within(c.container).getByRole("button", { name: "Join" }));
+    await advance(6000, 10);
+    const [ctxA, ctxC] = FakeAudioContext.instances;
+    const from = serverNow() - 6000 + 1000; // once the joining phone has synced its clock
+    const expected = barLines(s0, from, s1.startAt);
+    expect(expected.length).toBeGreaterThan(0);
+    expect(accents(ctxC, from, s1.startAt)).toEqual(expected);
+    expect(accents(ctxA, from, s1.startAt)).toEqual(expected);
   });
 });

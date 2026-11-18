@@ -3,7 +3,7 @@ import type { BaseVersion, Gig, GigInput, SetlistItem, Song, SongInput, SongSumm
 import { fromSongIds, setlistOf, songIdsOf } from "../../../src/shared/setlist";
 import { toSongSummary } from "../../../src/shared/song";
 import { isValidKey } from "../../../src/shared/transpose";
-import { applyChange, BEATS_PER_BAR, MAX_BPM, MIN_BPM, type MetroChange, type MetroSession } from "../../../src/shared/metronome";
+import { applyChange, BEATS_PER_BAR, MAX_BPM, MIN_BPM, type MetroChange, type MetroGrid, type MetroSession } from "../../../src/shared/metronome";
 import { songMatchKey, songsByMatchKey, uniqueTracks, type PlaylistTrack } from "../../../src/shared/playlist";
 import type { KV } from "./kv";
 
@@ -324,10 +324,20 @@ const isMetroSeenAt = (v: unknown): v is string => typeof v === "string" && Numb
 /** When the session was last changed or seen by a joined phone (ms). */
 const lastUsed = (s: MetroSession) => Math.max(Date.parse(s.updatedAt), s.seenAt ? Date.parse(s.seenAt) : -Infinity);
 
+/** A previous grid with only its grid fields, or undefined when it isn't a valid one. */
+function toMetroGrid(v: unknown): MetroGrid | undefined {
+  if (typeof v !== "object" || v === null) return undefined;
+  const { bpm, beatsPerBar, startAt } = v as Record<string, unknown>;
+  if (typeof bpm !== "number" || !Number.isFinite(bpm) || bpm < MIN_BPM || bpm > MAX_BPM) return undefined;
+  if (!(BEATS_PER_BAR as readonly unknown[]).includes(beatsPerBar)) return undefined;
+  if (typeof startAt !== "number" || !Number.isFinite(startAt)) return undefined;
+  return { bpm, beatsPerBar: beatsPerBar as number, startAt };
+}
+
 /**
- * The session as everyone reads it (every read path goes through this): only the known fields, a leader and a
- * seen-at only when they are valid, and a forgotten running one (not changed or seen for METRO_STALE_MS) counts
- * as stopped.
+ * The session as everyone reads it (every read path goes through this): only the known fields, a leader, a
+ * seen-at and a previous grid only when they are valid, and a forgotten running one (not changed or seen for
+ * METRO_STALE_MS) counts as stopped. A stopped session has no previous grid: nothing is sounding.
  */
 function toMetroSession(stored: MetroSession, nowMs: number): MetroSession {
   const { bpm, beatsPerBar, startAt, updatedAt, leader, seenAt } = stored;
@@ -341,7 +351,8 @@ function toMetroSession(stored: MetroSession, nowMs: number): MetroSession {
     ...(isMetroSeenAt(seenAt) ? { seenAt } : {}),
   };
   s.running = s.running && nowMs - lastUsed(s) <= METRO_STALE_MS;
-  return s;
+  const prev = s.running ? toMetroGrid(stored.prev) : undefined;
+  return prev ? { ...s, prev } : s;
 }
 
 /** A song as stored; songs saved before tempo existed have no bpm or beatsPerBar. */

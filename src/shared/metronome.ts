@@ -28,6 +28,19 @@ export interface MetroSession {
    * with any other change; a session stays running while it is seen or changed (see the server's staleness).
    */
   seenAt?: string;
+  /**
+   * The grid that is sounding until this one starts at `startAt`: set by a tempo or beats-per-bar change while it
+   * plays, so a phone that only sees the latest change (it missed one, or joins during the lead) still plays the
+   * right bar until then. Missing on a start, a stop, and a change made before anything was sounding.
+   */
+  prev?: MetroGrid;
+}
+
+/** A grid on its own: beat n is at startAt + n * 60000 / bpm (server time), and beat 0 starts a bar. */
+export interface MetroGrid {
+  bpm: number;
+  beatsPerBar: number;
+  startAt: number;
 }
 
 /**
@@ -69,6 +82,12 @@ export interface GridBeat {
 /** How far ahead of "now" the server puts a start or a change, so every polling phone hears of it first. */
 export const LEAD_MS = 3000;
 
+/**
+ * A change that replaces one that hasn't started yet keeps its start when it is at least this far away: enough
+ * for phones to hear of it in time (they check every 1.5 s while joined).
+ */
+export const KEEP_START_MS = 1500;
+
 // Absorbs floating-point error, so a beat that falls exactly on a window edge isn't lost or doubled.
 const EPS = 1e-9;
 
@@ -99,8 +118,11 @@ export function gridBeats(prev: MetroSession | null, cur: MetroSession, fromMs: 
 /**
  * The session after `change`, worked out on the server's clock:
  * - start: beat 0 is `leadMs` from now;
- * - a tempo or beats-per-bar change while running: the new tempo starts on the first bar line of the current
- *   grid at or after now + lead, so the grid never jumps;
+ * - a tempo or beats-per-bar change while running: the new tempo starts on the first bar line of the grid that is
+ *   sounding at or after now + lead, so the grid never jumps, and that grid is kept as `prev` until then;
+ * - a change before the current one has started replaces it rather than stacking on it (H23): it keeps that start
+ *   while it is at least KEEP_START_MS away, otherwise it moves to the next bar line of the sounding grid at or
+ *   after now + lead (or to now + lead when nothing is sounding yet, during a start's lead);
  * - stop: at once.
  * The leader is set by a start (from `change.leader`, or none) and kept by every other change.
  */
@@ -125,7 +147,21 @@ export function applyChange(
     return { bpm, beatsPerBar, startAt: nowMs + leadMs, running: true, updatedAt, ...leader };
   }
   if (bpm === current.bpm && beatsPerBar === current.beatsPerBar) return current;
-  const barMs = (current.beatsPerBar * 60000) / current.bpm;
-  const bars = Math.max(0, Math.ceil((nowMs + leadMs - current.startAt) / barMs - EPS));
-  return { bpm, beatsPerBar, startAt: current.startAt + bars * barMs, running: true, updatedAt, ...kept };
+  const started = current.startAt <= nowMs;
+  // The grid that is sounding now: the current one once it has started, otherwise the one it replaces (if any).
+  const sounding: MetroGrid | undefined = started
+    ? { bpm: current.bpm, beatsPerBar: current.beatsPerBar, startAt: current.startAt }
+    : current.prev;
+  const prev = sounding ? { prev: sounding } : {};
+  if (!started && current.startAt - nowMs >= KEEP_START_MS) {
+    return { bpm, beatsPerBar, startAt: current.startAt, running: true, updatedAt, ...kept, ...prev };
+  }
+  const startAt = sounding ? nextBarLine(sounding, nowMs + leadMs) : nowMs + leadMs;
+  return { bpm, beatsPerBar, startAt, running: true, updatedAt, ...kept, ...prev };
+}
+
+/** The first bar line of `g` at or after `atMs`. */
+function nextBarLine(g: MetroGrid, atMs: number): number {
+  const barMs = (g.beatsPerBar * 60000) / g.bpm;
+  return g.startAt + Math.max(0, Math.ceil((atMs - g.startAt) / barMs - EPS)) * barMs;
 }

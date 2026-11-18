@@ -390,3 +390,59 @@ describe("seen-at: joined phones keep a session alive (H17)", () => {
     expect((await repo.setMetronome(id, { beatsPerBar: 4 }, clock.now))!.running).toBe(false);
   });
 });
+
+describe("previous grid: two quick changes keep every phone on the same bar (H23)", () => {
+  const put = (metro: (r: Request) => Promise<Response>, id: string, body: unknown) =>
+    metro(req("PUT", `/api/metronome/${id}`, body)).then(sessionOf);
+  const get = (metro: (r: Request) => Promise<Response>, id: string) =>
+    metro(req("GET", `/api/metronome/${id}`)).then(sessionOf);
+
+  it("a second change before the first one starts replaces it, and every read path shows the sounding grid", async () => {
+    const { metro, clock, id } = await setup();
+    const started = await put(metro, id, { bpm: 120, beatsPerBar: 4, running: true });
+    const grid = { bpm: 120, beatsPerBar: 4, startAt: started.startAt };
+    clock.now = started.startAt + 10_000;
+    const first = await put(metro, id, { beatsPerBar: 3 });
+    expect(first.prev).toEqual(grid);
+    clock.now += 500;
+    const second = await put(metro, id, { bpm: 200 });
+    expect(second).toMatchObject({ bpm: 200, beatsPerBar: 3, startAt: first.startAt, prev: grid });
+    expect(await get(metro, id)).toEqual(second);
+  });
+
+  it("a session without a previous grid reads as before", async () => {
+    const { kv, metro, clock, repo, id } = await setup();
+    const stored = { bpm: 120, beatsPerBar: 4, startAt: 1_002_000, running: true, updatedAt: new Date(1_000_000).toISOString() };
+    await kv.setText(`metronome/${id}`, JSON.stringify(stored));
+    clock.now = 1_000_100;
+    expect(await get(metro, id)).toEqual(stored);
+    expect(await repo.setMetronome(id, { beatsPerBar: 4 }, clock.now)).toEqual(stored);
+  });
+
+  it("drops a bad previous grid on every read path", async () => {
+    const { kv, metro, clock, repo, id } = await setup();
+    const base = { bpm: 120, beatsPerBar: 4, startAt: 1_002_000, running: true, updatedAt: new Date(1_000_000).toISOString() };
+    const bad = [
+      42, "grid", null, [], {}, { bpm: 120, beatsPerBar: 4 },
+      { bpm: "120", beatsPerBar: 4, startAt: 1 }, { bpm: 120, beatsPerBar: 1, startAt: 1 },
+      { bpm: 0, beatsPerBar: 4, startAt: 1 }, { bpm: 120, beatsPerBar: 4, startAt: Infinity },
+    ];
+    for (const prev of bad) {
+      await kv.setText(`metronome/${id}`, JSON.stringify({ ...base, prev }));
+      clock.now = 1_000_100;
+      expect(await get(metro, id)).toEqual(base);
+      expect(await repo.setMetronome(id, { beatsPerBar: 4 }, clock.now)).toEqual(base);
+    }
+  });
+
+  it("keeps only the grid fields of a previous grid, and none on a stopped session", async () => {
+    const { kv, metro, clock, id } = await setup();
+    const prev = { bpm: 100, beatsPerBar: 3, startAt: 990_000 };
+    const base = { bpm: 120, beatsPerBar: 4, startAt: 1_002_000, running: true, updatedAt: new Date(1_000_000).toISOString() };
+    await kv.setText(`metronome/${id}`, JSON.stringify({ ...base, prev: { ...prev, extra: "x" } }));
+    clock.now = 1_000_100;
+    expect(await get(metro, id)).toEqual({ ...base, prev });
+    await kv.setText(`metronome/${id}`, JSON.stringify({ ...base, running: false, prev }));
+    expect(await get(metro, id)).toEqual({ ...base, running: false });
+  });
+});

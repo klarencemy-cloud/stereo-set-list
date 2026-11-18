@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import { audioLink, createAudioContext, preferPlaybackAudio, startClickLoop, type ClickLoop } from "../audio";
 import { deviceId } from "../device";
-import type { MetroAnswer, MetroChange, MetroSession } from "../../shared/metronome";
+import type { MetroAnswer, MetroChange, MetroGrid, MetroSession } from "../../shared/metronome";
 import { linkSmoother, toAudioTime, type TimeSample } from "./clock";
 import { listen } from "./listen";
 import { loopStart, phaseError, REALIGN_TICKS, shouldRealign } from "./loop";
@@ -66,6 +66,9 @@ interface Playing {
   /** Its phase error (s) on each of the last REALIGN_TICKS ticks since it started playing, oldest first. */
   errors: number[];
 }
+
+/** Whether two grids put every beat in the same place. */
+const sameGrid = (a: MetroGrid, b: MetroGrid) => a.bpm === b.bpm && a.beatsPerBar === b.beatsPerBar && a.startAt === b.startAt;
 
 /** Stops a loop at `at`, unless it is already set to stop sooner. */
 function stopBy(p: Playing, at: number) {
@@ -158,9 +161,6 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     return { offsetMs: m.offsetMs + driftPerMs * (performance.now() - m.atMs), nudgeMs: nudge + m.shiftMs };
   };
 
-  /** Best guess at the server's time now; before syncing, this phone's own clock. */
-  const serverNow = () => (live.current.synced ? performance.now() + aligned().offsetMs : Date.now());
-
   /** Stops every loop at `at` (audio s; default now). */
   const stopAudio = useCallback((at = 0) => {
     for (const p of audio.current) p.loop.stop(at);
@@ -172,12 +172,9 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
       const old = grid.current.cur;
       if (old !== undefined && sameSession(old, next)) return;
       if (next?.running) {
-        if (old?.running && old.startAt < next.startAt) {
-          // The flash keeps following whatever is sounding until the new grid starts on its bar line.
-          if (old.startAt <= serverNow()) grid.current.prev = old;
-        } else {
-          grid.current.prev = null;
-        }
+        // Until the new grid starts, the clicks and the flash follow the grid that is sounding, as the server
+        // keeps it: right even on a phone that missed a change, or saw one that was since replaced (H23).
+        grid.current.prev = next.prev ? { ...next.prev, running: true, updatedAt: next.updatedAt } : null;
       } else {
         grid.current.prev = null;
         stopAudio();
@@ -285,6 +282,25 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     // A new grid: book it from its start (or join it part-way). Whatever is booked so far plays until then;
     // a loop that would only start after it never plays.
     const { when, offset } = loopStart(startS, barS, now + START_MARGIN_S);
+    // Until then the grid that is sounding plays. A phone that booked a change since replaced (H23), or that joins
+    // during the lead, has no loop for it that lasts until `when`: it books one now, from the same place in the bar,
+    // and drops the rest (a loop that hasn't started yet never plays).
+    const prev = grid.current.prev;
+    const earliest = now + START_MARGIN_S;
+    if (prev?.running && when > earliest) {
+      const lasts = (p: Playing) => p.when <= earliest && (p.stopAt === undefined || p.stopAt >= when);
+      if (!loops.some((p) => sameGrid(p.grid, prev) && lasts(p))) {
+        for (const p of loops) stopBy(p, earliest);
+        const prevS = toAudioTime(prev.startAt, offsetMs, smoothedLink(ctx), nudge);
+        const at = loopStart(prevS, (prev.beatsPerBar * 60) / prev.bpm, earliest);
+        loops.push({
+          loop: startClickLoop(ctx, prev.bpm, prev.beatsPerBar, at.when, at.offset),
+          grid: prev,
+          when: at.when,
+          errors: [],
+        });
+      }
+    }
     for (const p of loops) stopBy(p, when);
     loops.push({ loop: startClickLoop(ctx, cur.bpm, cur.beatsPerBar, when, offset), grid: cur, when, errors: [] });
   }, [stopAudio]);
