@@ -142,9 +142,12 @@ export const api = {
 
   /** The server's clock (ms), for the synced metronome. */
   getTime: () => json<{ now: number }>("/api/time", { cache: "no-store" }),
-  /** The song's shared metronome (null when nobody has started one), and the server's time when it answered. */
-  getMetronome: (songId: string) =>
-    json<MetroAnswer>(`/api/metronome/${encodeURIComponent(songId)}`, { cache: "no-store" }),
+  /**
+   * The song's shared metronome (null when nobody has started one), and the server's time when it answered.
+   * `seen`: a joined phone's check, which tells the server the session is still in use.
+   */
+  getMetronome: (songId: string, seen = false) =>
+    json<MetroAnswer>(`/api/metronome/${encodeURIComponent(songId)}${seen ? "?seen=1" : ""}`, { cache: "no-store" }),
   /**
    * Starts, changes or stops the song's metronome for everyone; the server picks when it takes effect. Answers
    * like getMetronome.

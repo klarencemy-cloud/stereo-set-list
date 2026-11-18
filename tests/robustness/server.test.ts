@@ -24,7 +24,10 @@ async function setup() {
   const put = async (body: unknown) =>
     ((await (await metro(req("PUT", `/api/metronome/${song.id}`, body))).json()) as MetroAnswer).session as MetroSession;
   const get = async () => ((await (await metro(req("GET", `/api/metronome/${song.id}`))).json()) as MetroAnswer).session;
-  return { repo, clock, put, get, id: song.id };
+  /** A joined phone's check: it also marks the session seen. */
+  const check = async () =>
+    ((await (await metro(req("GET", `/api/metronome/${song.id}?seen=1`))).json()) as MetroAnswer).session;
+  return { repo, clock, put, get, check, id: song.id };
 }
 
 describe("H5: two phones change it at the same moment", () => {
@@ -86,25 +89,34 @@ describe("H5: two phones change it at the same moment", () => {
 });
 
 describe("H17: a running session nobody changes for 2 h", () => {
-  it.fails("BUG H17: reads as stopped after 2 h, even with phones joined and polling the whole time", async () => {
-    const { clock, put, get } = await setup();
+  it("H17: keeps running past 2 h while a joined phone checks it", async () => {
+    const { clock, put, check } = await setup();
     await put({ bpm: 120, beatsPerBar: 4, running: true });
-    // Joined phones poll every 1.5 s; none of that counts as use.
+    // A joined phone's checks mark the session seen; here sampled every 10 min.
     for (let t = 0; t < METRO_STALE_MS; t += 600_000) {
       clock.now += 600_000;
-      await get();
+      await check();
     }
     clock.now += 1000;
-    expect((await get())!.running).toBe(true);
+    expect((await check())!.running).toBe(true);
   });
 
-  it.fails("BUG H17: pressing Start for everyone again at the same tempo doesn't keep it alive either", async () => {
-    const { clock, put, get } = await setup();
-    await put({ bpm: 120, beatsPerBar: 4, running: true });
-    clock.now += METRO_STALE_MS - 60_000;
-    await put({ bpm: 120, beatsPerBar: 4, running: true }); // same tempo: stored unchanged, updatedAt not moved
-    clock.now += 120_000;
-    expect((await get())!.running).toBe(true);
+  // Replaces "BUG H17: pressing Start for everyone again at the same tempo doesn't keep it alive either". In the
+  // decided design a session is kept alive by joined phones checking it (seen-at), not by pressing Start again.
+  it("H17: pressing Start again doesn't keep it alive by itself; a joined phone's check does", async () => {
+    const pressed = await setup();
+    await pressed.put({ bpm: 120, beatsPerBar: 4, running: true });
+    pressed.clock.now += METRO_STALE_MS - 60_000;
+    await pressed.put({ bpm: 120, beatsPerBar: 4, running: true }); // same tempo: nothing changes
+    pressed.clock.now += 120_000;
+    expect((await pressed.get())!.running).toBe(false);
+
+    const joined = await setup();
+    await joined.put({ bpm: 120, beatsPerBar: 4, running: true });
+    joined.clock.now += METRO_STALE_MS - 60_000;
+    await joined.check();
+    joined.clock.now += 120_000;
+    expect((await joined.get())!.running).toBe(true);
   });
 });
 

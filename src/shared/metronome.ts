@@ -23,6 +23,11 @@ export interface MetroSession {
    * started before leaders existed, or by a client that sends none.
    */
   leader?: string;
+  /**
+   * When a joined phone last marked it seen (server time, ISO). Written at most once per 10 minutes and never
+   * with any other change; a session stays running while it is seen or changed (see the server's staleness).
+   */
+  seenAt?: string;
 }
 
 /**

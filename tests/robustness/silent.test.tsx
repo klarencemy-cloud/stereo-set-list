@@ -143,7 +143,7 @@ describe("H22 (new): a request that never answers", () => {
 });
 
 describe("H17: a session running at one tempo for 2 h", () => {
-  it.fails("BUG H17: it stops on every phone mid-song, with no warning beforehand", async () => {
+  it("H17: a joined phone keeps it running past 2 h; it doesn't stop mid-song", async () => {
     // Started 2 h minus 5 s ago (server time) and never changed since.
     await w.repo.setMetronome(w.song.id, { bpm: 120, beatsPerBar: 4, running: true }, serverNow() - METRO_STALE_MS + 5000);
     render(<SongMetronome song={w.song} onSongChange={() => {}} />);

@@ -257,10 +257,13 @@ function blankSong({ id, title, artist, trackId }: { id: string; title: string; 
 }
 
 /**
- * A running metronome nobody has changed (start, stop, tempo) for 2 hours reads as stopped, so a
- * forgotten one doesn't trap people.
+ * A running metronome nobody has changed (start, stop, tempo) or seen (a joined phone's check) for 2 hours
+ * reads as stopped, so a forgotten one doesn't trap people.
  */
 export const METRO_STALE_MS = 2 * 60 * 60 * 1000;
+
+/** A joined phone's check writes seen-at only when the session was last changed or seen longer ago than this. */
+export const METRO_SEEN_EVERY_MS = 10 * 60 * 1000;
 
 /** How many times a conditional write is re-applied to a record that changed under it before giving up. */
 export const WRITE_ATTEMPTS = 5;
@@ -296,15 +299,29 @@ function checkMetroChange(input: unknown): MetroChange {
 
 const isMetroLeader = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= LIMITS.metroLeader;
 
+const isMetroSeenAt = (v: unknown): v is string => typeof v === "string" && Number.isFinite(Date.parse(v));
+
+/** When the session was last changed or seen by a joined phone (ms). */
+const lastUsed = (s: MetroSession) => Math.max(Date.parse(s.updatedAt), s.seenAt ? Date.parse(s.seenAt) : -Infinity);
+
 /**
- * The session as everyone reads it (every read path goes through this): only the known fields, a leader only
- * when it is a valid one, and a forgotten running one counts as stopped.
+ * The session as everyone reads it (every read path goes through this): only the known fields, a leader and a
+ * seen-at only when they are valid, and a forgotten running one (not changed or seen for METRO_STALE_MS) counts
+ * as stopped.
  */
 function toMetroSession(stored: MetroSession, nowMs: number): MetroSession {
-  const age = nowMs - Date.parse(stored.updatedAt);
-  const running = stored.running && age <= METRO_STALE_MS;
-  const { bpm, beatsPerBar, startAt, updatedAt, leader } = stored;
-  return { bpm, beatsPerBar, startAt, running, updatedAt, ...(isMetroLeader(leader) ? { leader } : {}) };
+  const { bpm, beatsPerBar, startAt, updatedAt, leader, seenAt } = stored;
+  const s: MetroSession = {
+    bpm,
+    beatsPerBar,
+    startAt,
+    running: stored.running,
+    updatedAt,
+    ...(isMetroLeader(leader) ? { leader } : {}),
+    ...(isMetroSeenAt(seenAt) ? { seenAt } : {}),
+  };
+  s.running = s.running && nowMs - lastUsed(s) <= METRO_STALE_MS;
+  return s;
 }
 
 /** A song as stored; songs saved before tempo existed have no bpm or beatsPerBar. */
@@ -453,10 +470,26 @@ export function makeRepo(kv: KV) {
    * The song's metronome session (null when nobody has started one). 404 when the song doesn't exist.
    * Reads the session first: a session implies the song exists (deleting a song deletes its session),
    * so the song is only looked up when there's no session. One storage read per check while playing.
+   *
+   * `seen` (a joined phone's check) marks a running session seen, so it doesn't go stale while phones play
+   * along. That is a write only when it was last changed or seen over METRO_SEEN_EVERY_MS ago, and it lands only
+   * if nobody wrote the session since it was read: a change that got there first is newer use anyway.
    */
-  async function getMetronome(songId: string, nowMs: number): Promise<MetroSession | null> {
-    const stored = await readJson<MetroSession>(`metronome/${songId}`);
-    if (stored) return toMetroSession(stored, nowMs);
+  async function getMetronome(songId: string, nowMs: number, opts: { seen?: boolean } = {}): Promise<MetroSession | null> {
+    const key = `metronome/${songId}`;
+    if (opts.seen) {
+      const got = await kv.getTextTagged(key);
+      if (got) {
+        const session = toMetroSession(JSON.parse(got.value) as MetroSession, nowMs);
+        if (!session.running || nowMs - lastUsed(session) <= METRO_SEEN_EVERY_MS) return session;
+        const seen = toMetroSession({ ...session, seenAt: new Date(nowMs).toISOString() }, nowMs);
+        if (await kv.setTextIfMatch(key, JSON.stringify(seen), got.etag)) return seen;
+        return getMetronome(songId, nowMs);
+      }
+    } else {
+      const stored = await readJson<MetroSession>(key);
+      if (stored) return toMetroSession(stored, nowMs);
+    }
     if ((await kv.getText(`songs/${songId}`)) === null) throw new NotFoundError("song not found");
     return null;
   }

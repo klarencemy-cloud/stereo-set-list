@@ -205,7 +205,8 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
         due = true;
         if (settled && current(gen)) check(gen);
       }, joinedRef.current ? POLL_JOINED_MS : POLL_IDLE_MS);
-      sampled(() => api.getMetronome(songId), addSample)
+      // A joined phone's check also marks the session seen, so it doesn't go stale while the band plays along.
+      sampled(() => api.getMetronome(songId, joinedRef.current), addSample)
         .then(
           (s) => {
             if (!current(gen)) return;

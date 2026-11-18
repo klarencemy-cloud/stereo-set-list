@@ -133,7 +133,7 @@ describe("SongMetronome, nothing running", () => {
     serve(mocked.putMetronome, running({ bpm: 96, beatsPerBar: 3 }));
     renderPanel();
     await screen.findByRole("button", { name: "Start for everyone" });
-    expect(mocked.getMetronome).toHaveBeenCalledWith("s1");
+    expect(mocked.getMetronome).toHaveBeenCalledWith("s1", false); // not joined: doesn't mark it seen
     expect(document.querySelector(".metro-bpm")).toHaveTextContent("96");
     expect(screen.getByRole("button", { name: "3" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(screen.getByRole("button", { name: "Faster" }));

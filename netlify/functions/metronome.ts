@@ -20,7 +20,11 @@ export function makeMetronomeHandler(repo: Repo, clock: () => number) {
   return guard(async (req) => {
     const [songId, extra] = routeParts(req);
     if (songId === undefined || extra !== undefined) return notFound();
-    if (req.method === "GET") return live(await repo.getMetronome(songId, clock()), clock);
+    if (req.method === "GET") {
+      // `?seen=1`: a joined phone's check, which keeps the session from going stale.
+      const seen = new URL(req.url).searchParams.get("seen") === "1";
+      return live(await repo.getMetronome(songId, clock(), { seen }), clock);
+    }
     if (req.method === "PUT") return live(await repo.setMetronome(songId, await readBody(req), clock()), clock);
     return methodNotAllowed();
   });
