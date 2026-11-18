@@ -18,6 +18,11 @@ export const POLL_JOINED_MS = 1500;
 export const POLL_IDLE_MS = 10_000;
 /** How often the page lines the loop up with the grid and moves the flash. The clicks themselves don't need it. */
 const TICK_MS = 25;
+/**
+ * An audio clock that hasn't moved for this long, while performance.now() has, is frozen even if the context says
+ * it is running (H12). A running clock moves every render quantum (a few ms).
+ */
+const FROZEN_MS = 500;
 /** A loop never starts sooner than this from now, so the audio engine gets it in time. */
 const START_MARGIN_S = 0.05;
 
@@ -119,6 +124,12 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
   const [beat, setBeat] = useState<{ index: number; n: number } | null>(null);
   const [error, setError] = useState("");
   const [noSound, setNoSound] = useState(false);
+  /** True while joined and the phone has paused the sound (a call, Siri, the lock screen): see soundIsPaused. */
+  const [soundPaused, setSoundPaused] = useState(false);
+  /** Mirrors soundPaused for the tick. */
+  const pausedRef = useRef(false);
+  /** When (performance.now()) the audio clock was last seen moving, and what it read then. */
+  const clockSeen = useRef<{ perfMs: number; audioS: number } | null>(null);
   /** True after this phone's start found the session already running (it was left as it is). */
   const [alreadyPlaying, setAlreadyPlaying] = useState(false);
   // The clock syncs from when the panel opens, so it is ready by the time this phone starts or joins (H1).
@@ -129,8 +140,8 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
   /** Mirrors `joined` for the session checks, which pick their next delay without restarting. */
   const joinedRef = useRef(false);
   joinedRef.current = joined;
-  /** Checks the session now (set while the panel is open). */
-  const checkNowRef = useRef<(() => void) | null>(null);
+  /** Checks the session now (set while the panel is open). Resolves whether that check was answered. */
+  const checkNowRef = useRef<(() => Promise<boolean>) | null>(null);
   // `cur` is undefined until the first answer, so a first answer of "no session" still counts as news.
   // `prev` is the grid that was sounding before the latest change; the flash follows it until the new one starts.
   const grid = useRef<{ prev: MetroSession | null; cur: MetroSession | null | undefined }>({ prev: null, cur: undefined });
@@ -212,34 +223,36 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     let answered = false;
     // The next check is timed from when this one starts, and goes out even if this one hasn't answered (it gives
     // up after METRONOME_TIMEOUT_MS), so a request that hangs can't stop the checks (H22).
-    function check(gen: number) {
+    function check(gen: number): Promise<boolean> {
       const seq = ++sentSeq;
       timer = setTimeout(() => {
         if (current(gen) && !hidden()) check(gen);
       }, joinedRef.current ? POLL_JOINED_MS : POLL_IDLE_MS);
       // A joined phone's check also marks the session seen, so it doesn't go stale while the band plays along.
-      sampled(() => api.getMetronome(songId, joinedRef.current), addSample).then(
+      return sampled(() => api.getMetronome(songId, joinedRef.current), addSample).then(
         (s) => {
-          if (!current(gen) || seq < heard) return;
+          if (!current(gen) || seq < heard) return true;
           heard = seq;
           failures = 0;
           answered = true;
           setReachable(true);
           accept(s);
+          return true;
         },
         () => {
-          if (!current(gen) || seq < heard) return;
+          if (!current(gen) || seq < heard) return false;
           heard = seq;
           failures++;
           // One failure can be a blip; before the first answer there is nothing to keep showing, so say so at once.
           if (failures >= 2 || !answered) setReachable(false);
+          return false;
         },
       );
     }
     /** Drops the pending check and checks now. */
     function restart() {
       clearTimeout(timer);
-      check(++generation);
+      return check(++generation);
     }
     const onVisibility = () => {
       if (hidden()) {
@@ -403,19 +416,51 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     };
   }, [shouldListen, leader, me, roundTripMs, attempt, stopAudio]);
 
+  /** Checks the session now ("Try syncing again"). Resolves whether the server answered. */
+  const retry = useCallback(() => checkNowRef.current?.() ?? Promise.resolve(false), []);
+
   /** Goes silent and matches the band by ear again. */
   const listenAgain = useCallback(() => setAttempt((n) => n + 1), []);
+
+  /**
+   * Whether the phone has paused this phone's sound: the context isn't running (suspended or interrupted), or its
+   * clock has stopped moving while it says it is running (H12).
+   */
+  const soundIsPaused = useCallback((ctx: AudioContext) => {
+    const perfMs = performance.now();
+    const audioS = ctx.currentTime;
+    const seen = clockSeen.current;
+    if (!seen || audioS !== seen.audioS) clockSeen.current = { perfMs, audioS };
+    const frozen = !!seen && audioS === seen.audioS && perfMs - seen.perfMs >= FROZEN_MS;
+    return ctx.state !== "running" || frozen;
+  }, []);
 
   useEffect(() => {
     if (!joined || !synced) return;
     const tick = () => {
-      reconcile();
+      const ctx = ctxRef.current;
+      const paused = !!ctx && soundIsPaused(ctx);
+      if (paused !== pausedRef.current) {
+        pausedRef.current = paused;
+        setSoundPaused(paused);
+        // Paused: whatever is booked is dropped, so it can't play off the grid once the clock moves on. Either way
+        // the link readings from before are wrong now (the audio clock stood still while performance.now() ran),
+        // so the loops are booked afresh from new ones once it plays again.
+        stopAudio();
+        smoother.current.clear();
+      }
+      if (!paused) reconcile();
       flash();
     };
     tick();
     const t = setInterval(tick, TICK_MS);
     return () => clearInterval(t);
-  }, [joined, synced, reconcile, flash]);
+  }, [joined, synced, reconcile, flash, soundIsPaused, stopAudio]);
+
+  /** Resumes paused sound. Call it from a tap: the phone may refuse a resume that doesn't come from one. */
+  const resumeSound = useCallback(() => {
+    ctxRef.current?.resume().catch(() => {});
+  }, []);
 
   /** Starts this phone's audio and marks it joined. */
   const joinPhone = useCallback(() => {
@@ -428,6 +473,7 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     }
     // No sound: the flash still follows the beat.
     setNoSound(!ctx);
+    clockSeen.current = null;
     joinedRef.current = true;
     setJoined(true);
   }, []);
@@ -448,6 +494,8 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     joinedRef.current = false;
     setJoined(false);
     setBeat(null);
+    pausedRef.current = false;
+    setSoundPaused(false);
     // Suspended, the audio clock stands still while performance.now() runs on: the old readings are wrong now.
     smoother.current.clear();
     ctxRef.current?.suspend().catch(() => {});
@@ -522,6 +570,9 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     beat,
     error,
     noSound,
+    /** Joined, and the phone has paused the sound: `resumeSound` from a tap brings it back. */
+    soundPaused: joined && soundPaused,
+    resumeSound,
     /** This phone's Start for everyone found it already playing, so it offers to join instead. */
     alreadyPlaying,
     /** How this phone is lined up with the band (see SyncPhase). */
@@ -531,6 +582,7 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     /** Someone else leads, but this phone can't match by ear until its round trip is measured. */
     needsRoundTrip: joined && !!session?.running && !!leader && leader !== me && roundTripMs === null,
     listenAgain,
+    retry,
     join,
     leave,
     start,

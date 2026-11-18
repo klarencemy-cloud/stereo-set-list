@@ -39,7 +39,7 @@ const lit = () => Array.from(document.querySelectorAll(".metro-dot")).findIndex(
 const soundWarning = () => screen.queryByText(/no sound|tap to (resume|unmute)|sound (is )?(off|paused)|audio/i);
 
 describe("H12: the audio context is suspended or interrupted (call, Siri, another app)", () => {
-  it.fails("BUG H12: the flash keeps going with no sound and nothing on screen says so", async () => {
+  it("H12 fixed: with the sound interrupted, the flash keeps going and the screen says the sound is paused within 2 s", async () => {
     const ctx = await joined();
     // A phone call: iOS interrupts the context, and resume() without a fresh tap is refused.
     ctx.resumeBlocked = true;
@@ -58,7 +58,17 @@ describe("H12: the audio context is suspended or interrupted (call, Siri, anothe
     expect(soundWarning()).not.toBeNull();
   });
 
-  it("H12 measure: what the booking does while the audio clock is frozen (logged)", async () => {
+  /** Clicks heard in [from, to), with how far each is from the nearest beat of the stored grid (ms). */
+  async function clicksAgainstGrid(ctx: FakeAudioContext, from: number, to: number) {
+    const s = (await w.stored())!;
+    const beatMs = 60000 / s.bpm;
+    return heard(ctx, from, to).map((h) => {
+      const d = (((ctx.serverAtAudio(h.t) - s.startAt) % beatMs) + beatMs) % beatMs;
+      return { ...h, offMs: Math.min(d, beatMs - d) };
+    });
+  }
+
+  it("H12 measure: after the tap, the clicks are back on the grid, with no cut or doubled click", async () => {
     const ctx = await joined();
     const before = ctx.loops.length;
     ctx.resumeBlocked = true;
@@ -66,30 +76,62 @@ describe("H12: the audio context is suspended or interrupted (call, Siri, anothe
     await advance(10_000, 25);
     const frozen = ctx.loops.length - before;
     ctx.resumeBlocked = false;
-    await ctx.resume();
+    fireEvent.click(screen.getByRole("button", { name: /Sound paused/ }));
+    await advance(50, 10);
     const t = ctx.currentTime;
     await advance(6000, 25);
+    const clicks = await clicksAgainstGrid(ctx, t, ctx.currentTime);
+    const doubled = clicks.filter((c, i) => i > 0 && c.t - clicks[i - 1].t < 0.25).length;
     console.log(
-      `[H12] 10 s frozen: ${frozen} loop(s) booked while frozen; after resuming, ${ctx.loops.length - before - frozen} more, ` +
-        `${heard(ctx, t, ctx.currentTime).filter((h) => h.cut).length} cut clicks`,
+      `[H12] 10 s frozen: ${frozen} loop(s) booked while frozen; after the tap, ${clicks.filter((c) => c.cut).length} cut ` +
+        `and ${doubled} doubled click(s), worst ${Math.max(...clicks.map((c) => c.offMs)).toFixed(1)} ms off the grid`,
     );
-    expect(frozen).toBeGreaterThanOrEqual(0);
+    expect(frozen).toBe(0);
+    expect(clicks.length).toBeGreaterThanOrEqual(11); // 120 BPM over ~6 s
+    expect(clicks.filter((c) => c.cut)).toEqual([]);
+    expect(doubled).toBe(0);
+    expect(Math.max(...clicks.map((c) => c.offMs))).toBeLessThan(2);
+    expect(screen.queryByRole("button", { name: /Sound paused/ })).toBeNull();
+  });
+
+  it("a frozen audio clock that still says 'running' is caught too", async () => {
+    const ctx = await joined();
+    ctx.freeze("suspended");
+    ctx.state = "running"; // the clock stands still, but the context claims to be running
+    await advance(2000, 25);
+    expect(screen.getByRole("button", { name: /Sound paused/ })).toBeInTheDocument();
+    // It moves again: the message goes, and the clicks are booked afresh.
+    await ctx.resume();
+    await advance(1000, 25);
+    expect(screen.queryByRole("button", { name: /Sound paused/ })).toBeNull();
+    expect(soundingAt(ctx, ctx.currentTime)).toHaveLength(1);
   });
 });
 
 describe("H21: offline, then back online", () => {
-  it.fails("BUG H21: 'Try syncing again' does nothing visible for up to 10 s", async () => {
+  it("H21 fixed: 'Try syncing again' checks straight away and shows the result", async () => {
     world.offline = true;
     render(<SongMetronome song={w.song} onSongChange={() => {}} />);
     await advance(100, 10);
     expect(screen.getByText(OFFLINE)).toBeInTheDocument();
     world.offline = false;
     fireEvent.click(screen.getByRole("button", { name: "Try syncing again" }));
-    await advance(2000, 10);
+    await advance(100, 10);
     expect(screen.queryByText(OFFLINE)).toBeNull();
+    expect(screen.getByRole("button", { name: "Start for everyone" })).toBeInTheDocument();
   });
 
-  it.fails("BUG H21: the network coming back stops the local metronome that is playing, without a tap", async () => {
+  it("'Try syncing again' that still can't reach the server says so", async () => {
+    world.offline = true;
+    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    await advance(100, 10);
+    fireEvent.click(screen.getByRole("button", { name: "Try syncing again" }));
+    await advance(100, 10);
+    expect(screen.getByText(OFFLINE)).toBeInTheDocument();
+    expect(screen.getByText(/Still can't reach the server/)).toBeInTheDocument();
+  });
+
+  it("H21 fixed: the network coming back keeps the local metronome playing, and offers the shared one", async () => {
     world.offline = true;
     render(<SongMetronome song={w.song} onSongChange={() => {}} />);
     await advance(100, 10);
@@ -100,6 +142,30 @@ describe("H21: offline, then back online", () => {
     world.offline = false; // the Wi-Fi comes back mid-song
     await advance(11_000, 50);
     expect(soundingAt(ctx, ctx.currentTime)).toHaveLength(1);
+    expect(screen.getByText(/Back online — switch to the shared metronome\?/)).toBeInTheDocument();
+    // Ignoring the offer keeps the local clicks.
+    await advance(20_000, 50);
+    expect(soundingAt(ctx, ctx.currentTime)).toHaveLength(1);
+  });
+
+  it("choosing to switch joins the shared session", async () => {
+    world.offline = true;
+    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    await advance(100, 10);
+    fireEvent.click(screen.getByRole("button", { name: "Start on this phone" }));
+    await advance(500, 10);
+    const local = FakeAudioContext.instances[0];
+    world.offline = false;
+    await w.other({ bpm: 120, beatsPerBar: 4, running: true, leader: "drummer" });
+    fireEvent.click(screen.getByRole("button", { name: "Try syncing again" }));
+    await advance(100, 10);
+    expect(soundingAt(local, local.currentTime)).toHaveLength(1); // still playing until the switch
+    fireEvent.click(screen.getByRole("button", { name: "Switch" }));
+    await advance(3000, 10);
+    expect(soundingAt(local, local.currentTime)).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Leave" })).toBeInTheDocument();
+    const shared = FakeAudioContext.instances[1];
+    expect(soundingAt(shared, shared.currentTime)).toHaveLength(1);
   });
 
   it("regression: when the clock can't sync, 'Try syncing again' offers Join at once once the network is back", async () => {

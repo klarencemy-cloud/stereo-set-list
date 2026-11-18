@@ -56,6 +56,7 @@ interface FakeLoop {
 class FakeAudioContext {
   static instances: FakeAudioContext[] = [];
   currentTime = 0;
+  state = "running";
   sampleRate = 48000;
   destination = {};
   started: number[] = [];

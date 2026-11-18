@@ -14,6 +14,8 @@ What's new on Stereo Set, newest first.
 - **Tighter timing.** Phones keep their clocks in step with every check, not only when they join, and a phone on a jittery connection no longer nudges its clicks every bar.
 - **Ready when you tap.** A phone starts setting its clock as soon as the metronome opens, not when you tap Start or Join. On a slow 4G connection the phone that starts it now hears its own count-in from beat 1, and Join plays straight away instead of after several seconds of silence. After that it makes no extra clock calls: the regular checks keep it in step.
 - **A warning when timing is rough.** A phone that keeps time by its clock alone (it couldn't hear the band, or hasn't been measured) shows its sync status as a warning when it may be more than 25 ms off, and suggests measuring this phone or using Wi-Fi. A phone matched to the band by ear never shows it.
+- **Paused sound is shown.** When a call, Siri or the lock screen pauses a joined phone's sound, it now says "Sound paused — tap to resume" instead of flashing on in silence. One tap brings the clicks back, in time with the band, with no cut or doubled click.
+- **Back online doesn't cut you off.** Playing on this phone only while offline, the clicks now keep going when the network comes back, and the phone offers "Back online — switch to the shared metronome?" instead. "Try syncing again" checks straight away and says if it still can't reach the server.
 
 ## Unreleased: Lyrics and band tools
 
