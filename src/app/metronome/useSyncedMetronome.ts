@@ -76,15 +76,19 @@ function stopBy(p: Playing, at: number) {
 
 /**
  * Makes a metronome call and hands its answer to `addSample` as a clock sample (local send and receive times, and
- * the server's time in the answer). Resolves the session.
+ * the server's time in the answer). Resolves the answer.
  */
-async function sampled(call: () => Promise<MetroAnswer>, addSample: (s: TimeSample) => void): Promise<MetroSession | null> {
+async function sampledAnswer(call: () => Promise<MetroAnswer>, addSample: (s: TimeSample) => void): Promise<MetroAnswer> {
   const sentMs = performance.now();
   const answer = await call();
   const receivedMs = performance.now();
   if (typeof answer.now === "number") addSample({ sentMs, serverMs: answer.now, receivedMs });
-  return answer.session;
+  return answer;
 }
+
+/** As sampledAnswer, resolving the session only. */
+const sampled = async (call: () => Promise<MetroAnswer>, addSample: (s: TimeSample) => void) =>
+  (await sampledAnswer(call, addSample)).session;
 
 const sameSession = (a: MetroSession | null, b: MetroSession | null) =>
   a === b ||
@@ -112,6 +116,8 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
   const [beat, setBeat] = useState<{ index: number; n: number } | null>(null);
   const [error, setError] = useState("");
   const [noSound, setNoSound] = useState(false);
+  /** True after this phone's start found the session already running (it was left as it is). */
+  const [alreadyPlaying, setAlreadyPlaying] = useState(false);
   const clock = useClockSync(joined);
   const { addSample } = clock;
 
@@ -176,6 +182,7 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
         grid.current.prev = null;
         stopAudio();
         setBeat(null);
+        setAlreadyPlaying(false);
       }
       // A different leader: the match was against someone else's phone. (A stop keeps the leader, and the match.)
       if (next && match.current && next.leader !== match.current.leader) match.current = null;
@@ -397,6 +404,7 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
 
   /** Starts this phone playing along. Call it from a tap: browsers only start audio from a user gesture. */
   const join = useCallback(() => {
+    setAlreadyPlaying(false);
     joinPhone();
     checkNowRef.current?.();
   }, [joinPhone]);
@@ -424,30 +432,44 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     [stopAudio],
   );
 
-  const send = useCallback(
-    async (change: MetroChange): Promise<boolean> => {
+  /** Sends a change and takes the session it answers with. Resolves the answer, or null when it failed. */
+  const put = useCallback(
+    async (change: MetroChange): Promise<MetroAnswer | null> => {
       setError("");
       try {
-        accept(await sampled(() => api.putMetronome(songId, change), addSample));
+        const answer = await sampledAnswer(() => api.putMetronome(songId, change), addSample);
+        accept(answer.session);
         setReachable(true);
-        return true;
+        return answer;
       } catch (e) {
         setError(e instanceof ApiError ? e.message : "Couldn't reach the server.");
-        return false;
+        return null;
       }
     },
     [songId, accept, addSample],
   );
 
-  /** Starts the session for everyone, and joins it on this phone. */
+  const send = useCallback(async (change: MetroChange) => (await put(change)) !== null, [put]);
+
+  /**
+   * Starts the session for everyone, and joins it on this phone. Only if it is stopped: if a bandmate has started it
+   * meanwhile, theirs is left as it is, and this phone leaves and offers to join it (`alreadyPlaying`).
+   */
   const start = useCallback(
     async (bpm: number, beatsPerBar: number) => {
+      setAlreadyPlaying(false);
       joinPhone();
-      if (!(await send({ bpm, beatsPerBar, running: true, leader: me }))) return leave();
+      const answer = await put({ bpm, beatsPerBar, running: true, leader: me, onlyIfStopped: true });
+      if (!answer) return leave();
+      if (answer.applied === false) {
+        leave();
+        setAlreadyPlaying(!!answer.session?.running);
+        return;
+      }
       // Check after the answer, not before it: a check answered before the start could undo it until the next one.
       checkNowRef.current?.();
     },
-    [joinPhone, leave, send, me],
+    [joinPhone, leave, put, me],
   );
 
   let phase: SyncPhase = "clock";
@@ -462,6 +484,8 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     beat,
     error,
     noSound,
+    /** This phone's Start for everyone found it already playing, so it offers to join instead. */
+    alreadyPlaying,
     /** How this phone is lined up with the band (see SyncPhase). */
     phase,
     /** With phase "matched": how much the heard beats disagreed (ms). */

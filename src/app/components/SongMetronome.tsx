@@ -428,7 +428,7 @@ export default function SongMetronome({ song, onSongChange, onSession }: Props) 
   } else if (running && !m.joined) {
     body = (
       <>
-        <p className="metro-playing">{`Playing at ${session!.bpm} BPM`}</p>
+        <p className="metro-playing">{`${m.alreadyPlaying ? "Already playing" : "Playing"} at ${session!.bpm} BPM`}</p>
         <p className="actions">
           <button type="button" className="btn primary" onClick={m.join}>Join</button>
           <button type="button" className="btn" onClick={m.stopAll}>Stop for everyone</button>

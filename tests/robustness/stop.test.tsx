@@ -124,18 +124,36 @@ describe("H5: two phones change it at the same moment", () => {
 });
 
 describe("H18: Start for everyone from a panel whose view is old", () => {
-  it.fails("BUG H18: a phone that still shows 'stopped' turns a bandmate's fresh start into a tempo change for everyone", async () => {
+  it("H18: a phone that still shows 'stopped' leaves a bandmate's fresh start alone, shows 'Already playing at 120 BPM', and Join plays it", async () => {
     world.latency = { getMetronome: [20, 20], putMetronome: [20, 20], getTime: [10, 10] };
     render(<SongMetronome song={w.song} onSongChange={() => {}} />); // the song's tempo is 96/3
     await advance(100, 10);
     // Right after this panel's check, the drummer starts it at 120/4.
-    await w.other({ bpm: 120, beatsPerBar: 4, running: true });
+    const theirs = (await w.other({ bpm: 120, beatsPerBar: 4, running: true, leader: "drummer" })) as MetroSession;
     await advance(3000, 10);
     // This panel only checks every 10 s, so it still offers Start for everyone.
     fireEvent.click(screen.getByRole("button", { name: "Start for everyone" }));
     await advance(500, 10);
-    const s = (await w.stored()) as MetroSession;
-    expect({ bpm: s.bpm, beatsPerBar: s.beatsPerBar }).toEqual({ bpm: 120, beatsPerBar: 4 });
+    // The session is untouched: same tempo, same start, same leader.
+    expect(await w.stored()).toEqual(theirs);
+    // The panel says so, and offers Join rather than playing on its own.
+    expect(screen.getByText("Already playing at 120 BPM")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Leave" })).toBeNull();
+    // Nothing plays on this phone until Join.
+    const ctx = FakeAudioContext.instances[0];
+    await advance(1000, 10);
+    expect(heard(ctx, 0, ctx.currentTime + 10)).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    await advance(4000, 10);
+    expect(screen.getByRole("button", { name: "Leave" })).toBeInTheDocument();
+    expect(screen.queryByText("Already playing at 120 BPM")).toBeNull();
+    // It plays the drummer's 120/4 grid: an accent on each bar line, 4 clicks a bar.
+    const bars = Math.ceil((serverNow() + 100 - theirs.startAt) / 2000);
+    const first = ctx.audioAt(theirs.startAt + bars * 2000);
+    await advance(2500, 10);
+    const bar = heard(ctx, first - 0.01, first + 2 - 0.01);
+    expect(bar.map((h) => h.accent)).toEqual([true, false, false, false]);
+    expect(Math.abs(bar[0].t - first)).toBeLessThan(0.002);
   });
 });
 
