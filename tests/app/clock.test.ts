@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateOffset, fitDrift, nudgeFromTaps, toAudioTime } from "../../src/app/metronome/clock";
+import { estimateOffset, fitDrift, linkSmoother, nudgeFromTaps, toAudioTime } from "../../src/app/metronome/clock";
 
 describe("estimateOffset", () => {
   it("is null with no samples", () => {
@@ -102,5 +102,29 @@ describe("fitDrift", () => {
 
   it("skips empty rounds", () => {
     expect(fitDrift([round(0, 100), [], round(60_000, 106), round(120_000, 112)])).toBeCloseTo(6 / 60_000, 12);
+  });
+});
+
+describe("linkSmoother", () => {
+  it("averages the offset between the clocks over the last 1.5 s, given back at the newest reading", () => {
+    const sm = linkSmoother();
+    sm.add({ perfMs: 1000, audioS: 0.01 }); // offset -0.99 s
+    const l = sm.add({ perfMs: 1100, audioS: 0.13 }); // offset -0.97 s
+    expect(l.perfMs).toBe(1100);
+    expect(l.audioS).toBeCloseTo(0.12, 9); // 1.1 - 0.98
+  });
+
+  it("drops readings older than 1.5 s before the newest", () => {
+    const sm = linkSmoother();
+    sm.add({ perfMs: 0, audioS: 5 });
+    expect(sm.add({ perfMs: 2000, audioS: 2 }).audioS).toBeCloseTo(2, 9);
+  });
+
+  it("keepNewest forgets the older readings", () => {
+    const sm = linkSmoother();
+    sm.add({ perfMs: 1000, audioS: 1 });
+    sm.add({ perfMs: 1025, audioS: 1.055 });
+    sm.add({ perfMs: 1050, audioS: 1.08 });
+    expect(sm.keepNewest(2).audioS).toBeCloseTo(1.08, 9); // offset 0.03, not the 0.02 average of all three
   });
 });
