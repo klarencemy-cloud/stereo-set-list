@@ -15,18 +15,45 @@ export interface ClockEstimate {
 }
 
 /**
+ * How much slower a sample counts per ms of age (0.1 ms per second), so an old fast sample gives way to a newer
+ * one before the clocks drift far from it (100 ppm drifts 0.1 ms a second).
+ */
+export const AGE_PENALTY_PER_MS = 1e-4;
+
+/**
  * Cristian's algorithm: assume the server answered halfway through the round trip, and trust the sample with
- * the fastest round trip, since it has the least room for a lopsided delay.
+ * the fastest network round trip, since it has the least room for a lopsided delay. A sample counts as slower by
+ * its age (AGE_PENALTY_PER_MS, against the newest sample), and the newer one wins a tie, so drift can't build up
+ * unseen.
  */
 export function estimateOffset(samples: TimeSample[]): ClockEstimate | null {
-  let best: ClockEstimate | null = null;
-  for (const s of samples) {
+  const valid = samples.filter((s) => s.receivedMs >= s.sentMs);
+  const newestMs = Math.max(...valid.map((s) => s.receivedMs));
+  let best: (ClockEstimate & { score: number; receivedMs: number }) | null = null;
+  for (const s of valid) {
     const rttMs = s.receivedMs - s.sentMs;
-    if (rttMs < 0) continue;
-    if (!best || rttMs < best.rttMs) best = { offsetMs: s.serverMs - (s.sentMs + s.receivedMs) / 2, rttMs };
+    const score = rttMs + AGE_PENALTY_PER_MS * (newestMs - s.receivedMs);
+    if (!best || score < best.score || (score === best.score && s.receivedMs > best.receivedMs)) {
+      best = { offsetMs: s.serverMs - (s.sentMs + s.receivedMs) / 2, rttMs, score, receivedMs: s.receivedMs };
+    }
   }
-  return best;
+  return best && { offsetMs: best.offsetMs, rttMs: best.rttMs };
 }
+
+/** The wall clock (Date.now()) and performance.now() read at one moment, to tell later whether the latter paused. */
+export interface ClockMark {
+  wallMs: number;
+  perfMs: number;
+}
+
+/** A gap between the two clocks bigger than this means performance.now() paused (the phone slept). */
+export const CLOCK_PAUSE_MS = 50;
+
+/**
+ * How long performance.now() stood still between two marks while the wall clock ran on (a phone asleep): how much
+ * further the wall clock moved. Under CLOCK_PAUSE_MS it is noise (the two clocks round and drift apart a little).
+ */
+export const pausedMs = (from: ClockMark, to: ClockMark) => to.wallMs - from.wallMs - (to.perfMs - from.perfMs);
 
 /**
  * How fast the offset is changing (ms per ms of local time): the least-squares slope of each round's best

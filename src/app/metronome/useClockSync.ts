@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { estimateOffset, fitDrift, type TimeSample } from "./clock";
+import { CLOCK_PAUSE_MS, estimateOffset, fitDrift, pausedMs, type ClockMark, type TimeSample } from "./clock";
 
 /** Time calls made when sync starts. After that, the session checks' answers are the samples. */
 const FIRST_ROUND = 20;
@@ -37,7 +37,12 @@ export interface ClockSync {
 export interface ClockSyncHandle extends ClockSync {
   /** Adds one sample (local send and receive times around a call, and the server's time in its answer). */
   addSample: (sample: TimeSample) => void;
+  /** How many times the page came back to find performance.now() had paused (the phone slept): see useClockSync. */
+  wakes: number;
 }
+
+/** Both clocks now. */
+const mark = (): ClockMark => ({ wallMs: Date.now(), perfMs: performance.now() });
 
 const IDLE: ClockSync = { offsetMs: 0, rttMs: 0, status: "idle", driftPerMs: 0 };
 
@@ -66,9 +71,15 @@ async function sampleRound(n: number, alive: () => boolean): Promise<TimeSample[
  *
  * Samples that arrive while the first round runs join it when it lands. After a first round where every time call
  * failed, the answers still sync it. Ignored while not active.
+ *
+ * When the page is visible again and the wall clock moved more than CLOCK_PAUSE_MS further than performance.now(),
+ * performance.now() paused (the phone slept) while the server's clock ran on, so every sample so far is off by
+ * that much (H7). They are dropped and a full round is taken, as at the start; until it lands, the estimate is the
+ * old one moved by the pause, so a phone playing along stays about right. `wakes` counts these.
  */
 export function useClockSync(active: boolean): ClockSyncHandle {
   const [sync, setSync] = useState<ClockSync>(IDLE);
+  const [wakes, setWakes] = useState(0);
   /** Where addSample's samples go: set while active. */
   const sink = useRef<((s: TimeSample) => void) | null>(null);
   const addSample = useCallback((s: TimeSample) => sink.current?.(s), []);
@@ -86,6 +97,12 @@ export function useClockSync(active: boolean): ClockSyncHandle {
     /** Samples handed in while the first round runs; it takes them when it lands. */
     let pending: TimeSample[] = [];
     let firstRoundDone = false;
+    /** Bumped on a wake, so a round from before it is dropped when it lands. */
+    let generation = 0;
+    /** When (performance.now()) the phone last woke: a sample sent before then may straddle the sleep. */
+    let wokeAtMs = -Infinity;
+    /** Both clocks when the page was last hidden or shown, to tell on the next showing whether the phone slept. */
+    let seen = mark();
     setSync({ ...IDLE, status: "syncing" });
 
     /** Publishes the estimate from the rounds kept. Only "never synced" is a failure. */
@@ -103,6 +120,7 @@ export function useClockSync(active: boolean): ClockSyncHandle {
     }
 
     sink.current = (s) => {
+      if (s.sentMs < wokeAtMs) return;
       if (!firstRoundDone) {
         pending.push(s);
         return;
@@ -117,19 +135,44 @@ export function useClockSync(active: boolean): ClockSyncHandle {
       publish();
     };
 
-    sampleRound(FIRST_ROUND, () => alive).then((taken) => {
-      if (!alive) return;
-      const samples = [...taken, ...pending];
+    /** Takes a full round of time calls; the samples handed in meanwhile join it. */
+    function fullRound() {
+      const gen = generation;
+      const current = () => alive && gen === generation;
+      firstRoundDone = false;
       pending = [];
-      firstRoundDone = true;
-      if (samples.length) newRound(samples);
-      publish();
-    });
+      sampleRound(FIRST_ROUND, current).then((taken) => {
+        if (!current()) return;
+        const samples = [...taken, ...pending];
+        pending = [];
+        firstRoundDone = true;
+        if (samples.length) newRound(samples);
+        // After a wake with no answers at all, the moved estimate stands: only "never synced" is a failure.
+        if (samples.length || gen === 0) publish();
+      });
+    }
+
+    const onVisibility = () => {
+      const now = mark();
+      const paused = pausedMs(seen, now);
+      seen = now;
+      if (document.visibilityState === "hidden" || Math.abs(paused) <= CLOCK_PAUSE_MS) return;
+      generation++;
+      wokeAtMs = now.perfMs;
+      rounds = [];
+      history = [];
+      setSync((s) => (s.status === "synced" ? { ...s, offsetMs: s.offsetMs + paused, driftPerMs: 0 } : s));
+      setWakes((n) => n + 1);
+      fullRound();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    fullRound();
     return () => {
       alive = false;
       sink.current = null;
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [active]);
 
-  return { ...sync, addSample };
+  return { ...sync, addSample, wakes };
 }

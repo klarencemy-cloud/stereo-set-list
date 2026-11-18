@@ -544,6 +544,15 @@ export function setHidden(hidden: boolean) {
   });
 }
 
+/**
+ * The phone sleeps for `ms`: its performance.now() and audio clock stand still, while the server's clock and the
+ * phone's own wall clock (Date) run on. No timers fire. Hide the page first, as a phone does when its screen goes off.
+ */
+export function sleepPhone(ms: number) {
+  world.serverAhead += ms;
+  vi.setSystemTime(Date.now() + ms);
+}
+
 /** Seeded PRNG (mulberry32), so random latency and jitter repeat run to run. */
 export function rng(seed: number) {
   let a = seed >>> 0;

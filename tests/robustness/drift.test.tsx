@@ -11,7 +11,7 @@ vi.mock("../../src/app/api", async () => {
 import SongMetronome from "../../src/app/components/SongMetronome";
 import { useClockSync } from "../../src/app/metronome/useClockSync";
 import type { MetroSession } from "../../src/shared/metronome";
-import { advance, FakeAudioContext, heard, rng, serverNow, setHidden, setupWorld, teardownWorld, world } from "./harness";
+import { advance, FakeAudioContext, heard, rng, serverNow, setHidden, setupWorld, sleepPhone, teardownWorld, world } from "./harness";
 
 let w: Awaited<ReturnType<typeof setupWorld>>;
 beforeEach(async () => {
@@ -52,27 +52,35 @@ function glitches(ctx: FakeAudioContext, fromS: number, toS: number) {
 }
 
 describe("H7: performance.now() pausing while the server's clock runs (device sleep)", () => {
-  it.fails("BUG H7: after waking, the pre-sleep sample (fastest round trip) is kept, so the clicks are 250 ms off", async () => {
+  it("H7 fixed: after waking, the pre-sleep samples are dropped and a fresh round puts the clicks back in time", async () => {
     world.latency = { getTime: [10, 10], getMetronome: [10, 10], putMetronome: [10, 10] };
     const { ctx, s } = await joined();
     expect(barErrorsMs(ctx, s, ctx.currentTime, ctx.currentTime + 4).every((e) => Math.abs(e) < 2)).toBe(true);
     setHidden(true);
     await advance(5000, 50);
     // Asleep: this phone's performance.now() (and audio clock) stood still while 30.25 s passed on the server.
-    world.serverAhead += 30_250;
-    world.latency.getTime = [100, 100]; // the network is slower after waking (4G instead of Wi-Fi)
+    sleepPhone(30_250);
+    // The network is slower after waking (4G instead of Wi-Fi), so every fresh sample is slower than the old ones.
+    world.latency = { getTime: [100, 100], getMetronome: [100, 100], putMetronome: [100, 100] };
     setHidden(false);
     await advance(5000, 10);
     const errs = barErrorsMs(ctx, s, ctx.currentTime, ctx.currentTime + 6);
     console.log(`[H7] downbeat errors after waking (ms): ${errs.join(", ")}; status says "${screen.getByRole("status").textContent}"`);
     expect(errs.every((e) => Math.abs(e) < 5)).toBe(true);
+    // The estimate in use is from the fresh round (200 ms network round trips), not a 20 ms one from before the sleep.
+    expect(screen.getByRole("status").textContent).toContain("Synced ±100 ms");
   });
 
-  it.fails("BUG H7: with equal round trips the OLDEST sample wins, so at 100 ppm drift the estimate is ~18 ms stale", async () => {
+  it("H7 fixed: with equal network round trips the newest sample wins, so at 100 ppm drift the estimate stays fresh", async () => {
     world.driftPpm = 100;
-    world.latency = { getTime: [0, 0] }; // every sample has the same (zero) round trip: a tie
+    world.latency = { getTime: [0, 0] }; // every sample has the same (zero) network round trip: a tie
     const { result } = renderHook(() => useClockSync(true));
-    await advance(239_000, 1000);
+    // After the first round, every 1.5 s session check's answer is a sample (also a zero network round trip).
+    for (let t = 0; t < 239_000; t += 1500) {
+      await advance(1500, 500);
+      const now = performance.now();
+      result.current.addSample({ sentMs: now, serverMs: serverNow(), receivedMs: now });
+    }
     const trueOffset = serverNow() - world.perf;
     const errMs = result.current.offsetMs - trueOffset;
     console.log(`[H7] offset error after 239 s at +100 ppm with tied round trips: ${errMs.toFixed(1)} ms`);

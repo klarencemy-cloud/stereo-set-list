@@ -416,6 +416,17 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     };
   }, [shouldListen, leader, me, roundTripMs, attempt, stopAudio]);
 
+  // The phone slept (H7): the clock sync drops its samples and re-syncs. A match was made against the clock as it
+  // was, and is frozen, so it would stay off: drop it and listen to the band again (the flash keeps going).
+  const { wakes } = clock;
+  useEffect(() => {
+    if (wakes === 0) return;
+    smoother.current.clear();
+    if (!match.current) return;
+    match.current = null;
+    setAttempt((n) => n + 1);
+  }, [wakes]);
+
   /** Checks the session now ("Try syncing again"). Resolves whether the server answered. */
   const retry = useCallback(() => checkNowRef.current?.() ?? Promise.resolve(false), []);
 

@@ -113,12 +113,14 @@ interface MetroSession {
   It joins the latest round, so it competes with that round's samples and ages out with it. Answers that land
   while the first round runs join it when it lands; if every time call of a round failed, the answers start a
   round of their own, so the phone still syncs.
-- **Planned (#18): a paused clock is detected.** When the page is visible again and the wall clock and
-  `performance.now()` moved apart by over about 50 ms, `performance.now()` paused during sleep. A phone syncing
-  by the clock then drops its old samples and takes a full round; a matched phone clears its match and listens
-  again (see below). With no pause, nothing changes.
-- **Planned (#18): fresher samples win.** On a network round trip tie, the newer sample wins, and each sample's
-  score is its network round trip plus its age times about 0.1 ms per second, so old samples age out.
+- **A paused clock is detected (#18).** When the page is visible again and the wall clock and
+  `performance.now()` moved apart by over about 50 ms (since the page was hidden), `performance.now()` paused
+  during sleep. The phone then drops its old samples (and any answer to a call sent before it woke) and takes a
+  full round. Until that round lands, the old offset moved by the measured pause stands in, so the clicks and the
+  flash stay about right; if every call of that round fails, it keeps standing in. A matched phone also clears its
+  match and listens again (see below). With no pause, nothing changes.
+- **Fresher samples win (#18).** Each sample's score is its network round trip plus its age (against the newest
+  sample) times 0.1 ms per second, so old samples age out; on a tie, the newer sample wins.
 
 ### Playing the grid
 
@@ -169,9 +171,9 @@ lopsided network round trip, nor each phone's output delay.
   and listens again. Leaving clears it, so the next Join listens again.
 - **No match** (mic blocked, nothing heard, too unsure): the phone plays by the clock and shows "Couldn't hear
   the band, synced by clock ±N ms" and **Listen again**.
-- **Planned (#18): a matched phone that slept listens again.** When a paused clock is detected, it clears its
-  match and listens again: quiet for about 3–4 s, flash still on. Today its frozen offset stays wrong until it
-  leaves (ADR 0001's consequence).
+- **A matched phone that slept listens again (#18).** When a paused clock is detected, it clears its match and
+  listens again: quiet for about 3–4 s, flash still on, then matched again. (Before, its frozen offset stayed
+  wrong until it left: ADR 0001's consequence.) A phone that didn't sleep keeps its match.
 
 ### Loopback delay
 

@@ -10,7 +10,10 @@ vi.mock("../../src/app/api", async () => {
 });
 
 import SongMetronome, { ROUNDTRIP_KEY } from "../../src/app/components/SongMetronome";
-import { advance, advanceUntil, FakeAudioContext, heard, setupWorld, teardownWorld, world } from "./harness";
+import { advance, advanceUntil, FakeAudioContext, heard, setHidden, setupWorld, sleepPhone, teardownWorld, world } from "./harness";
+
+/** Which beat dot is lit now. */
+const lit = () => Array.from(document.querySelectorAll(".metro-dot")).findIndex((d) => d.classList.contains("lit"));
 
 let w: Awaited<ReturnType<typeof setupWorld>>;
 beforeEach(async () => {
@@ -50,6 +53,62 @@ describe("a joining phone matches the leader by ear", () => {
       const n = Math.round((ctx.serverAtAudio(c.t) - s.startAt) / 500);
       expect(Math.abs(c.t - ctx.audioAt(s.startAt + 500 * n)) * 1000).toBeLessThan(2);
     }
+  });
+
+  it("H7 fixed: a matched phone that slept listens again, flash still going, then is back in time", async () => {
+    const ctx = await joinLed();
+    await advanceUntil(() => status().startsWith("Matched to the band"), 10_000, 10);
+    await advance(2000, 10);
+    setHidden(true);
+    await advance(3000, 50);
+    sleepPhone(30_250); // half a beat off, if nothing re-lines it up
+    setHidden(false);
+    // It listens again, quiet for a few seconds, with the flash moving the whole time.
+    const lastChange = { at: world.perf, dot: lit() };
+    let longestStillMs = 0;
+    let listenedFromS: number | null = null;
+    await advanceUntil(
+      () => {
+        if (listenedFromS === null && status().startsWith("Listening to the band")) listenedFromS = ctx.currentTime;
+        const listened = listenedFromS !== null;
+        const dot = lit();
+        if (dot !== lastChange.dot) Object.assign(lastChange, { at: world.perf, dot });
+        longestStillMs = Math.max(longestStillMs, world.perf - lastChange.at);
+        return listened && status().startsWith("Matched to the band");
+      },
+      10_000,
+      10,
+    );
+    expect(longestStillMs).toBeLessThan(600); // a beat is 500 ms: the flash never stopped
+    // Quiet while it listened, for about 3–4 s.
+    const quietS = ctx.currentTime - listenedFromS!;
+    expect(quietS).toBeGreaterThanOrEqual(3);
+    expect(quietS).toBeLessThan(5);
+    expect(heard(ctx, listenedFromS!, ctx.currentTime)).toEqual([]);
+    await advance(3000, 10);
+    const t = ctx.currentTime;
+    const clicks = heard(ctx, t - 2, t);
+    expect(clicks.length).toBeGreaterThan(2);
+    const s = (await w.stored())!;
+    for (const c of clicks) {
+      const n = Math.round((ctx.serverAtAudio(c.t) - s.startAt) / 500);
+      expect(Math.abs(c.t - ctx.audioAt(s.startAt + 500 * n)) * 1000).toBeLessThan(2);
+    }
+  });
+
+  it("H7: a matched phone that didn't sleep neither listens again nor re-syncs its clock", async () => {
+    await joinLed();
+    await advanceUntil(() => status().startsWith("Matched to the band"), 10_000, 10);
+    await advance(2000, 10);
+    const timeCalls = world.sent.getTime;
+    setHidden(true);
+    await advance(3000, 50);
+    setHidden(false);
+    for (let i = 0; i < 300; i++) {
+      await advance(10, 10);
+      expect(status()).toMatch(/^Matched to the band/);
+    }
+    expect(world.sent.getTime).toBe(timeCalls);
   });
 
   it("falls back to 'Couldn't hear the band' with the mic blocked", async () => {
