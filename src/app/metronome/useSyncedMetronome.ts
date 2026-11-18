@@ -171,6 +171,9 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     (next: MetroSession | null) => {
       const old = grid.current.cur;
       if (old !== undefined && sameSession(old, next)) return;
+      // An answer that left the server before the session held here was last changed (a check in flight when this
+      // phone sent a change) would undo that change until the next check (H4). The ISO times compare in order.
+      if (old && next && next.updatedAt < old.updatedAt) return;
       if (next?.running) {
         // Until the new grid starts, the clicks and the flash follow the grid that is sounding, as the server
         // keeps it: right even on a phone that missed a change, or saw one that was since replaced (H23).
@@ -466,7 +469,15 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     [songId, accept, addSample],
   );
 
-  const send = useCallback(async (change: MetroChange) => (await put(change)) !== null, [put]);
+  /** Sends a stop or a change, then checks at once (as `start` does), dropping a check still in flight. */
+  const send = useCallback(
+    async (change: MetroChange) => {
+      if ((await put(change)) === null) return false;
+      checkNowRef.current?.();
+      return true;
+    },
+    [put],
+  );
 
   /**
    * Starts the session for everyone, and joins it on this phone. Only if it is stopped: if a bandmate has started it

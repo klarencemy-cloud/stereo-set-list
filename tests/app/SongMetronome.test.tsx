@@ -103,6 +103,13 @@ const onSongChange = vi.fn();
 const serve = (fn: ReturnType<typeof vi.fn>, session: MetroSession | null) =>
   fn.mockImplementation(async () => ({ session, now: perf + serverAhead }));
 
+/** Answers a PUT with `session`, and from then on every GET too, as the server stores it. */
+const store = (session: MetroSession) =>
+  mocked.putMetronome.mockImplementation(async () => {
+    serve(mocked.getMetronome, session);
+    return { session, now: perf + serverAhead };
+  });
+
 function renderPanel(s: Song = song) {
   return render(<SongMetronome song={s} onSongChange={onSongChange} />);
 }
@@ -222,7 +229,7 @@ describe("SongMetronome, a session is running", () => {
 
   it("Stop for everyone stops the session", async () => {
     serve(mocked.getMetronome, running());
-    serve(mocked.putMetronome, running({ running: false }));
+    store(running({ running: false, updatedAt: "2026-11-15T10:00:01.000Z" }));
     renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: "Join" }));
     fireEvent.click(await screen.findByRole("button", { name: "Stop for everyone" }));
@@ -232,7 +239,7 @@ describe("SongMetronome, a session is running", () => {
 
   it("sends a tempo change from a joined phone", async () => {
     serve(mocked.getMetronome, running());
-    serve(mocked.putMetronome, running({ beatsPerBar: 6, startAt: 12_000 }));
+    store(running({ beatsPerBar: 6, startAt: 12_000, updatedAt: "2026-11-15T10:00:01.000Z" }));
     renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: "Join" }));
     await screen.findByRole("button", { name: "Leave" });
@@ -394,7 +401,7 @@ describe("SongMetronome, a session is running", () => {
 describe("SongMetronome after a stop", () => {
   it("keeps the tempo it was playing at, so a restart and a save use what is on screen", async () => {
     serve(mocked.getMetronome, running({ bpm: 123 }));
-    serve(mocked.putMetronome, running({ bpm: 123, running: false }));
+    store(running({ bpm: 123, running: false, updatedAt: "2026-11-15T10:00:01.000Z" }));
     mocked.updateSong.mockResolvedValue({ ...song, bpm: 123, beatsPerBar: 4, updatedAt: "y" });
     renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: "Stop for everyone" }));

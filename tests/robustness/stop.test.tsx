@@ -37,8 +37,8 @@ async function pollInFlight() {
   await advance(60, 1); // the poll has been read at the server; its answer is still on the way
 }
 
-describe("H4: a poll in flight when this phone sends a change comes back after it, and is taken", () => {
-  it.fails("BUG H4: Stop for everyone, then clicks start again on the phone that pressed it", async () => {
+describe("H4: a poll in flight when this phone sends a change comes back after it, and is ignored", () => {
+  it("H4: after Stop for everyone, the phone that pressed it stays silent", async () => {
     const ctx = await joinedPhone();
     await pollInFlight();
     fireEvent.click(screen.getByRole("button", { name: "Stop for everyone" }));
@@ -68,7 +68,7 @@ describe("H4: a poll in flight when this phone sends a change comes back after i
     expect(log.length).toBeGreaterThan(0);
   }, 30_000); // many simulated seconds; slow on a loaded machine
 
-  it.fails("BUG H4: a beats-per-bar change shows the old value again before the next poll fixes it", async () => {
+  it("H4: a beats-per-bar change never shows the old value again", async () => {
     await joinedPhone();
     await pollInFlight();
     fireEvent.click(screen.getByRole("button", { name: "6" }));
@@ -78,7 +78,8 @@ describe("H4: a poll in flight when this phone sends a change comes back after i
       const n = document.querySelectorAll(".metro-dot").length;
       if (seen[seen.length - 1] !== n) seen.push(n);
     }
-    expect(seen).toEqual([6]);
+    // The old value until the change's answer arrives, then the new one for good: never back to 4.
+    expect(seen).toEqual([4, 6]);
   });
 
   it("H4 regression: the new beats per bar still starts on its bar line (the next poll lands inside the lead)", async () => {
