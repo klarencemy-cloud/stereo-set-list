@@ -2,6 +2,17 @@
 
 What's new on Stereo Set, newest first.
 
+## Unreleased: A steadier band metronome
+
+### Fixed
+
+- **Start for everyone no longer takes over.** If a bandmate has already started the metronome, tapping Start for everyone leaves theirs playing and shows "Already playing at 120 BPM" with Join, instead of switching everyone to your tempo.
+- **It no longer stops by itself mid-gig.** A metronome that phones have joined keeps going for as long as they play along. One nobody has joined still switches itself off after 2 hours, so a forgotten one doesn't get in the way.
+- **Stop for everyone always sticks.** Pressing Stop at the same moment as someone else changes the tempo no longer loses the Stop; the same goes for two tempo changes at once.
+- **Two quick changes keep everyone on the same bar.** Changing the beats per bar and then the tempo within a few seconds (or two people changing it at once) no longer leaves phones playing different bars for a moment. A phone that joins just before a change starts also plays along straight away.
+- **Changes reach every phone in time.** A start or a tempo change now begins 3 seconds after the tap (was 2), so a phone on a slow connection hears of it before it starts.
+- **Tighter timing.** Phones keep their clocks in step with every check, not only when they join, and a phone on a jittery connection no longer nudges its clicks every bar.
+
 ## Unreleased: Lyrics and band tools
 
 ### Added
