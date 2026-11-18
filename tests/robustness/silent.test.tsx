@@ -9,6 +9,7 @@ vi.mock("../../src/app/api", async () => {
   return { ...actual, api: { ...actual.api, updateSong: vi.fn() } };
 });
 
+import { api } from "../../src/app/api";
 import SongMetronome from "../../src/app/components/SongMetronome";
 import { METRO_STALE_MS } from "../../netlify/functions/lib/repo";
 import { advance, FakeAudioContext, heard, serverNow, setHidden, setupWorld, soundingAt, teardownWorld, world } from "./harness";
@@ -102,6 +103,11 @@ describe("H21: offline, then back online", () => {
   });
 
   it("regression: when the clock can't sync, 'Try syncing again' offers Join at once once the network is back", async () => {
+    // The checks' answers carry no server time (an older server), so only the time calls could sync the clock,
+    // and every one of those fails.
+    const getMetronome = api.getMetronome;
+    vi.spyOn(api, "getMetronome").mockImplementation(async (...a) => ({ ...(await getMetronome(...a)), now: undefined as unknown as number }));
+    vi.spyOn(api, "getTime").mockRejectedValue(new Error("offline"));
     await w.other({ bpm: 120, beatsPerBar: 4, running: true });
     render(<SongMetronome song={w.song} onSongChange={() => {}} />);
     await advance(100, 10);

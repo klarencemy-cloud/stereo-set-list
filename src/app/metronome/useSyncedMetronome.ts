@@ -121,7 +121,8 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
   const [noSound, setNoSound] = useState(false);
   /** True after this phone's start found the session already running (it was left as it is). */
   const [alreadyPlaying, setAlreadyPlaying] = useState(false);
-  const clock = useClockSync(joined);
+  // The clock syncs from when the panel opens, so it is ready by the time this phone starts or joins (H1).
+  const clock = useClockSync(true);
   const { addSample } = clock;
 
   const ctxRef = useRef<AudioContext | null>(null);

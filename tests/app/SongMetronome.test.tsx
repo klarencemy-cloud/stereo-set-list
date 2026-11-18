@@ -437,7 +437,8 @@ describe("SongMetronome fallback", () => {
   });
 
   it("plays on this phone only when the clock can't be synced", async () => {
-    serve(mocked.getMetronome, running());
+    // Answers that carry no server time (an older server), so only the time calls could sync the clock.
+    mocked.getMetronome.mockImplementation(async () => ({ session: running() }));
     mocked.getTime.mockRejectedValue(new ApiError(0, "Can't reach the server."));
     renderPanel();
     const join = await screen.findByRole("button", { name: "Join" });
@@ -589,13 +590,15 @@ describe("matching the band by ear", () => {
     await moveTo(4010);
     await moveTo(6000); // the loop is playing, so it is checked for drift
     const booked = ctx.loops.length;
+    const checks = mocked.getMetronome.mock.calls.length;
     // The clock estimate moves by 40 ms; once the first round has aged out, a clock-only phone would follow it.
     serverAhead = 5040;
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3 * 60_000 + 100);
     });
     await moveTo(6100);
-    expect(mocked.getTime.mock.calls.length).toBeGreaterThanOrEqual(29);
+    // The session checks brought the moved clock's samples, over more than ROUNDS_KEPT rounds.
+    expect(mocked.getMetronome.mock.calls.length - checks).toBeGreaterThanOrEqual(100);
     expect(ctx.loops).toHaveLength(booked);
     expect(screen.getByRole("status")).toHaveTextContent("Matched to the band");
   });

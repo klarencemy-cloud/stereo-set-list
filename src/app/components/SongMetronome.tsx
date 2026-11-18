@@ -23,6 +23,8 @@ const MAX_ROUNDTRIP_MS = 1000;
 /** A tempo dragged or tapped while playing is sent once it settles, not on every step. */
 const SEND_DELAY_MS = 400;
 const OFFLINE = "Can't sync: playing on this phone only";
+/** A phone synced by the clock alone warns when its bound is wider than this (H11). */
+const ROUGH_SYNC_MS = 25;
 
 function readNudge(): number {
   try {
@@ -472,16 +474,22 @@ function SongMetronomePanel({ song, onSongChange, onSession }: Props) {
 
   const lostServerText = "Can't reach the server: changes from others won't show until it's back.";
   let status = "";
+  /** The status is a warning: a clock-only sync whose bound is too wide to play together by (H11). */
+  let rough = false;
   // Out of touch with the session, the phone can't hear changes to it: no claim of being synced.
   if (!offline && m.joined && session !== undefined && !m.reachable) status = lostServerText;
   else if (!offline && m.joined) {
-    const bound = `±${Math.max(1, Math.round(m.clock.rttMs / 2))} ms`;
+    const boundMs = Math.max(1, Math.round(m.clock.rttMs / 2));
+    const bound = `±${boundMs} ms`;
     if (m.clock.status === "synced") {
       if (m.phase === "leading") status = `Leading · synced ${bound}`;
       else if (m.phase === "listening") status = "Listening to the band…";
       else if (m.phase === "matched") status = `Matched to the band ±${Math.max(1, Math.round(m.matchSpreadMs ?? 0))} ms`;
       else if (m.phase === "failed") status = `Couldn't hear the band, synced by clock ${bound}`;
       else status = `Synced ${bound}`;
+      // By the clock alone (couldn't hear the band, or nothing to match it with): a wide bound is a real error.
+      rough = (m.phase === "failed" || m.phase === "clock") && boundMs > ROUGH_SYNC_MS;
+      if (rough) status += ". Rough sync: measure this phone or use Wi-Fi.";
     } else if (m.clock.status === "syncing") status = "Syncing...";
   }
   // Save as song tempo saves what is on screen: the shared tempo while it plays, else the controls'.
@@ -491,7 +499,7 @@ function SongMetronomePanel({ song, onSongChange, onSession }: Props) {
 
   return (
     <section className="tool song-metronome" aria-label="Metronome">
-      {status && <p className="metro-status" role="status">{status}</p>}
+      {status && <p className={rough ? "metro-status warn" : "metro-status"} role="status">{status}</p>}
       {!offline && m.joined && m.phase === "failed" && (
         <p className="actions">
           <button type="button" className="btn" onClick={m.listenAgain}>Listen again</button>

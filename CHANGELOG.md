@@ -12,6 +12,8 @@ What's new on Stereo Set, newest first.
 - **Two quick changes keep everyone on the same bar.** Changing the beats per bar and then the tempo within a few seconds (or two people changing it at once) no longer leaves phones playing different bars for a moment. A phone that joins just before a change starts also plays along straight away.
 - **Changes reach every phone in time.** A start or a tempo change now begins 3 seconds after the tap (was 2), so a phone on a slow connection hears of it before it starts.
 - **Tighter timing.** Phones keep their clocks in step with every check, not only when they join, and a phone on a jittery connection no longer nudges its clicks every bar.
+- **Ready when you tap.** A phone starts setting its clock as soon as the metronome opens, not when you tap Start or Join. On a slow 4G connection the phone that starts it now hears its own count-in from beat 1, and Join plays straight away instead of after several seconds of silence. After that it makes no extra clock calls: the regular checks keep it in step.
+- **A warning when timing is rough.** A phone that keeps time by its clock alone (it couldn't hear the band, or hasn't been measured) shows its sync status as a warning when it may be more than 25 ms off, and suggests measuring this phone or using Wi-Fi. A phone matched to the band by ear never shows it.
 
 ## Unreleased: Lyrics and band tools
 

@@ -8,7 +8,7 @@ vi.mock("../../src/app/api", async () => {
   return { ...actual, api: { ...actual.api, updateSong: vi.fn() } };
 });
 
-import SongMetronome from "../../src/app/components/SongMetronome";
+import SongMetronome, { ROUNDTRIP_KEY } from "../../src/app/components/SongMetronome";
 import { LEAD_MS, type MetroSession } from "../../src/shared/metronome";
 import { advance, advanceUntil, FakeAudioContext, heard, setupWorld, teardownWorld, world } from "./harness";
 
@@ -33,18 +33,21 @@ function firstBar(s: MetroSession) {
   return { got, first, want: s.beatsPerBar, missed: s.beatsPerBar - got.length };
 }
 
-/** The phone that taps Start for everyone, with this round trip on every request. Returns its first bar. */
-async function starter(rttMs: number) {
+/**
+ * The phone that taps Start for everyone, with this network round trip on every request, after the panel was open for
+ * `openMs` (default: just long enough to show the Start button). Returns its first bar.
+ */
+async function starter(rttMs: number, openMs = rttMs + 20) {
   world.latency = { getTime: symmetric(rttMs), getMetronome: symmetric(rttMs), putMetronome: symmetric(rttMs) };
   render(<SongMetronome song={w.song} onSongChange={() => {}} />);
-  await advance(rttMs + 20, 10);
+  await advance(openMs, 10);
   fireEvent.click(screen.getByRole("button", { name: "Start for everyone" }));
   await advance(2600 + 11 * rttMs, 10);
   const s = (await w.stored())!;
   return firstBar(s);
 }
 
-describe("H1: the starter waits for 20 serial clock samples before it plays anything", () => {
+describe("H1: the clock syncs from when the panel opens, so the starter is ready", () => {
   it("control: with a 100 ms round trip the starter hears beat 1 of its own count-in", async () => {
     const { got, first, want } = await starter(100);
     expect(got).toHaveLength(want);
@@ -52,9 +55,12 @@ describe("H1: the starter waits for 20 serial clock samples before it plays anyt
     expect(Math.abs(got[0].t - first)).toBeLessThan(0.002);
   });
 
-  it.fails("BUG H1: with a 300 ms round trip (4G) the starter misses the start of its own count-in", async () => {
-    const { got, want } = await starter(300);
+  it("H1 fixed: with a 300 ms network round trip (4G) the starter hears beat 1, the panel open a moment before Start", async () => {
+    // 20 serial samples at 300 ms each: 6 s. Reading the song and finding the tempo takes about that long.
+    const { got, want, first } = await starter(300, 8000);
     expect(got).toHaveLength(want);
+    expect(got[0].accent).toBe(true);
+    expect(Math.abs(got[0].t - first)).toBeLessThan(0.002);
   });
 
   it("H1 measure: beats of the first bar the starter misses, by round trip (logged)", async () => {
@@ -63,11 +69,26 @@ describe("H1: the starter waits for 20 serial clock samples before it plays anyt
       cleanup();
       teardownWorld();
       w = await setupWorld();
-      const { missed, want } = await starter(rtt);
+      const { missed, want } = await starter(rtt, 8000);
       rows.push(`  RTT ${String(rtt).padStart(4)} ms: missed ${missed} of ${want} beats in bar 1`);
     }
-    console.log(`[H1] starter, 96 BPM 3/4 (bar = 1.875 s), ${LEAD_MS / 1000} s lead:\n${rows.join("\n")}`);
+    console.log(`[H1] starter, 96 BPM 3/4 (bar = 1.875 s), ${LEAD_MS / 1000} s lead, panel open 8 s:\n${rows.join("\n")}`);
     expect(rows).toHaveLength(8);
+  });
+});
+
+describe("H1: Join on a panel that has been open plays without waiting for the clock", () => {
+  it("at a 300 ms network round trip, the first click comes within a beat of tapping Join", async () => {
+    world.latency = { getTime: symmetric(300), getMetronome: symmetric(300), putMetronome: symmetric(300) };
+    await w.other({ bpm: 120, beatsPerBar: 4, running: true });
+    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    await advance(8000, 10);
+    const timeCalls = world.sent.getTime;
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    await advance(600, 10);
+    const ctx = FakeAudioContext.instances[0];
+    expect(heard(ctx, 0, ctx.currentTime).length).toBeGreaterThan(0);
+    expect(world.sent.getTime).toBe(timeCalls);
   });
 });
 
@@ -122,8 +143,21 @@ describe("H2: a joined follower hears of a restart too late for the count-in", (
   });
 });
 
-describe("H11: the sync status is a fair bound but never warns", () => {
-  it("a lopsided link (10 ms up, 70 ms down) puts the clicks 30 ms late and calls it 'Synced ±40 ms'", async () => {
+/** Joins a running session after the panel was open a moment, with this link on every call. Returns the status line. */
+async function joinWith(leg: [number, number], over: { leader?: string } = {}) {
+  world.latency = { getTime: leg, getMetronome: leg, putMetronome: leg };
+  await w.other({ bpm: 120, beatsPerBar: 4, running: true, ...over });
+  render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+  await advance(25 * (leg[0] + leg[1]) + 100, 10);
+  fireEvent.click(screen.getByRole("button", { name: "Join" }));
+  await advance(1000, 10);
+  return screen.getByRole("status");
+}
+
+const ROUGH = /measure this phone or use Wi-Fi/i;
+
+describe("H11: the sync status is a fair bound, and a rough clock-only sync warns", () => {
+  it("a lopsided link (10 ms up, 70 ms down) puts the clicks 30 ms late, says 'Synced ±40 ms' and warns", async () => {
     // One link for every call: the metronome answers carry the server's time too, so they are clock samples.
     world.latency = { getTime: [10, 70], getMetronome: [10, 70], putMetronome: [10, 70] };
     await w.other({ bpm: 120, beatsPerBar: 4, running: true });
@@ -138,21 +172,41 @@ describe("H11: the sync status is a fair bound but never warns", () => {
     const errMs = (((bar.t - ctx.audioAt(s.startAt)) % 2) + 2) % 2 * 1000;
     const late = errMs > 1000 ? errMs - 2000 : errMs;
     expect(Math.round(late)).toBe(30);
-    // The bound shown is honest (error ≤ half the round trip)...
-    expect(screen.getByRole("status")).toHaveTextContent("Synced ±40 ms");
-    // ...and no warning appears even at ±200 ms (checked below).
+    // The bound shown is honest (error ≤ half the round trip), and over 25 ms it warns.
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("Synced ±40 ms");
+    expect(status).toHaveClass("warn");
+    expect(status).toHaveTextContent(ROUGH);
   });
 
-  it("at a 400 ms round trip it shows 'Synced ±200 ms' with no warning style", async () => {
-    world.latency = { getTime: [200, 200], getMetronome: [200, 200], putMetronome: [200, 200] };
-    await w.other({ bpm: 120, beatsPerBar: 4, running: true });
-    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
-    await advance(450, 10);
-    fireEvent.click(screen.getByRole("button", { name: "Join" }));
-    // 20 serial samples at 400 ms each before the first estimate.
-    await advance(8500, 10);
-    const status = screen.getByRole("status");
+  it("at a 400 ms network round trip it shows 'Synced ±200 ms' with the warning style", async () => {
+    const status = await joinWith([200, 200]);
     expect(status).toHaveTextContent("Synced ±200 ms");
+    expect(status).toHaveClass("warn");
+    expect(status).toHaveTextContent(ROUGH);
+  });
+
+  it("at ±25 ms (a 50 ms network round trip) it doesn't warn", async () => {
+    const status = await joinWith([25, 25]);
+    expect(status).toHaveTextContent("Synced ±25 ms");
     expect(status).not.toHaveClass("warn");
+    expect(status).not.toHaveTextContent(ROUGH);
+  });
+
+  it("a phone that couldn't hear the band warns over 25 ms", async () => {
+    localStorage.setItem(ROUNDTRIP_KEY, "50");
+    world.mic.blocked = true;
+    await joinWith([50, 50], { leader: "them" });
+    await advanceUntil(() => /Couldn't hear the band/.test(screen.getByRole("status").textContent ?? ""), 10_000, 10);
+    expect(screen.getByRole("status")).toHaveClass("warn");
+    expect(screen.getByRole("status")).toHaveTextContent(ROUGH);
+  });
+
+  it("a phone matched to the band by ear doesn't warn, however long its network round trip", async () => {
+    localStorage.setItem(ROUNDTRIP_KEY, String(world.mic.loopbackMs));
+    await joinWith([100, 100], { leader: "them" });
+    await advanceUntil(() => /Matched to the band/.test(screen.getByRole("status").textContent ?? ""), 10_000, 10);
+    expect(screen.getByRole("status")).not.toHaveClass("warn");
+    expect(screen.getByRole("status")).not.toHaveTextContent(ROUGH);
   });
 });

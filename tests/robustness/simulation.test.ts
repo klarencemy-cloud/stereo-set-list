@@ -1,8 +1,8 @@
 // Protocol simulation of N phones (Phase 2). Pure: it runs the real clock maths and constants, not React.
 //
 // Each phone has its own performance.now() (any origin, ±100 ppm against the server) and its own audio clock
-// (±100 ppm against true time). It syncs like useClockSync (20 samples, then 3 every ROUND_EVERY_MS, best of the
-// last 3 rounds, via the real estimateOffset), books the session's bar with the real toAudioTime, and re-aligns
+// (±100 ppm against true time). It syncs like useClockSync did before #14 (20 samples, then 3 time calls every
+// ROUND_EVERY_MS, best of the last 3 rounds, via the real estimateOffset; the session checks now bring those samples), books the session's bar with the real toAudioTime, and re-aligns
 // the way useSyncedMetronome.reconcile did before H8 was fixed (real phaseError; one link reading per tick, re-aligned
 // on any single tick over 10 ms), so its re-align counts are for that older rule. "Error" is where a phone's bar line really
 // sounds against the server's grid, ignoring output latency (i.e. as if every phone were calibrated perfectly).
@@ -19,7 +19,7 @@ import { rng } from "./harness";
 
 // Mirrors of private constants (not exported from the app code).
 const FIRST_ROUND = 20; // useClockSync.ts
-const LATER_ROUND = 3; // useClockSync.ts
+const LATER_ROUND = 3; // useClockSync.ts before #14
 const ROUNDS_KEPT = 3; // useClockSync.ts
 const REALIGN_S = 0.01; // useSyncedMetronome.ts before the H8 fix
 const START_MARGIN_S = 0.05; // useSyncedMetronome.ts
@@ -228,7 +228,8 @@ describe("Phase 2: protocol simulation", () => {
 
   it("requests per joined phone per hour, from the real constants (for H19)", () => {
     const polls = 3_600_000 / POLL_JOINED_MS;
-    const time = FIRST_ROUND + (LATER_ROUND * 3_600_000) / ROUND_EVERY_MS;
+    // Only the first round makes time calls; after it, the session checks' answers are the samples.
+    const time = FIRST_ROUND;
     console.log(`[SIM] per joined phone per hour: ${polls} session checks + ~${Math.round(time)} /api/time = ~${Math.round(polls + time)} function calls`);
     expect(polls).toBe(2400);
   });
