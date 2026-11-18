@@ -58,6 +58,11 @@ export const world = {
   served: { getTime: [] as number[], getMetronome: [] as number[], putMetronome: [] as number[] },
   /** Requests sent, per endpoint (counted when the phone sends, not when the server answers). */
   sent: { getTime: 0, getMetronome: 0, putMetronome: 0 },
+  /**
+   * Cache tags the server cleared, in order, with shared answers on (setupWorld's `sharedAnswers`). The world has no
+   * CDN: answers are never really shared, they only say they may be.
+   */
+  purged: [] as string[],
   /** This phone's mic (see FakeAudioWorkletNode). */
   mic: {
     /** getUserMedia is refused, as when the permission is denied. */
@@ -468,7 +473,7 @@ const songMocks = () =>
 const songMock = (name: keyof typeof api) => (vi.isMockFunction(api[name]) ? api[name] : undefined);
 
 /** Resets the world and wires the api mocks to a fresh server. Call from beforeEach. */
-export async function setupWorld(opts: { perf?: number } = {}) {
+export async function setupWorld(opts: { perf?: number; sharedAnswers?: boolean } = {}) {
   world.perf = opts.perf ?? 10_000;
   world.serverAhead = SERVER_AT_PERF_0;
   world.driftPpm = 0;
@@ -478,6 +483,7 @@ export async function setupWorld(opts: { perf?: number } = {}) {
   world.unrouted = [];
   world.served = { getTime: [], getMetronome: [], putMetronome: [] };
   world.sent = { getTime: 0, getMetronome: 0, putMetronome: 0 };
+  world.purged = [];
   world.mic = { blocked: false, hearsBand: true, loopbackMs: 50, noise: 0, open: 0 };
   micNoise = rng(1);
   world.wakeLock = { refuse: false, requests: 0, held: 0, sentinels: [] };
@@ -500,7 +506,8 @@ export async function setupWorld(opts: { perf?: number } = {}) {
   vi.setSystemTime(serverNow()); // this phone's wall clock happens to be right
   vi.spyOn(performance, "now").mockImplementation(() => world.perf);
 
-  const metronome = makeMetronomeHandler(repo, serverNow);
+  const shared = opts.sharedAnswers ? { purge: async (tag: string) => void world.purged.push(tag) } : undefined;
+  const metronome = makeMetronomeHandler(repo, serverNow, shared);
   vi.stubGlobal(
     "fetch",
     makeFetch({ getTime: makeTimeHandler(serverNow), getMetronome: metronome, putMetronome: metronome }),

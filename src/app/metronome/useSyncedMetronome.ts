@@ -11,9 +11,9 @@ import { useClockSync } from "./useClockSync";
 
 /**
  * How often a joined phone checks the session, also while it is stopped, so a restart reaches it in time.
- * Shorter than the server's 3 s lead (LEAD_MS).
+ * Shorter than the server's 3 s lead (LEAD_MS): a downlink up to about 900 ms still hears a change before its bar line.
  */
-export const POLL_JOINED_MS = 1500;
+export const POLL_JOINED_MS = 2000;
 /** How often an open panel checks the session while this phone isn't joined. */
 export const POLL_IDLE_MS = 10_000;
 /** How often the page lines the loop up with the grid and moves the flash. The clicks themselves don't need it. */
@@ -84,19 +84,16 @@ function stopBy(p: Playing, at: number) {
 
 /**
  * Makes a metronome call and hands its answer to `addSample` as a clock sample (local send and receive times, and
- * the server's time in the answer). Resolves the answer.
+ * the server's time in the answer). Resolves the answer. An answer that may be a shared copy (`shared`) is no
+ * sample: its server time can be up to about 1 s old.
  */
 async function sampledAnswer(call: () => Promise<MetroAnswer>, addSample: (s: TimeSample) => void): Promise<MetroAnswer> {
   const sentMs = performance.now();
   const answer = await call();
   const receivedMs = performance.now();
-  if (typeof answer.now === "number") addSample({ sentMs, serverMs: answer.now, receivedMs });
+  if (typeof answer.now === "number" && !answer.shared) addSample({ sentMs, serverMs: answer.now, receivedMs });
   return answer;
 }
-
-/** As sampledAnswer, resolving the session only. */
-const sampled = async (call: () => Promise<MetroAnswer>, addSample: (s: TimeSample) => void) =>
-  (await sampledAnswer(call, addSample)).session;
 
 const sameSession = (a: MetroSession | null, b: MetroSession | null) =>
   a === b ||
@@ -132,8 +129,10 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
   const clockSeen = useRef<{ perfMs: number; audioS: number } | null>(null);
   /** True after this phone's start found the session already running (it was left as it is). */
   const [alreadyPlaying, setAlreadyPlaying] = useState(false);
+  /** True while the checks' answers may be shared copies (#25): they are no clock samples, so time calls return. */
+  const [sharedAnswers, setSharedAnswers] = useState(false);
   // The clock syncs from when the panel opens, so it is ready by the time this phone starts or joins (H1).
-  const clock = useClockSync(true);
+  const clock = useClockSync(true, sharedAnswers);
   const { addSample } = clock;
 
   const ctxRef = useRef<AudioContext | null>(null);
@@ -229,14 +228,15 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
         if (current(gen) && !hidden()) check(gen);
       }, joinedRef.current ? POLL_JOINED_MS : POLL_IDLE_MS);
       // A joined phone's check also marks the session seen, so it doesn't go stale while the band plays along.
-      return sampled(() => api.getMetronome(songId, joinedRef.current), addSample).then(
-        (s) => {
+      return sampledAnswer(() => api.getMetronome(songId, joinedRef.current), addSample).then(
+        (answer) => {
           if (!current(gen) || seq < heard) return true;
           heard = seq;
           failures = 0;
           answered = true;
           setReachable(true);
-          accept(s);
+          setSharedAnswers(!!answer.shared);
+          accept(answer.session);
           return true;
         },
         () => {

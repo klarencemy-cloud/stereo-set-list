@@ -13,13 +13,12 @@ import { describe, it, expect } from "vitest";
 import { estimateOffset, toAudioTime, type ClockLink, type TimeSample } from "../../src/app/metronome/clock";
 import { phaseError } from "../../src/app/metronome/loop";
 import { POLL_JOINED_MS } from "../../src/app/metronome/useSyncedMetronome";
-import { ROUND_EVERY_MS } from "../../src/app/metronome/useClockSync";
+import { LATER_ROUND, ROUND_EVERY_MS } from "../../src/app/metronome/useClockSync";
 import { applyChange, beatsInWindow, LEAD_MS, type MetroSession } from "../../src/shared/metronome";
 import { rng } from "./harness";
 
 // Mirrors of private constants (not exported from the app code).
 const FIRST_ROUND = 20; // useClockSync.ts
-const LATER_ROUND = 3; // useClockSync.ts before #14
 const ROUNDS_KEPT = 3; // useClockSync.ts
 const REALIGN_S = 0.01; // useSyncedMetronome.ts before the H8 fix
 const START_MARGIN_S = 0.05; // useSyncedMetronome.ts
@@ -228,9 +227,10 @@ describe("Phase 2: protocol simulation", () => {
 
   it("requests per joined phone per hour, from the real constants (for H19)", () => {
     const polls = 3_600_000 / POLL_JOINED_MS;
-    // Only the first round makes time calls; after it, the session checks' answers are the samples.
+    // With shared answers off, only the first round makes time calls; after it, the session checks' answers are the
+    // samples. With them on (#25), add LATER_ROUND time calls every ROUND_EVERY_MS.
     const time = FIRST_ROUND;
     console.log(`[SIM] per joined phone per hour: ${polls} session checks + ~${Math.round(time)} /api/time = ~${Math.round(polls + time)} function calls`);
-    expect(polls).toBe(2400);
+    expect(polls).toBe(1800); // a 2 s check: 25 % fewer than the 1.5 s one (2400)
   });
 });

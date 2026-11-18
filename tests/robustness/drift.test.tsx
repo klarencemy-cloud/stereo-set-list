@@ -75,7 +75,7 @@ describe("H7: performance.now() pausing while the server's clock runs (device sl
     world.driftPpm = 100;
     world.latency = { getTime: [0, 0] }; // every sample has the same (zero) network round trip: a tie
     const { result } = renderHook(() => useClockSync(true));
-    // After the first round, every 1.5 s session check's answer is a sample (also a zero network round trip).
+    // After the first round, every session check's answer is a sample (also a zero network round trip).
     for (let t = 0; t < 239_000; t += 1500) {
       await advance(1500, 500);
       const now = performance.now();
@@ -116,6 +116,51 @@ describe("every metronome answer is a clock sample (#9)", () => {
     const after = barErrorsMs(ctx, s, ctx.currentTime, ctx.currentTime + 4);
     expect(after.length).toBeGreaterThan(0);
     expect(after.every((e) => Math.abs(e) < 1)).toBe(true);
+  });
+});
+
+describe("shared answers (#25): a check's answer that may be cached is no clock sample", () => {
+  it("with the switch on, the checks don't move the clock estimate; time calls do, every minute", async () => {
+    teardownWorld();
+    w = await setupWorld({ sharedAnswers: true });
+    // As above: a slow, lopsided network while the first round of time calls runs.
+    world.latency = { getTime: [150, 50], getMetronome: [150, 50], putMetronome: [150, 50] };
+    await w.other({ bpm: 120, beatsPerBar: 4, running: true });
+    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    await advance(300, 10);
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    await advance(4500, 10);
+    const status = () => screen.getByRole("status").textContent;
+    expect(status()).toContain("Synced ±100 ms");
+    // The network gets quick. The checks see it, but their server time may be a cached copy up to 1 s old.
+    world.latency = { getTime: [5, 5], getMetronome: [5, 5], putMetronome: [5, 5] };
+    const timeCalls = world.sent.getTime;
+    const checks = world.sent.getMetronome;
+    await advance(20_000, 50);
+    expect(world.sent.getMetronome - checks).toBeGreaterThanOrEqual(9);
+    expect(status()).toContain("Synced ±100 ms");
+    // The separate time rounds are back: a few calls a minute, and they bring the quick network in. (Fine steps
+    // around the minute mark, so the time calls' network round trips are measured as
+    // they are.)
+    await advance(30_000, 50);
+    await advance(10_000, 5);
+    expect(world.sent.getTime - timeCalls).toBe(3);
+    expect(status()).toContain("Synced ±5 ms");
+    const ctx = FakeAudioContext.instances[0];
+    const s = (await w.stored()) as MetroSession;
+    const errs = barErrorsMs(ctx, s, ctx.currentTime, ctx.currentTime + 4);
+    expect(errs.length).toBeGreaterThan(0);
+    expect(errs.every((e) => Math.abs(e) < 1)).toBe(true);
+  });
+
+  it("with the switch on, Stop for everyone clears the song's shared answers", async () => {
+    teardownWorld();
+    w = await setupWorld({ sharedAnswers: true });
+    await joined();
+    expect(world.purged).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Stop for everyone" }));
+    await advance(500, 10);
+    expect(world.purged).toEqual([`metronome-${w.song.id}`]);
   });
 });
 

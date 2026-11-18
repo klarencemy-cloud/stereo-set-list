@@ -77,14 +77,13 @@ interface MetroSession {
 
 ### Checking the session
 
-- While the panel is open, the phone checks `GET /api/metronome/:songId`: every 1.5 s while joined (also while
-  the session is stopped, so a restart reaches it), and every 10 s while not joined. With the 3 s lead, every
-  joined phone hears about a change before it happens. No checks while the page is hidden (screen off, app in
+- While the panel is open, the phone checks `GET /api/metronome/:songId`: every 2 s while joined (also while
+  the session is stopped, so a restart reaches it), and every 10 s while not joined. With the 3 s lead, a joined
+  phone hears about a change before its bar line on a downlink of up to about 900 ms. No checks while the page is hidden (screen off, app in
   the background); one check straight away when it is visible again, and one on Join, and one after this
   phone's Start answer. No WebSockets.
 - The next check is timed from when the last one started, but waits for its answer, so checks never overlap.
-- **Planned (#24): the joined check becomes 2 s.** That is about 25 % fewer function calls on Netlify's Free plan.
-  With the 3 s lead, a downlink up to about 900 ms still hears a change in time.
+- The joined check was 1.5 s until #24; 2 s makes about 25 % fewer function calls on Netlify's Free plan.
 - **Planned (#12): seen-at.** A joined phone's check asks the server to mark the session seen. The server writes
   a seen-at time only when the stored one is over 10 minutes old, so at most one write per 10 minutes per session.
 - **Planned (#15, #16): checks that can't freeze or undo.** Every check and time call gets a timeout (about
@@ -240,11 +239,19 @@ Before the first round finishes it shows "Syncing...".
   when it is valid, and applies staleness, the same way on GET and PUT.
 - **Planned (#11, #13, #12):** the envelope also says, for a start, whether it was applied (#11). The normaliser
   also keeps a valid `prev` (#13) and seen-at (#12).
-- **Planned (#25): shared answers behind a switch.** A Netlify environment switch, off by default. When on, the
-  GET answer may be served from Netlify's cache for about 1 s under a per-song cache tag, and every stored change
-  purges that tag. Check answers are then not used as clock samples (a cached server time can be 1 s old), so the
-  separate time rounds return, and ignoring older answers (#16) protects against a stale cached session. The
-  switch is turned on only after a hand test on a deploy preview passes (#26).
+- **Shared answers, behind a switch (#25).** The Netlify environment variable `METRONOME_SHARED_ANSWERS` is off
+  unless set to `1`, `true` or `on`. When on:
+  - the GET answer has `Netlify-CDN-Cache-Control: public, durable, s-maxage=1, must-revalidate`,
+    `Netlify-Cache-Tag: metronome-<songId>` and, for browsers, `Cache-Control: public, max-age=0, must-revalidate`,
+    and says `shared: true`;
+  - every stored change (an applied PUT) purges that tag before it answers; a failed purge is logged and the
+    cached answer expires within 1 s anyway (Netlify allows two purges per tag every 5 s);
+  - PUT answers are still `no-store` and still clock samples; a check's answer that says `shared` is not one (its
+    server time can be 1 s old), so the phone takes 3 time calls every 60 s again;
+  - ignoring older answers (#16) protects against a stale cached session.
+
+  The switch is turned on only after a hand test on a deploy preview passes (#26). That test should also confirm
+  that the phones' requests, sent with `cache: "no-store"`, are answered from Netlify's cache at all.
 - Stored at KV key `metronome/<songId>`; deleting the song (or the track that owns it) deletes it.
 - The offline service worker passes both paths straight to the network (they are not in its cached routes).
 

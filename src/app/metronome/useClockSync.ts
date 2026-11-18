@@ -4,6 +4,8 @@ import { CLOCK_PAUSE_MS, estimateOffset, fitDrift, pausedMs, type ClockMark, typ
 
 /** Time calls made when sync starts. After that, the session checks' answers are the samples. */
 const FIRST_ROUND = 20;
+/** Time calls made every ROUND_EVERY_MS while the session checks' answers are no samples (`timeRounds`). */
+export const LATER_ROUND = 3;
 /** The samples handed in are grouped into rounds this long, so they age out and the drift can be fitted. */
 export const ROUND_EVERY_MS = 60_000;
 /** The best sample is chosen from this many latest rounds, so a slow patch of network doesn't stick. */
@@ -66,7 +68,8 @@ async function sampleRound(n: number, alive: () => boolean): Promise<TimeSample[
 /**
  * How far this phone's clock is from the server's (Cristian's algorithm), while `active`: 20 time calls at the
  * start, then the samples handed in by `addSample` (every session check's answer carries the server's time), so no
- * more time calls. Samples are grouped into ROUND_EVERY_MS rounds; the fastest network round trip of the last few rounds
+ * more time calls. While `timeRounds` (the checks' answers may be shared copies, so they are no samples), a round of
+ * LATER_ROUND time calls every ROUND_EVERY_MS as well. Samples are grouped into ROUND_EVERY_MS rounds; the fastest network round trip of the last few rounds
  * wins, and the drift is fitted over a longer history of rounds.
  *
  * Samples that arrive while the first round runs join it when it lands. After a first round where every time call
@@ -77,12 +80,14 @@ async function sampleRound(n: number, alive: () => boolean): Promise<TimeSample[
  * that much (H7). They are dropped and a full round is taken, as at the start; until it lands, the estimate is the
  * old one moved by the pause, so a phone playing along stays about right. `wakes` counts these.
  */
-export function useClockSync(active: boolean): ClockSyncHandle {
+export function useClockSync(active: boolean, timeRounds = false): ClockSyncHandle {
   const [sync, setSync] = useState<ClockSync>(IDLE);
   const [wakes, setWakes] = useState(0);
   /** Where addSample's samples go: set while active. */
   const sink = useRef<((s: TimeSample) => void) | null>(null);
   const addSample = useCallback((s: TimeSample) => sink.current?.(s), []);
+  /** Where a later round of time calls goes: set while active. */
+  const roundSink = useRef<((samples: TimeSample[]) => void) | null>(null);
 
   useEffect(() => {
     if (!active) {
@@ -135,6 +140,17 @@ export function useClockSync(active: boolean): ClockSyncHandle {
       publish();
     };
 
+    roundSink.current = (taken) => {
+      const samples = taken.filter((s) => s.sentMs >= wokeAtMs);
+      if (!samples.length) return;
+      if (!firstRoundDone) {
+        pending.push(...samples);
+        return;
+      }
+      newRound(samples);
+      publish();
+    };
+
     /** Takes a full round of time calls; the samples handed in meanwhile join it. */
     function fullRound() {
       const gen = generation;
@@ -170,9 +186,29 @@ export function useClockSync(active: boolean): ClockSyncHandle {
     return () => {
       alive = false;
       sink.current = null;
+      roundSink.current = null;
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [active]);
+
+  // While the answers are no samples: a few time calls every round, never while the page is hidden.
+  useEffect(() => {
+    if (!active || !timeRounds) return;
+    let alive = true;
+    let running = false;
+    const t = setInterval(() => {
+      if (running || document.visibilityState === "hidden") return;
+      running = true;
+      sampleRound(LATER_ROUND, () => alive).then((taken) => {
+        running = false;
+        if (alive) roundSink.current?.(taken);
+      });
+    }, ROUND_EVERY_MS);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [active, timeRounds]);
 
   return { ...sync, addSample, wakes };
 }

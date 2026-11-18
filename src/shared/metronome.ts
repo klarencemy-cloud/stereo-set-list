@@ -55,6 +55,11 @@ export interface MetroAnswer {
    * running, so it was left as it is and `session` is the running one.
    */
   applied?: boolean;
+  /**
+   * On a check's answer only, while the server shares answers between phones (#25): this answer may be a copy
+   * Netlify's cache kept for up to about 1 s, so `now` can be that old and is no clock sample.
+   */
+  shared?: true;
 }
 
 /** What a client asks for. Anything left out stays as it is. */
@@ -83,8 +88,9 @@ export interface GridBeat {
 export const LEAD_MS = 3000;
 
 /**
- * A change that replaces one that hasn't started yet keeps its start when it is at least this far away: enough
- * for phones to hear of it in time (they check every 1.5 s while joined).
+ * A change that replaces one that hasn't started yet keeps its start when it is at least this far away. Most joined
+ * phones (they check every 2 s) hear of it before then; one whose check falls just after it may play the replaced
+ * change's bar until that check.
  */
 export const KEEP_START_MS = 1500;
 

@@ -94,7 +94,7 @@ describe("H1: Join on a panel that has been open plays without waiting for the c
 
 /**
  * A follower that is joined while the session is stopped (someone pressed Stop, everyone stayed joined). Another
- * phone restarts it right after this phone's poll was read at the server: the worst case for the 1.5 s poll.
+ * phone restarts it right after this phone's poll was read at the server: the worst case for the 2 s check.
  */
 async function followerOfRestart(metroLeg: [number, number], timeLeg: [number, number] = [10, 10]) {
   world.latency = { getTime: timeLeg, getMetronome: metroLeg, putMetronome: metroLeg };
@@ -129,9 +129,14 @@ describe("H2: a joined follower hears of a restart too late for the count-in", (
     expect(got).toHaveLength(want);
   });
 
+  it("H2 with the 2 s check: a downlink up to about 900 ms (50 ms up, 850 ms down) still hears beat 1", async () => {
+    const { got, want } = await followerOfRestart([50, 850]);
+    expect(got).toHaveLength(want);
+  });
+
   it("H2 measure: beats of bar 1 missed against the downlink delay, worst-case timing (logged)", async () => {
     const rows: string[] = [];
-    for (const down of [300, 400, 420, 440, 500, 700, 1000]) {
+    for (const down of [300, 500, 700, 850, 900, 950, 1000]) {
       cleanup();
       teardownWorld();
       w = await setupWorld();

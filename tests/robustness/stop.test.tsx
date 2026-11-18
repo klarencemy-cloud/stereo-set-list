@@ -183,8 +183,8 @@ describe("H23: two changes inside one lead keep every phone on the same bar", ()
     fireEvent.click(within(a.container).getByRole("button", { name: "Join" }));
     await advance(750, 5);
     fireEvent.click(within(b.container).getByRole("button", { name: "Join" }));
-    // Phone A's polls are read at joinA + 10 + 1500k; phone B's 750 ms later.
-    const justAfterA = joinA + 10 + 1500 * 4 + 2;
+    // Phone A's checks are read at joinA + 10 + 2000k; phone B's 750 ms later.
+    const justAfterA = joinA + 10 + 2000 * 3 + 2;
     await advance(justAfterA - serverNow(), 1);
     const changedAt = serverNow();
     await w.other({ beatsPerBar: 3 }); // change 1: A won't hear of it, B will (its read is 748 ms later)
@@ -206,7 +206,9 @@ describe("H23: two changes inside one lead keep every phone on the same bar", ()
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     await advance(4000, 10);
     const s1 = (await w.other({ beatsPerBar: 3 }))!;
-    await advance(2100, 5); // this phone has heard of change 1, which is now under 1.5 s away
+    // This phone heard of change 1 at its last check; change 2 comes 1.45 s before change 1's start (too close to
+    // keep it), just before this phone's next check.
+    await advance(1950, 5);
     const s2 = (await w.other({ bpm: 200 }))!;
     expect(s2.startAt).toBeGreaterThan(s1.startAt); // moved to a later bar line of the sounding grid
     expect(s2.prev).toEqual({ bpm: 240, beatsPerBar: 2, startAt: s0.startAt });

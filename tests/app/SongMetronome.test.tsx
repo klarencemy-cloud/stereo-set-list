@@ -291,7 +291,7 @@ describe("SongMetronome, a session is running", () => {
       expect(ctx.loops[0].loop).toBe(true);
       // Later ticks and polls of the same session leave it alone.
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(1600);
+        await vi.advanceTimersByTimeAsync(2100);
       });
       await moveTo(6000);
       await moveTo(9000);
@@ -322,7 +322,7 @@ describe("SongMetronome, a session is running", () => {
       // A session that started long ago (server 1000): its bar lines are at audio -8.1 + 2k.
       serve(mocked.getMetronome, running({ startAt: 1000, updatedAt: "2026-11-15T10:00:07.000Z" }));
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(1600);
+        await vi.advanceTimersByTimeAsync(2100);
       });
       const fresh = ctx.loops[ctx.loops.length - 1];
       expect(fresh.when!).toBeLessThan(0.2); // straight away, not at the next bar
@@ -334,7 +334,7 @@ describe("SongMetronome, a session is running", () => {
       await moveTo(4010);
       serve(mocked.getMetronome, running({ bpm: 60, startAt: 12_000, updatedAt: "2026-11-15T10:00:05.000Z" }));
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(1600);
+        await vi.advanceTimersByTimeAsync(2100);
       });
       await moveTo(5700);
       // New bar (4 beats at 60 = 4 s) from server 12 000 = audio 2.9; the old loop stops right there.
@@ -366,7 +366,7 @@ describe("SongMetronome, a session is running", () => {
       await moveTo(4010);
       serve(mocked.getMetronome, running({ running: false, updatedAt: "2026-11-15T10:00:09.000Z" }));
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(1600);
+        await vi.advanceTimersByTimeAsync(2100);
       });
       expect(playing()).toHaveLength(0);
     });
@@ -556,7 +556,7 @@ describe("matching the band by ear", () => {
     await moveTo(4010);
     serve(mocked.getMetronome, running({ leader: "them", bpm: 60, startAt: 12_000, updatedAt: "2026-11-15T10:00:05.000Z" }));
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1600);
+      await vi.advanceTimersByTimeAsync(2100);
     });
     await moveTo(5700);
     expect(listenMock).toHaveBeenCalledTimes(1);
@@ -572,7 +572,7 @@ describe("matching the band by ear", () => {
     expect(playing()[0].when!).toBeCloseTo(0.88, 3);
     serve(mocked.getMetronome, running({ leader: "someone-else", updatedAt: "2026-11-15T10:00:05.000Z" }));
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1600);
+      await vi.advanceTimersByTimeAsync(2100);
     });
     expect(listenMock).toHaveBeenCalledTimes(2);
     expect(playing()).toHaveLength(0);
@@ -599,7 +599,7 @@ describe("matching the band by ear", () => {
     });
     await moveTo(6100);
     // The session checks brought the moved clock's samples, over more than ROUNDS_KEPT rounds.
-    expect(mocked.getMetronome.mock.calls.length - checks).toBeGreaterThanOrEqual(100);
+    expect(mocked.getMetronome.mock.calls.length - checks).toBeGreaterThanOrEqual(80);
     expect(ctx.loops).toHaveLength(booked);
     expect(screen.getByRole("status")).toHaveTextContent("Matched to the band");
   });
@@ -731,23 +731,25 @@ describe("session checks", () => {
     await advance(0);
     expect(calls()).toBe(1); // on open
     await advance(9_000);
-    expect(calls()).toBe(1); // not every 1.5 s any more
+    expect(calls()).toBe(1); // not every 2 s any more
     await advance(1_000);
     expect(calls()).toBe(2);
   });
 
-  it("checks at once on Join, then every 1.5 s", async () => {
+  it("checks at once on Join, then every 2 s", async () => {
     serve(mocked.getMetronome, running());
     renderPanel();
     await advance(0);
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     await advance(0);
     expect(calls()).toBe(2);
-    await advance(1_500);
+    await advance(1_900);
+    expect(calls()).toBe(2); // not every 1.5 s any more
+    await advance(100);
     expect(calls()).toBe(3);
   });
 
-  it("joined with the session stopped still checks every 1.5 s", async () => {
+  it("joined with the session stopped still checks every 2 s", async () => {
     // Start for everyone joins this phone; the server answers with a session that someone then stops.
     serve(mocked.putMetronome, running());
     serve(mocked.getMetronome, null);
@@ -757,7 +759,7 @@ describe("session checks", () => {
     await advance(0);
     serve(mocked.getMetronome, running({ running: false, updatedAt: "2026-11-15T10:00:09.000Z" }));
     const before = calls();
-    await advance(3_000);
+    await advance(4_000);
     expect(calls() - before).toBe(2);
   });
 
@@ -785,11 +787,11 @@ describe("session checks", () => {
     setHidden(false);
     await advance(0);
     const before = calls();
-    await advance(3_000);
-    expect(calls() - before).toBe(2); // still one check per 1.5 s
+    await advance(4_000);
+    expect(calls() - before).toBe(2); // still one check per 2 s
   });
 
-  it("a failed check while joined keeps checking every 1.5 s", async () => {
+  it("a failed check while joined keeps checking every 2 s", async () => {
     serve(mocked.getMetronome, running());
     renderPanel();
     await advance(0);
@@ -797,11 +799,11 @@ describe("session checks", () => {
     await advance(0);
     mocked.getMetronome.mockRejectedValue(new ApiError(0, "offline"));
     const before = calls();
-    await advance(3_000);
+    await advance(4_000);
     expect(calls() - before).toBe(2);
   });
 
-  it("a slow answer doesn't stretch the 1.5 s between checks while joined", async () => {
+  it("a slow answer doesn't stretch the 2 s between checks while joined", async () => {
     serve(mocked.getMetronome, running());
     renderPanel();
     await advance(0);
@@ -810,8 +812,8 @@ describe("session checks", () => {
     // Every answer now takes 600 ms, as on a slow connection.
     mocked.getMetronome.mockImplementation(() => new Promise((r) => setTimeout(() => r({ session: running(), now: perf + serverAhead }), 600)));
     const before = calls();
-    await advance(6_000);
-    expect(calls() - before).toBe(4); // one every 1.5 s, not every 2.1 s
+    await advance(8_000);
+    expect(calls() - before).toBe(4); // one every 2 s, not every 2.6 s
   });
 
   it("no checks after the panel closes", async () => {
