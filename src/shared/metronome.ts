@@ -37,6 +37,11 @@ export interface MetroSession {
 export interface MetroAnswer {
   session: MetroSession | null;
   now: number;
+  /**
+   * On the answer to a start only: false when the start was "only if stopped" and the session was already
+   * running, so it was left as it is and `session` is the running one.
+   */
+  applied?: boolean;
 }
 
 /** What a client asks for. Anything left out stays as it is. */
@@ -46,6 +51,11 @@ export interface MetroChange {
   running?: boolean;
   /** Sent with a start: the starter becomes the leader. Ignored on any other change. */
   leader?: string;
+  /**
+   * With a start: only start a stopped session. If it is already running, it is left as it is (tempo, start and
+   * leader) and the answer says the start wasn't applied. Ignored on any other change.
+   */
+  onlyIfStopped?: boolean;
 }
 
 export interface GridBeat {

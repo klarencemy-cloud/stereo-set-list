@@ -4,7 +4,7 @@ import { memoryKV } from "../../netlify/functions/lib/kv";
 import { makeRepo, METRO_STALE_MS } from "../../netlify/functions/lib/repo";
 import { makeMetronomeHandler } from "../../netlify/functions/metronome";
 import { routeFor } from "../../src/sw/strategy";
-import type { MetroAnswer, MetroSession } from "../../src/shared/metronome";
+import { LEAD_MS, type MetroAnswer, type MetroSession } from "../../src/shared/metronome";
 
 const U = "http://localhost";
 const req = (method: string, path: string, body?: unknown) =>
@@ -23,11 +23,13 @@ async function setup() {
   });
   const put = async (body: unknown) =>
     ((await (await metro(req("PUT", `/api/metronome/${song.id}`, body))).json()) as MetroAnswer).session as MetroSession;
+  const putAnswer = async (body: unknown) =>
+    (await (await metro(req("PUT", `/api/metronome/${song.id}`, body))).json()) as MetroAnswer;
   const get = async () => ((await (await metro(req("GET", `/api/metronome/${song.id}`))).json()) as MetroAnswer).session;
   /** A joined phone's check: it also marks the session seen. */
   const check = async () =>
     ((await (await metro(req("GET", `/api/metronome/${song.id}?seen=1`))).json()) as MetroAnswer).session;
-  return { repo, clock, put, get, check, id: song.id };
+  return { repo, clock, put, putAnswer, get, check, id: song.id };
 }
 
 describe("H5: two phones change it at the same moment", () => {
@@ -121,12 +123,45 @@ describe("H17: a running session nobody changes for 2 h", () => {
 });
 
 describe("H18: Start for everyone while it is already running", () => {
-  it.fails("BUG H18: a start with another tempo becomes a tempo change for everyone, not 'already playing'", async () => {
-    const { clock, put } = await setup();
-    const first = await put({ bpm: 120, beatsPerBar: 4, running: true });
+  it("H18: a start 'only if stopped' leaves a running session as it is (tempo, start, leader) and answers 'not applied'", async () => {
+    const { clock, put, putAnswer, get } = await setup();
+    const first = await put({ bpm: 120, beatsPerBar: 4, running: true, leader: "drummer" });
     clock.now += 3000;
-    const second = await put({ bpm: 96, beatsPerBar: 3, running: true });
-    expect({ bpm: second.bpm, beatsPerBar: second.beatsPerBar }).toEqual({ bpm: first.bpm, beatsPerBar: first.beatsPerBar });
+    const answer = await putAnswer({ bpm: 96, beatsPerBar: 3, running: true, leader: "late-phone", onlyIfStopped: true });
+    expect(answer.applied).toBe(false);
+    expect(answer.session).toEqual(first);
+    expect(await get()).toEqual(first);
+  });
+
+  it("H18: a start 'only if stopped' from stopped is applied, and the starter leads", async () => {
+    const { clock, put, putAnswer } = await setup();
+    await put({ bpm: 120, beatsPerBar: 4, running: true, leader: "drummer" });
+    await put({ running: false });
+    clock.now += 3000;
+    const answer = await putAnswer({ bpm: 96, beatsPerBar: 3, running: true, leader: "late-phone", onlyIfStopped: true });
+    expect(answer.applied).toBe(true);
+    expect(answer.session).toMatchObject({ bpm: 96, beatsPerBar: 3, running: true, leader: "late-phone", startAt: clock.now + LEAD_MS });
+  });
+
+  it("H18: a start 'only if stopped' over a forgotten (stale) session is applied", async () => {
+    const { clock, put, putAnswer } = await setup();
+    await put({ bpm: 120, beatsPerBar: 4, running: true, leader: "drummer" });
+    clock.now += METRO_STALE_MS + 1000;
+    const answer = await putAnswer({ bpm: 96, beatsPerBar: 3, running: true, leader: "late-phone", onlyIfStopped: true });
+    expect(answer.applied).toBe(true);
+    expect(answer.session).toMatchObject({ bpm: 96, running: true, leader: "late-phone" });
+  });
+
+  it("H18: two 'only if stopped' starts at the same moment: one is applied, the other gets it as 'not applied'", async () => {
+    const { putAnswer, get } = await setup();
+    const [a, b] = await Promise.all([
+      putAnswer({ bpm: 120, beatsPerBar: 4, running: true, leader: "a", onlyIfStopped: true }),
+      putAnswer({ bpm: 96, beatsPerBar: 3, running: true, leader: "b", onlyIfStopped: true }),
+    ]);
+    expect([a.applied, b.applied].sort()).toEqual([false, true]);
+    const won = a.applied ? a : b;
+    expect((a.applied ? b : a).session).toEqual(won.session);
+    expect(await get()).toEqual(won.session);
   });
 });
 

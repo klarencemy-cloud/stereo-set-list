@@ -141,11 +141,44 @@ describe("SongMetronome, nothing running", () => {
     // ...as its leader: this phone's own id, made once and kept.
     const me = localStorage.getItem(DEVICE_KEY);
     expect(me).toBeTruthy();
-    expect(mocked.putMetronome).toHaveBeenCalledWith("s1", { bpm: 97, beatsPerBar: 3, running: true, leader: me });
+    // ...only if nobody has started it meanwhile.
+    expect(mocked.putMetronome).toHaveBeenCalledWith("s1", { bpm: 97, beatsPerBar: 3, running: true, leader: me, onlyIfStopped: true });
     // The one who starts it is joined straight away.
     await screen.findByRole("button", { name: "Stop for everyone" });
     expect(screen.getByRole("button", { name: "Leave" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Join" })).toBeNull();
+  });
+
+  it("a start that finds it already playing shows 'Already playing at N BPM', and Join plays theirs", async () => {
+    // This panel still shows stopped, but a bandmate started it at 120/4 meanwhile: the server leaves theirs alone.
+    const theirs = running({ leader: "drummer" });
+    mocked.putMetronome.mockImplementation(async () => ({ session: theirs, now: perf + serverAhead, applied: false }));
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Start for everyone" }));
+    expect(await screen.findByText("Already playing at 120 BPM")).toBeInTheDocument();
+    // Not joined: no Leave, no loop booked, no error.
+    expect(screen.queryByRole("button", { name: "Leave" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(FakeAudioContext.instances[0].loops).toEqual([]);
+    serve(mocked.getMetronome, theirs);
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    expect(await screen.findByRole("button", { name: "Leave" })).toBeInTheDocument();
+    expect(await screen.findByText(/Synced ±\d+ ms/)).toBeInTheDocument();
+    expect(screen.queryByText("Already playing at 120 BPM")).toBeNull();
+    expect(mocked.putMetronome).toHaveBeenCalledTimes(1); // Join changes nothing for everyone
+    await waitFor(() => expect(FakeAudioContext.instances[0].loops.length).toBeGreaterThan(0));
+  });
+
+  it("after 'Already playing', a Leave shows plain 'Playing at N BPM' again", async () => {
+    const theirs = running({ leader: "drummer" });
+    mocked.putMetronome.mockImplementation(async () => ({ session: theirs, now: perf + serverAhead, applied: false }));
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Start for everyone" }));
+    await screen.findByText("Already playing at 120 BPM");
+    serve(mocked.getMetronome, theirs);
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Leave" }));
+    expect(await screen.findByText("Playing at 120 BPM")).toBeInTheDocument();
   });
 
   it("uses this phone's last tempo when the song has none", async () => {

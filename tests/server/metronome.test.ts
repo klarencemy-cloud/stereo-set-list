@@ -55,10 +55,14 @@ describe("metronome API", () => {
     expect(put).toEqual({
       session: { bpm: 120, beatsPerBar: 4, startAt: 1_000_250 + LEAD_MS, running: true, updatedAt: new Date(1_000_250).toISOString() },
       now: 1_000_250,
+      applied: true, // a start's answer says whether it was applied
     });
     clock.now = 1_000_900;
     const got = await (await metro(req("GET", `/api/metronome/${id}`))).json();
     expect(got).toEqual({ session: put.session, now: 1_000_900 });
+    // Only a start's answer carries `applied`.
+    const changed = await (await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90 }))).json();
+    expect(changed).not.toHaveProperty("applied");
     const stop = await (await metro(req("PUT", `/api/metronome/missing-${id}`, { running: false }))).json();
     expect(stop).toMatchObject({ message: expect.any(String) }); // still a 404, not an envelope
   });
@@ -102,12 +106,35 @@ describe("metronome API", () => {
     [{ running: true, leader: "" }],
     [{ running: true, leader: "x".repeat(65) }],
     [{ leader: "phone-a" }],
+    [{ running: true, onlyIfStopped: "yes" }],
+    [{ onlyIfStopped: true }],
   ])("refuses %o", async (body) => {
     const { metro, id } = await setup();
     await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
     const res = await metro(req("PUT", `/api/metronome/${id}`, body));
     expect(res.status).toBe(400);
     expect((await res.json()).message).toBeTruthy();
+  });
+
+  it("a start only if stopped, from stopped, is applied and makes the starter the leader", async () => {
+    const { metro, clock, id } = await setup();
+    const first = await (await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true, leader: "a", onlyIfStopped: true }))).json();
+    expect(first).toMatchObject({ applied: true, session: { bpm: 120, running: true, leader: "a", startAt: clock.now + LEAD_MS } });
+    await metro(req("PUT", `/api/metronome/${id}`, { running: false }));
+    clock.now += 5000;
+    const again = await (await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90, beatsPerBar: 3, running: true, leader: "b", onlyIfStopped: true }))).json();
+    expect(again).toMatchObject({ applied: true, session: { bpm: 90, beatsPerBar: 3, running: true, leader: "b", startAt: clock.now + LEAD_MS } });
+  });
+
+  it("a start only if stopped, while it runs, leaves it as it is and answers 'not applied' with the running session", async () => {
+    const { metro, clock, id } = await setup();
+    const running = await sessionOf(await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true, leader: "a" })));
+    clock.now += 5000;
+    const res = await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90, beatsPerBar: 3, running: true, leader: "b", onlyIfStopped: true }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    expect(await res.json()).toEqual({ session: running, now: clock.now, applied: false });
+    expect(await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).toEqual(running);
   });
 
   it("keeps the leader that started it, and everyone reads it", async () => {

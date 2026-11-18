@@ -21,6 +21,19 @@ export class NotFoundError extends Error {
   }
 }
 
+/**
+ * A start "only if stopped" that found the session already running: nothing was written, and `current` is the
+ * running session, left as it is.
+ */
+export class StartNotApplied extends Error {
+  current: MetroSession;
+  constructor(current: MetroSession) {
+    super("The metronome is already playing.");
+    this.name = "StartNotApplied";
+    this.current = current;
+  }
+}
+
 /** The record changed since the client loaded it. `current` is what is stored now. */
 export class ConflictError extends Error {
   current: unknown;
@@ -268,7 +281,10 @@ export const METRO_SEEN_EVERY_MS = 10 * 60 * 1000;
 /** How many times a conditional write is re-applied to a record that changed under it before giving up. */
 export const WRITE_ATTEMPTS = 5;
 
-/** Checks a metronome change from a client: at least one of bpm, beatsPerBar and running, plus an optional leader. */
+/**
+ * Checks a metronome change from a client: at least one of bpm, beatsPerBar and running, plus an optional leader
+ * and "only if stopped".
+ */
 function checkMetroChange(input: unknown): MetroChange {
   const src = (input ?? {}) as Record<string, unknown>;
   const out: MetroChange = {};
@@ -293,6 +309,10 @@ function checkMetroChange(input: unknown): MetroChange {
   if (src.leader !== undefined) {
     if (!isMetroLeader(src.leader)) throw new ValidationError(`leader must be text of 1 to ${LIMITS.metroLeader} characters`);
     out.leader = src.leader;
+  }
+  if (src.onlyIfStopped !== undefined) {
+    if (typeof src.onlyIfStopped !== "boolean") throw new ValidationError("onlyIfStopped must be true or false");
+    out.onlyIfStopped = src.onlyIfStopped;
   }
   return out;
 }
@@ -501,7 +521,9 @@ export function makeRepo(kv: KV) {
      * arriving together are all applied, one after another in the order their writes land: a write only lands if nobody wrote the
      * session since it was read, otherwise the change is re-applied to the newer one. Resolves null
      * when asked to stop a session that was never started. A conflict that outlasts the retries is a
-     * ConflictError (409) carrying the latest session, never a silently dropped change.
+     * ConflictError (409) carrying the latest session, never a silently dropped change. A start "only if stopped"
+     * that finds it running (on the same read the write would be checked against) writes nothing and is a
+     * StartNotApplied carrying the running session.
      */
     async setMetronome(songId: string, input: unknown, nowMs: number): Promise<MetroSession | null> {
       const change = checkMetroChange(input);
@@ -519,6 +541,7 @@ export function makeRepo(kv: KV) {
           continue;
         }
         const current = toMetroSession(JSON.parse(got.value) as MetroSession, nowMs);
+        if (change.running && change.onlyIfStopped && current.running) throw new StartNotApplied(current);
         const next = applyChange(current, change, nowMs);
         if (next === current) return current;
         if (await kv.setTextIfMatch(key, JSON.stringify(next), got.etag)) return toMetroSession(next, nowMs);

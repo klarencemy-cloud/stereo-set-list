@@ -1,15 +1,15 @@
 import type { Config } from "@netlify/functions";
 import { guard, json, methodNotAllowed, notFound, readBody, routeParts } from "./lib/http";
 import { blobsKV } from "./lib/kv";
-import { makeRepo, type Repo } from "./lib/repo";
+import { makeRepo, StartNotApplied, type Repo } from "./lib/repo";
 import type { MetroAnswer, MetroSession } from "../../src/shared/metronome";
 
 /**
  * A session answer (see MetroAnswer), with the server's time read as it answers. A browser must never reuse it:
  * the session changes under it, and its time is a clock sample.
  */
-function live(session: MetroSession | null, clock: () => number): Response {
-  const answer: MetroAnswer = { session, now: clock() };
+function live(session: MetroSession | null, clock: () => number, applied?: boolean): Response {
+  const answer: MetroAnswer = { session, now: clock(), ...(applied === undefined ? {} : { applied }) };
   const res = json(answer);
   res.headers.set("Cache-Control", "no-store");
   return res;
@@ -25,7 +25,17 @@ export function makeMetronomeHandler(repo: Repo, clock: () => number) {
       const seen = new URL(req.url).searchParams.get("seen") === "1";
       return live(await repo.getMetronome(songId, clock(), { seen }), clock);
     }
-    if (req.method === "PUT") return live(await repo.setMetronome(songId, await readBody(req), clock()), clock);
+    if (req.method === "PUT") {
+      const body = await readBody<{ running?: unknown }>(req);
+      // A start's answer says whether it was applied (see MetroChange.onlyIfStopped).
+      const isStart = body.running === true;
+      try {
+        return live(await repo.setMetronome(songId, body, clock()), clock, isStart ? true : undefined);
+      } catch (e) {
+        if (e instanceof StartNotApplied) return live(e.current, clock, false);
+        throw e;
+      }
+    }
     return methodNotAllowed();
   });
 }
