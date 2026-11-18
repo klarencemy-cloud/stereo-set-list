@@ -73,7 +73,8 @@ describe("the world's network", () => {
 
   it("never answers while hung", async () => {
     world.hang = true;
-    const r = watch(api.getMetronome(w.song.id));
+    // Through fetch itself: the API client gives up on a metronome call after METRONOME_TIMEOUT_MS.
+    const r = watch(fetch(`/api/metronome/${w.song.id}`));
     await advance(60_000, 100);
     expect(r.done).toBe(false);
     expect(world.served.getMetronome).toEqual([]);

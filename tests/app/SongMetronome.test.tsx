@@ -355,7 +355,8 @@ describe("SongMetronome, a session is running", () => {
       expect(ctx.loops).toHaveLength(2);
       const [old, fresh] = ctx.loops;
       expect(fresh.offset).toBe(0);
-      expect(old.stoppedAt).toBeCloseTo(fresh.when!);
+      // The old loop runs 30 ms early: it stops at its own bar line, before that line's click (H9).
+      expect(old.stoppedAt).toBeCloseTo(fresh.when! - 0.03);
       // The new loop's bar lines are back on the grid (bar line at audio 0.9 + 2k, plus the 30 ms).
       expect(offBar(fresh.when!, 0.93)).toBeLessThan(1e-6);
     });

@@ -45,6 +45,27 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
   return (await request(path, init)).json() as Promise<T>;
 }
 
+/**
+ * How long a synced-metronome call (METRONOME_TIMEOUT_MS) or a server-clock call (TIME_TIMEOUT_MS) waits for its
+ * answer: a request that never answers must not freeze a phone (H22).
+ */
+export const METRONOME_TIMEOUT_MS = 2500;
+export const TIME_TIMEOUT_MS = 2000;
+
+/** As json, but gives up after `timeoutMs` with an ApiError (status 0), as if the server couldn't be reached. */
+async function jsonWithin<T>(timeoutMs: number, path: string, init?: RequestInit): Promise<T> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    return await json<T>(path, { ...init, signal: ac.signal });
+  } catch (e) {
+    if (ac.signal.aborted) throw new ApiError(0, "The server didn't answer in time. Check your connection.");
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Tells the offline service worker to wait for the server rather than answer from its saved
 // copy after a timeout. Same value as FRESH_HEADER in src/sw/strategy.ts (not imported, so the
 // worker build stays a single file; tests/app/api.test.ts checks they match).
@@ -141,19 +162,21 @@ export const api = {
     }),
 
   /** The server's clock (ms), for the synced metronome. */
-  getTime: () => json<{ now: number }>("/api/time", { cache: "no-store" }),
+  getTime: () => jsonWithin<{ now: number }>(TIME_TIMEOUT_MS, "/api/time", { cache: "no-store" }),
   /**
    * The song's shared metronome (null when nobody has started one), and the server's time when it answered.
    * `seen`: a joined phone's check, which tells the server the session is still in use.
    */
   getMetronome: (songId: string, seen = false) =>
-    json<MetroAnswer>(`/api/metronome/${encodeURIComponent(songId)}${seen ? "?seen=1" : ""}`, { cache: "no-store" }),
+    jsonWithin<MetroAnswer>(METRONOME_TIMEOUT_MS, `/api/metronome/${encodeURIComponent(songId)}${seen ? "?seen=1" : ""}`, {
+      cache: "no-store",
+    }),
   /**
    * Starts, changes or stops the song's metronome for everyone; the server picks when it takes effect. Answers
    * like getMetronome.
    */
   putMetronome: (songId: string, change: MetroChange) =>
-    json<MetroAnswer>(`/api/metronome/${encodeURIComponent(songId)}`, send("PUT", change)),
+    jsonWithin<MetroAnswer>(METRONOME_TIMEOUT_MS, `/api/metronome/${encodeURIComponent(songId)}`, send("PUT", change)),
 
   importSong: (url: string) => json<ImportedSong>("/api/import", send("POST", { url })),
   readPlaylist: (url: string) => json<PlaylistResult>("/api/playlist", send("POST", { url })),

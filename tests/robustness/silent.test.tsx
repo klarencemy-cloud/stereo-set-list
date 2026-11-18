@@ -126,7 +126,7 @@ describe("H21: offline, then back online", () => {
 });
 
 describe("H22 (new): a request that never answers", () => {
-  it.fails("BUG H22: a hung poll (Wi-Fi up, no internet) shows nothing, and the phone stops following the session", async () => {
+  it("H22 fixed: after a hung poll (Wi-Fi up, no internet) the checks resume, and a later Stop silences the phone", async () => {
     const ctx = await joined();
     world.hang = true;
     await advance(3000, 10);
@@ -135,10 +135,53 @@ describe("H22 (new): a request that never answers", () => {
     await w.other({ running: false }); // someone presses Stop for everyone
     await advance(10_000, 50);
     console.log(`[H22] checks sent in the 10 s after the network recovered: ${world.sent.getMetronome - sent}`);
-    // Either it says it lost the server, or it hears the stop.
-    const told = screen.queryByText(/Can't reach the server/) !== null;
-    const stopped = soundingAt(ctx, ctx.currentTime).length === 0;
-    expect(told || stopped).toBe(true);
+    expect(world.sent.getMetronome - sent).toBeGreaterThan(0);
+    expect(soundingAt(ctx, ctx.currentTime)).toHaveLength(0);
+    expect(screen.queryByText(/Can't reach the server/)).toBeNull();
+  });
+
+  it("while every request hangs, the status says it can't reach the server within about 5 s, and stops saying Synced", async () => {
+    await joined();
+    expect(screen.getByRole("status").textContent).toContain("Synced");
+    world.hang = true;
+    // At worst: the first hung check goes out 1.5 s in, the second 1.5 s later, and it gives up 2.5 s after that.
+    await advance(5500, 10);
+    expect(screen.getByRole("status").textContent).toMatch(/Can't reach the server/);
+    expect(screen.getByRole("status").textContent).not.toMatch(/Synced/i);
+  });
+
+  it("one hung check alone says nothing: the next check goes out on time and its answer counts", async () => {
+    await joined();
+    world.hang = true;
+    const sent = world.sent.getMetronome;
+    while (world.sent.getMetronome === sent) await advance(10, 10);
+    world.hang = false; // only that one check hangs
+    let told = false;
+    for (let i = 0; i < 80; i++) {
+      await advance(50, 10);
+      told ||= screen.queryByText(/Can't reach the server/) !== null;
+    }
+    expect(told).toBe(false);
+    expect(world.sent.getMetronome - sent).toBeGreaterThanOrEqual(3); // ~1.5 s apart over 4 s, the hung one included
+  });
+
+  it("a slow check's late answer never overrides a newer check's answer", async () => {
+    const ctx = await joined();
+    // The next check is slow on the way back (it sees the session running); the ones after it are quick.
+    let slow = true;
+    world.latency.getMetronome = () => (slow ? ((slow = false), [10, 2000]) : [10, 10]);
+    const sent = world.sent.getMetronome;
+    while (world.sent.getMetronome === sent) await advance(5, 5);
+    await advance(50, 10);
+    await w.other({ running: false }); // Stop for everyone, after the slow check was served
+    await advance(1650, 10); // the newer check (1.5 s after the slow one) has heard the Stop
+    expect(world.sent.getMetronome - sent).toBe(2);
+    const t = ctx.currentTime;
+    // The slow answer lands ~2 s after it was sent; the check after that is due at 3 s.
+    await advance(1100, 10);
+    expect(world.sent.getMetronome - sent).toBe(2);
+    expect(heard(ctx, t, ctx.currentTime)).toEqual([]);
+    expect(screen.getByRole("button", { name: "Start for everyone" })).toBeInTheDocument();
   });
 });
 

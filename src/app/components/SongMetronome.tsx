@@ -470,8 +470,11 @@ function SongMetronomePanel({ song, onSongChange, onSession }: Props) {
     );
   }
 
+  const lostServerText = "Can't reach the server: changes from others won't show until it's back.";
   let status = "";
-  if (!offline && m.joined) {
+  // Out of touch with the session, the phone can't hear changes to it: no claim of being synced.
+  if (!offline && m.joined && session !== undefined && !m.reachable) status = lostServerText;
+  else if (!offline && m.joined) {
     const bound = `±${Math.max(1, Math.round(m.clock.rttMs / 2))} ms`;
     if (m.clock.status === "synced") {
       if (m.phase === "leading") status = `Leading · synced ${bound}`;
@@ -500,9 +503,7 @@ function SongMetronomePanel({ song, onSongChange, onSession }: Props) {
         </p>
       )}
       {m.noSound && m.joined && <p className="muted">No sound on this phone: follow the flash.</p>}
-      {!offline && session !== undefined && !m.reachable && (
-        <p className="muted">Can't reach the server: changes from others won't show until it's back.</p>
-      )}
+      {!offline && !m.joined && session !== undefined && !m.reachable && <p className="muted">{lostServerText}</p>}
       {body}
       {m.error && <p role="alert" className="error">{m.error}</p>}
       {differs && (

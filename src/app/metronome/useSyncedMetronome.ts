@@ -203,31 +203,37 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     setReachable(true);
     const hidden = () => document.visibilityState === "hidden";
     const current = (gen: number) => alive && gen === generation;
-    // The next check is timed from when this one starts, so a slow answer doesn't stretch the gap; it still
-    // waits for this answer, so checks never overlap.
+    /** Numbers each check; `heard` is the newest one that has answered or failed. Older results count for nothing. */
+    let sentSeq = 0;
+    let heard = 0;
+    /** Failed checks in a row (a timeout is a failure), and whether any check has answered since the panel opened. */
+    let failures = 0;
+    let answered = false;
+    // The next check is timed from when this one starts, and goes out even if this one hasn't answered (it gives
+    // up after METRONOME_TIMEOUT_MS), so a request that hangs can't stop the checks (H22).
     function check(gen: number) {
-      let due = false;
-      let settled = false;
+      const seq = ++sentSeq;
       timer = setTimeout(() => {
-        due = true;
-        if (settled && current(gen)) check(gen);
+        if (current(gen) && !hidden()) check(gen);
       }, joinedRef.current ? POLL_JOINED_MS : POLL_IDLE_MS);
       // A joined phone's check also marks the session seen, so it doesn't go stale while the band plays along.
-      sampled(() => api.getMetronome(songId, joinedRef.current), addSample)
-        .then(
-          (s) => {
-            if (!current(gen)) return;
-            setReachable(true);
-            accept(s);
-          },
-          () => {
-            if (current(gen)) setReachable(false);
-          },
-        )
-        .finally(() => {
-          settled = true;
-          if (due && current(gen) && !hidden()) check(gen);
-        });
+      sampled(() => api.getMetronome(songId, joinedRef.current), addSample).then(
+        (s) => {
+          if (!current(gen) || seq < heard) return;
+          heard = seq;
+          failures = 0;
+          answered = true;
+          setReachable(true);
+          accept(s);
+        },
+        () => {
+          if (!current(gen) || seq < heard) return;
+          heard = seq;
+          failures++;
+          // One failure can be a blip; before the first answer there is nothing to keep showing, so say so at once.
+          if (failures >= 2 || !answered) setReachable(false);
+        },
+      );
     }
     /** Drops the pending check and checks now. */
     function restart() {
@@ -277,8 +283,11 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
       // The error lasted, so the clocks really moved: place the new loop from the readings of those ticks only,
       // which are all from after the move, not from the full average, which is still catching up.
       const gridS = toAudioTime(cur.startAt, offsetMs, smoother.current.keepNewest(REALIGN_TICKS), nudge);
-      const at = gridS + Math.ceil((now + 0.1 - gridS) / barS) * barS;
-      stopBy(last, at);
+      // A late loop stops at the grid's bar line, after its last click of the bar has finished. An early one
+      // stops at its own bar line, before that line's click, so the click is neither cut nor played twice (H9).
+      const earlyS = Math.min(0, phaseError(gridS, last.loop.origin, barS));
+      const at = gridS + Math.ceil((now + 0.1 - earlyS - gridS) / barS) * barS;
+      stopBy(last, at + earlyS);
       loops.push({ loop: startClickLoop(ctx, cur.bpm, cur.beatsPerBar, at, 0), grid: cur, when: at, errors: [] });
       return;
     }

@@ -169,8 +169,8 @@ describe("H8: jitter in the audio link re-aligns the loop", () => {
   }, 30_000); // 8 runs of 60 s each: near the 5 s default on a busy machine
 });
 
-describe("H9: re-aligning a loop that runs early cuts its bar-line click and flams", () => {
-  it.fails("BUG H9: the audio clock jumps 30 ms ahead; the re-align cuts the old downbeat 30 ms in and plays a second one", async () => {
+describe("H9: re-aligning a loop that runs early finishes its bar first", () => {
+  it("H9 fixed: the audio clock jumps 30 ms ahead; the re-align neither cuts the old downbeat nor plays a second one", async () => {
     world.latency = { getTime: [0, 0], getMetronome: [0, 0], putMetronome: [0, 0] };
     const { ctx } = await joined();
     const t0 = ctx.currentTime;
@@ -181,7 +181,7 @@ describe("H9: re-aligning a loop that runs early cuts its bar-line click and fla
     expect(g).toEqual([]);
   });
 
-  it.fails("BUG H9 soak: an audio clock 100 ppm fast flams every ~100 s (T4)", async () => {
+  it("H9 fixed soak: an audio clock 100 ppm fast re-aligns without a flam or a cut click (T4)", async () => {
     world.latency = { getTime: [0, 0], getMetronome: [0, 0], putMetronome: [0, 0] };
     const { ctx } = await joined();
     ctx.rate = 1e-4;
