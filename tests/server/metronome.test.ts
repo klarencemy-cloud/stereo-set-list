@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { memoryKV } from "../../netlify/functions/lib/kv";
-import { makeRepo, METRO_STALE_MS, NotFoundError } from "../../netlify/functions/lib/repo";
+import { makeRepo, METRO_SEEN_EVERY_MS, METRO_STALE_MS, NotFoundError } from "../../netlify/functions/lib/repo";
 import { makeMetronomeHandler } from "../../netlify/functions/metronome";
 import { makeTimeHandler } from "../../netlify/functions/time";
 import { makeSongsHandler } from "../../netlify/functions/songs";
@@ -221,5 +221,145 @@ describe("metronome API", () => {
     await metro(req("PUT", `/api/metronome/${id}`, { bpm: 100 }));
     clock.now += 90 * 60 * 1000;
     expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(true);
+  });
+});
+
+describe("seen-at: joined phones keep a session alive (H17)", () => {
+  const MIN = 60 * 1000;
+  /** A joined phone's check: it also asks the server to mark the session seen. */
+  const seen = (id: string) => req("GET", `/api/metronome/${id}?seen=1`);
+
+  /** setup() over a KV that counts the metronome writes. */
+  async function counted() {
+    const kv = memoryKV();
+    const writes: string[] = [];
+    const tally = (k: string) => k.startsWith("metronome/") && writes.push(k);
+    const wrapped = {
+      ...kv,
+      setText: async (k: string, v: string) => (tally(k), kv.setText(k, v)),
+      setTextIfMatch: async (k: string, v: string, e: string) => {
+        const ok = await kv.setTextIfMatch(k, v, e);
+        if (ok) tally(k);
+        return ok;
+      },
+      setTextIfNew: async (k: string, v: string) => {
+        const ok = await kv.setTextIfNew(k, v);
+        if (ok) tally(k);
+        return ok;
+      },
+    };
+    const repo = makeRepo(wrapped);
+    const clock = { now: 1_000_000 };
+    const metro = makeMetronomeHandler(repo, () => clock.now);
+    const song = await repo.createSong(songBody);
+    return { kv, repo, clock, metro, writes, id: song.id };
+  }
+
+  it("an unjoined session reads as stopped after 2 h, however often an open panel checks it", async () => {
+    const { metro, clock, id, writes } = await counted();
+    await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
+    for (let t = 0; t < METRO_STALE_MS; t += 10_000) {
+      clock.now += 10_000;
+      await metro(req("GET", `/api/metronome/${id}`));
+    }
+    clock.now += 1000;
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(false);
+    expect(writes).toHaveLength(1); // only the start
+  });
+
+  it("a session a joined phone checks runs past 2 h, and reads as stopped 2 h after the last check", async () => {
+    const { metro, clock, id } = await counted();
+    await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
+    for (let t = 0; t < 5 * 60 * MIN; t += 2000) {
+      clock.now += 2000;
+      expect((await sessionOf(await metro(seen(id)))).running).toBe(true);
+    }
+    // Everyone leaves: nothing marks it seen any more.
+    clock.now += METRO_STALE_MS + 1;
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(false);
+  });
+
+  it("writes seen-at at most once per 10 minutes, and never changes the tempo, start, leader or last change", async () => {
+    const { metro, clock, id, writes } = await counted();
+    const started = await sessionOf(
+      await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true, leader: "phone-a" })),
+    );
+    writes.length = 0;
+    const hour = 60 * MIN;
+    // Three joined phones, each checking every 2 s.
+    for (let t = 0; t < hour; t += 2000) {
+      clock.now += 2000;
+      for (let phone = 0; phone < 3; phone++) {
+        const s = await sessionOf(await metro(seen(id)));
+        const { seenAt, ...rest } = s;
+        expect(rest).toEqual(started);
+        if (seenAt !== undefined) expect(Date.parse(seenAt)).toBeLessThanOrEqual(clock.now);
+      }
+    }
+    expect(writes.length).toBeGreaterThan(0);
+    expect(writes.length).toBeLessThanOrEqual(hour / METRO_SEEN_EVERY_MS);
+  });
+
+  it("marks nothing seen on a stopped session, and doesn't bring back one that already reads as stopped", async () => {
+    const { metro, clock, id, writes } = await counted();
+    await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
+    clock.now += METRO_STALE_MS + 1;
+    expect((await sessionOf(await metro(seen(id)))).running).toBe(false);
+    clock.now += 1000;
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(false);
+    await metro(req("PUT", `/api/metronome/${id}`, { running: true }));
+    await metro(req("PUT", `/api/metronome/${id}`, { running: false }));
+    writes.length = 0;
+    clock.now += 30 * MIN;
+    expect((await sessionOf(await metro(seen(id)))).running).toBe(false);
+    expect(writes).toHaveLength(0);
+  });
+
+  it("a seen-at write never overwrites a change that landed after the check read the session", async () => {
+    const kv = memoryKV();
+    let stopFirst: (() => Promise<unknown>) | null = null;
+    const repo = makeRepo({
+      ...kv,
+      // A Stop lands between this check's read and its seen-at write.
+      setTextIfMatch: async (k, v, e) => {
+        const stop = stopFirst;
+        stopFirst = null;
+        if (stop) await stop();
+        return kv.setTextIfMatch(k, v, e);
+      },
+    });
+    const song = await repo.createSong(songBody);
+    await repo.setMetronome(song.id, { bpm: 120, beatsPerBar: 4, running: true }, 1_000_000);
+    const at = 1_000_000 + 30 * MIN;
+    stopFirst = () => repo.setMetronome(song.id, { running: false }, at);
+    const answer = await repo.getMetronome(song.id, at, { seen: true });
+    expect(answer!.running).toBe(false);
+    expect((await repo.getMetronome(song.id, at + 1000))!.running).toBe(false);
+  });
+
+  it("drops a bad seen-at on every read path, so it can't keep a session alive", async () => {
+    const { kv, repo, metro, clock, id } = await setup();
+    const base = { bpm: 120, beatsPerBar: 4, startAt: 1_002_000, running: true, updatedAt: new Date(1_000_000).toISOString() };
+    for (const seenAt of [42, "not a date", null, { at: 1 }]) {
+      await kv.setText(`metronome/${id}`, JSON.stringify({ ...base, seenAt }));
+      clock.now = 1_000_100;
+      expect(await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).toEqual(base);
+      expect(await repo.setMetronome(id, { beatsPerBar: 4 }, clock.now)).toEqual(base);
+      clock.now = 1_000_000 + METRO_STALE_MS + 1;
+      expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(false);
+    }
+  });
+
+  it("staleness runs from the later of the last change and seen-at, the same on GET and PUT", async () => {
+    const { kv, repo, metro, clock, id } = await setup();
+    const seenAt = new Date(1_000_000 + 90 * MIN).toISOString();
+    const stored = { bpm: 120, beatsPerBar: 4, startAt: 1_002_000, running: true, updatedAt: new Date(1_000_000).toISOString(), seenAt };
+    await kv.setText(`metronome/${id}`, JSON.stringify(stored));
+    clock.now = 1_000_000 + 90 * MIN + METRO_STALE_MS - 1;
+    expect(await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).toEqual(stored);
+    expect(await repo.setMetronome(id, { beatsPerBar: 4 }, clock.now)).toEqual(stored);
+    clock.now += 2;
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(false);
+    expect((await repo.setMetronome(id, { beatsPerBar: 4 }, clock.now))!.running).toBe(false);
   });
 });
