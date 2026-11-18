@@ -182,8 +182,8 @@ describe("the world's screen keep-on", () => {
   });
 
   it("can drop a held lock while the page is visible, telling the page with a release event", async () => {
-    renderHook(() => useWakeLock(true));
-    await advance(10, 1);
+    // Asked for directly: useWakeLock would ask again as soon as it is dropped.
+    await navigator.wakeLock.request("screen");
     const released = vi.fn();
     world.wakeLock.sentinels[0].addEventListener("release", released);
     dropWakeLock();

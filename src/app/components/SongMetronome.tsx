@@ -314,8 +314,16 @@ interface Props {
   onSession?: (session: MetroSession | null) => void;
 }
 
-/** The song's shared metronome: anyone can start, change or stop it, and every joined phone clicks in time. */
-export default function SongMetronome({ song, onSongChange, onSession }: Props) {
+/**
+ * The song's shared metronome: anyone can start, change or stop it, and every joined phone clicks in time.
+ * Keyed by the song, so another song always starts a fresh panel: its own tempo, session view and audio, never the
+ * previous song's (H13).
+ */
+export default function SongMetronome(props: Props) {
+  return <SongMetronomePanel key={props.song.id} {...props} />;
+}
+
+function SongMetronomePanel({ song, onSongChange, onSession }: Props) {
   const [nudge, setNudgeState] = useState(readNudge);
   const [roundTrip, setRoundTripState] = useState(readRoundTrip);
   const m = useSyncedMetronome(song.id, nudge, roundTrip);

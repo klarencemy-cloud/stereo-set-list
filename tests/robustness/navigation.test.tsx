@@ -19,7 +19,7 @@ import SongPage from "../../src/app/pages/SongPage";
 import SongMetronome from "../../src/app/components/SongMetronome";
 import { clearSongCache } from "../../src/app/songCache";
 import type { Song } from "../../src/shared/types";
-import { advance, FakeAudioContext, setHidden, setupWorld, soundingAt, teardownWorld, world } from "./harness";
+import { advance, dropWakeLock, FakeAudioContext, setHidden, setupWorld, soundingAt, teardownWorld, world } from "./harness";
 
 let w: Awaited<ReturnType<typeof setupWorld>>;
 let songB: Song;
@@ -83,7 +83,7 @@ describe("H13: swiping to the next song with the metronome open", () => {
     expect(screen.queryByRole("button", { name: "Leave" })).toBeNull(); // not still joined
   });
 
-  it("regression: even an unkeyed SongMetronome re-rendered with another song resets its session view", async () => {
+  it("regression: a SongMetronome re-rendered with another song starts fresh with that song's tempo", async () => {
     await w.other({ bpm: 120, beatsPerBar: 4, running: true });
     const r = render(<SongMetronome song={w.song} onSongChange={() => {}} />);
     await advance(200, 10);
@@ -91,8 +91,7 @@ describe("H13: swiping to the next song with the metronome open", () => {
     r.rerender(<SongMetronome song={songB} onSongChange={() => {}} />);
     await advance(200, 10);
     expect(screen.queryByText("Playing at 120 BPM")).toBeNull();
-    // Known leftover if SongPage ever stops closing the panel: the controls keep the first song's starting tempo.
-    console.log(`[H13] unkeyed re-render shows ${document.querySelector(".metro-bpm")?.textContent} BPM for a 140 BPM song`);
+    expect(document.querySelector(".metro-bpm")).toHaveTextContent("140"); // song B's tempo, not song A's 96
   });
 });
 
@@ -114,6 +113,32 @@ describe("H15: the pill's live dot", () => {
     await w.other({ running: false });
     await advance(30_000, 100);
     expect(liveDot()).toBe(false);
+  });
+});
+
+describe("the screen keep-on on a song page", () => {
+  it("is asked for again, silently, when the phone drops it while the page is visible", async () => {
+    renderPage(w.song.id);
+    await advance(500, 10);
+    expect(world.wakeLock.held).toBe(1);
+    const page = document.body.innerHTML;
+    dropWakeLock();
+    await advance(100, 10);
+    expect(world.wakeLock.requests).toBe(2);
+    expect(world.wakeLock.held).toBe(1);
+    expect(document.body.innerHTML).toBe(page);
+  });
+
+  it("shows nothing when the phone refuses it again, and doesn't keep asking", async () => {
+    renderPage(w.song.id);
+    await advance(500, 10);
+    const page = document.body.innerHTML;
+    world.wakeLock.refuse = true;
+    dropWakeLock();
+    await advance(5000, 50);
+    expect(world.wakeLock.requests).toBe(2);
+    expect(world.wakeLock.held).toBe(0);
+    expect(document.body.innerHTML).toBe(page);
   });
 });
 
