@@ -17,14 +17,14 @@ export const POLL_JOINED_MS = 2000;
 /** How often an open panel checks the session while this phone isn't joined. */
 export const POLL_IDLE_MS = 10_000;
 /** How often the page lines the loop up with the grid and moves the flash. The clicks themselves don't need it. */
-const TICK_MS = 25;
+export const TICK_MS = 25;
 /**
  * An audio clock that hasn't moved for this long, while performance.now() has, is frozen even if the context says
  * it is running (H12). A running clock moves every render quantum (a few ms).
  */
 const FROZEN_MS = 500;
 /** A loop never starts sooner than this from now, so the audio engine gets it in time. */
-const START_MARGIN_S = 0.05;
+export const START_MARGIN_S = 0.05;
 
 /** A joining phone listens to the band for this many bars (and at least LISTEN_MIN_S) before it plays. */
 const LISTEN_BARS = 2;

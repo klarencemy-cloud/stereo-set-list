@@ -3,13 +3,13 @@ import { api } from "../api";
 import { CLOCK_PAUSE_MS, estimateOffset, fitDrift, pausedMs, type ClockMark, type TimeSample } from "./clock";
 
 /** Time calls made when sync starts. After that, the session checks' answers are the samples. */
-const FIRST_ROUND = 20;
+export const FIRST_ROUND = 20;
 /** Time calls made every ROUND_EVERY_MS while the session checks' answers are no samples (`timeRounds`). */
 export const LATER_ROUND = 3;
 /** The samples handed in are grouped into rounds this long, so they age out and the drift can be fitted. */
 export const ROUND_EVERY_MS = 60_000;
 /** The best sample is chosen from this many latest rounds, so a slow patch of network doesn't stick. */
-const ROUNDS_KEPT = 3;
+export const ROUNDS_KEPT = 3;
 /** The drift is fitted over a longer history: over a few minutes, a slope is mostly noise. */
 const DRIFT_ROUNDS_KEPT = 10;
 /** Rounds closer together than this can't tell drift from noise. */
