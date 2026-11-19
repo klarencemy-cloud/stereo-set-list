@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateOffset, fitDrift, nudgeFromTaps, toAudioTime } from "../../src/app/metronome/clock";
+import { CLOCK_PAUSE_MS, estimateOffset, fitDrift, linkSmoother, nudgeFromTaps, pausedMs, toAudioTime } from "../../src/app/metronome/clock";
 
 describe("estimateOffset", () => {
   it("is null with no samples", () => {
@@ -20,6 +20,37 @@ describe("estimateOffset", () => {
       { sentMs: 3000, serverMs: 4150, receivedMs: 3200 }, // 150 out, 50 back: says 1050
     ];
     expect(estimateOffset(samples)).toEqual({ offsetMs: 999, rttMs: 22 });
+  });
+
+  it("takes the newest sample when network round trips tie (H7)", () => {
+    // The offset drifted from 1000 to 1003 between the samples; both network round trips took 20 ms.
+    const older = { sentMs: 0, serverMs: 1010, receivedMs: 20 };
+    const newer = { sentMs: 5000, serverMs: 6013, receivedMs: 5020 };
+    expect(estimateOffset([older, newer])).toEqual({ offsetMs: 1003, rttMs: 20 });
+    expect(estimateOffset([newer, older])).toEqual({ offsetMs: 1003, rttMs: 20 });
+  });
+
+  it("counts an older sample as slower, by about 0.1 ms per second of age (H7)", () => {
+    // 100 s apart: the old one is 5 ms faster but counts 10 ms slower, so the new one wins.
+    const old = { sentMs: 0, serverMs: 1010, receivedMs: 20 };
+    const recent = { sentMs: 100_000, serverMs: 101_012, receivedMs: 100_025 };
+    expect(estimateOffset([old, recent])).toEqual({ offsetMs: 999.5, rttMs: 25 });
+    // 20 s apart, it counts only 2 ms slower: the 5 ms faster old one still wins.
+    const soon = { sentMs: 20_000, serverMs: 21_012, receivedMs: 20_025 };
+    expect(estimateOffset([old, soon])).toEqual({ offsetMs: 1000, rttMs: 20 });
+  });
+});
+
+describe("pausedMs", () => {
+  it("is how much further the wall clock moved than performance.now() (H7)", () => {
+    // 5 s of performance.now(), 35.25 s of wall clock: asleep for 30.25 s.
+    expect(pausedMs({ wallMs: 1_000_000, perfMs: 10_000 }, { wallMs: 1_035_250, perfMs: 15_000 })).toBe(30_250);
+  });
+
+  it("is about 0 when the phone didn't sleep, under the CLOCK_PAUSE_MS threshold", () => {
+    const p = pausedMs({ wallMs: 1_000_000, perfMs: 10_000 }, { wallMs: 1_005_003, perfMs: 15_000 });
+    expect(p).toBe(3);
+    expect(p).toBeLessThan(CLOCK_PAUSE_MS);
   });
 });
 
@@ -102,5 +133,29 @@ describe("fitDrift", () => {
 
   it("skips empty rounds", () => {
     expect(fitDrift([round(0, 100), [], round(60_000, 106), round(120_000, 112)])).toBeCloseTo(6 / 60_000, 12);
+  });
+});
+
+describe("linkSmoother", () => {
+  it("averages the offset between the clocks over the last 1.5 s, given back at the newest reading", () => {
+    const sm = linkSmoother();
+    sm.add({ perfMs: 1000, audioS: 0.01 }); // offset -0.99 s
+    const l = sm.add({ perfMs: 1100, audioS: 0.13 }); // offset -0.97 s
+    expect(l.perfMs).toBe(1100);
+    expect(l.audioS).toBeCloseTo(0.12, 9); // 1.1 - 0.98
+  });
+
+  it("drops readings older than 1.5 s before the newest", () => {
+    const sm = linkSmoother();
+    sm.add({ perfMs: 0, audioS: 5 });
+    expect(sm.add({ perfMs: 2000, audioS: 2 }).audioS).toBeCloseTo(2, 9);
+  });
+
+  it("keepNewest forgets the older readings", () => {
+    const sm = linkSmoother();
+    sm.add({ perfMs: 1000, audioS: 1 });
+    sm.add({ perfMs: 1025, audioS: 1.055 });
+    sm.add({ perfMs: 1050, audioS: 1.08 });
+    expect(sm.keepNewest(2).audioS).toBeCloseTo(1.08, 9); // offset 0.03, not the 0.02 average of all three
   });
 });

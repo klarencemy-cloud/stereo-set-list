@@ -151,9 +151,11 @@ describe("synced metronome calls", () => {
     const fetch = stubFetch();
     await api.getTime();
     await api.getMetronome("s 1");
+    await api.getMetronome("s 1", true);
     expect(fetch.mock.calls.map((c) => [c[0], c[1]?.cache])).toEqual([
       ["/api/time", "no-store"],
       ["/api/metronome/s%201", "no-store"],
+      ["/api/metronome/s%201?seen=1", "no-store"],
     ]);
   });
 

@@ -1,6 +1,6 @@
 // Clock maths for the synced metronome. Pure: no browser APIs, so it is unit-tested directly.
 
-/** One /api/time call: local times (performance.now()) around it, and the server's answer. */
+/** One clock sample: local times (performance.now()) around a call to /api/time or a metronome answer, and the server's time in its answer. */
 export interface TimeSample {
   sentMs: number;
   serverMs: number;
@@ -15,18 +15,45 @@ export interface ClockEstimate {
 }
 
 /**
+ * How much slower a sample counts per ms of age (0.1 ms per second), so an old fast sample gives way to a newer
+ * one before the clocks drift far from it (100 ppm drifts 0.1 ms a second).
+ */
+export const AGE_PENALTY_PER_MS = 1e-4;
+
+/**
  * Cristian's algorithm: assume the server answered halfway through the round trip, and trust the sample with
- * the fastest round trip, since it has the least room for a lopsided delay.
+ * the fastest network round trip, since it has the least room for a lopsided delay. A sample counts as slower by
+ * its age (AGE_PENALTY_PER_MS, against the newest sample), and the newer one wins a tie, so drift can't build up
+ * unseen.
  */
 export function estimateOffset(samples: TimeSample[]): ClockEstimate | null {
-  let best: ClockEstimate | null = null;
-  for (const s of samples) {
+  const valid = samples.filter((s) => s.receivedMs >= s.sentMs);
+  const newestMs = Math.max(...valid.map((s) => s.receivedMs));
+  let best: (ClockEstimate & { score: number; receivedMs: number }) | null = null;
+  for (const s of valid) {
     const rttMs = s.receivedMs - s.sentMs;
-    if (rttMs < 0) continue;
-    if (!best || rttMs < best.rttMs) best = { offsetMs: s.serverMs - (s.sentMs + s.receivedMs) / 2, rttMs };
+    const score = rttMs + AGE_PENALTY_PER_MS * (newestMs - s.receivedMs);
+    if (!best || score < best.score || (score === best.score && s.receivedMs > best.receivedMs)) {
+      best = { offsetMs: s.serverMs - (s.sentMs + s.receivedMs) / 2, rttMs, score, receivedMs: s.receivedMs };
+    }
   }
-  return best;
+  return best && { offsetMs: best.offsetMs, rttMs: best.rttMs };
 }
+
+/** The wall clock (Date.now()) and performance.now() read at one moment, to tell later whether the latter paused. */
+export interface ClockMark {
+  wallMs: number;
+  perfMs: number;
+}
+
+/** A gap between the two clocks bigger than this means performance.now() paused (the phone slept). */
+export const CLOCK_PAUSE_MS = 50;
+
+/**
+ * How long performance.now() stood still between two marks while the wall clock ran on (a phone asleep): how much
+ * further the wall clock moved. Under CLOCK_PAUSE_MS it is noise (the two clocks round and drift apart a little).
+ */
+export const pausedMs = (from: ClockMark, to: ClockMark) => to.wallMs - from.wallMs - (to.perfMs - from.perfMs);
 
 /**
  * How fast the offset is changing (ms per ms of local time): the least-squares slope of each round's best
@@ -58,6 +85,46 @@ export function fitDrift(rounds: TimeSample[][]): number {
 export interface ClockLink {
   perfMs: number;
   audioS: number;
+}
+
+/** How far back the link smoother looks (ms of performance.now()). */
+export const LINK_WINDOW_MS = 1500;
+/** And never more readings than this (a tick every 25 ms fills the window with 60). */
+const MAX_LINK_READINGS = 120;
+
+/**
+ * Smooths the link between performance.now() and the audio clock: one getOutputTimestamp() reading can be
+ * several ms off. `add` takes a reading and gives back the link averaged over the last LINK_WINDOW_MS of them.
+ * The two clocks are taken to run at the same rate (they differ by ~100 ppm, less than a rate fitted over so short
+ * a window would be off by), so the average is of the offset between them.
+ */
+export function linkSmoother() {
+  let readings: ClockLink[] = [];
+  const link = (perfMs: number): ClockLink => {
+    const meanOffsetS = readings.reduce((a, r) => a + (r.audioS - r.perfMs / 1000), 0) / readings.length;
+    return { perfMs, audioS: perfMs / 1000 + meanOffsetS };
+  };
+  return {
+    add(reading: ClockLink): ClockLink {
+      readings.push(reading);
+      // performanceTime may itself be jittered, so readings aren't kept in order: drop by time, not by position.
+      const newest = Math.max(...readings.map((r) => r.perfMs));
+      readings = readings.filter((r) => r.perfMs > newest - LINK_WINDOW_MS).slice(-MAX_LINK_READINGS);
+      return link(reading.perfMs);
+    },
+    /**
+     * Forgets all but the newest `n` readings and gives back the link from those. After the clocks really moved,
+     * the older readings are from before the move, so the full average is still catching up.
+     */
+    keepNewest(n: number): ClockLink {
+      readings = readings.slice(-n);
+      return link(readings[readings.length - 1].perfMs);
+    },
+    /** Forgets every reading, e.g. when the audio clock was paused. */
+    clear() {
+      readings = [];
+    },
+  };
 }
 
 /**

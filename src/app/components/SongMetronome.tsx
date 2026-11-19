@@ -23,6 +23,8 @@ const MAX_ROUNDTRIP_MS = 1000;
 /** A tempo dragged or tapped while playing is sent once it settles, not on every step. */
 const SEND_DELAY_MS = 400;
 const OFFLINE = "Can't sync: playing on this phone only";
+/** A phone synced by the clock alone warns when its bound is wider than this (H11). */
+const ROUGH_SYNC_MS = 25;
 
 function readNudge(): number {
   try {
@@ -104,12 +106,56 @@ function TempoControls({ tempo, onChange }: { tempo: Tempo; onChange: (next: Par
   );
 }
 
-/** v1's metronome, on this phone only: used when the session can't be reached or the clock can't be synced. */
-function LocalMetronome({ tempo, onChange, onRetry }: { tempo: Tempo; onChange: (t: Partial<Tempo>) => void; onRetry: () => void }) {
+/**
+ * v1's metronome, on this phone only: used when the session can't be reached or the clock can't be synced. While it
+ * plays, the network coming back (`backOnline`) doesn't stop it: it offers the shared metronome instead (H21).
+ */
+function LocalMetronome({
+  tempo,
+  onChange,
+  onRetry,
+  onRunning,
+  backOnline,
+  onSwitch,
+}: {
+  tempo: Tempo;
+  onChange: (t: Partial<Tempo>) => void;
+  /** Checks again now; resolves whether the server answered. */
+  onRetry: () => Promise<boolean>;
+  onRunning: (running: boolean) => void;
+  backOnline: boolean;
+  /** Called from the tap, so the shared metronome may start its audio. */
+  onSwitch: () => void;
+}) {
   const metro = useMetronome(tempo.bpm, tempo.beatsPerBar);
+  const [checking, setChecking] = useState(false);
+  const [stillOffline, setStillOffline] = useState(false);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  useEffect(() => onRunning(metro.running), [metro.running, onRunning]);
+  useEffect(() => () => onRunning(false), [onRunning]);
+
+  async function retry() {
+    setChecking(true);
+    setStillOffline(false);
+    const ok = await onRetry();
+    if (!alive.current) return;
+    setChecking(false);
+    setStillOffline(!ok);
+  }
+
   return (
     <>
-      <p className="metro-status warn" role="status">{OFFLINE}</p>
+      {backOnline ? (
+        <p className="metro-status" role="status">Back online — switch to the shared metronome?</p>
+      ) : (
+        <p className="metro-status warn" role="status">{OFFLINE}</p>
+      )}
       <BeatDisplay bpm={tempo.bpm} beatsPerBar={tempo.beatsPerBar} beat={metro.beat} />
       <TempoControls tempo={tempo} onChange={onChange} />
       {metro.error && <p role="alert" className="error">{metro.error}</p>}
@@ -119,8 +165,15 @@ function LocalMetronome({ tempo, onChange, onRetry }: { tempo: Tempo; onChange: 
         ) : (
           <button type="button" className="btn primary" onClick={metro.start}>Start on this phone</button>
         )}
-        <button type="button" className="btn" onClick={() => { metro.stop(); onRetry(); }}>Try syncing again</button>
+        {backOnline ? (
+          <button type="button" className="btn primary" onClick={() => { metro.stop(); onSwitch(); }}>Switch</button>
+        ) : (
+          <button type="button" className="btn" disabled={checking} onClick={retry}>
+            {checking ? "Checking..." : "Try syncing again"}
+          </button>
+        )}
       </p>
+      {stillOffline && !backOnline && <p className="muted">Still can't reach the server.</p>}
     </>
   );
 }
@@ -314,8 +367,16 @@ interface Props {
   onSession?: (session: MetroSession | null) => void;
 }
 
-/** The song's shared metronome: anyone can start, change or stop it, and every joined phone clicks in time. */
-export default function SongMetronome({ song, onSongChange, onSession }: Props) {
+/**
+ * The song's shared metronome: anyone can start, change or stop it, and every joined phone clicks in time.
+ * Keyed by the song, so another song always starts a fresh panel: its own tempo, session view and audio, never the
+ * previous song's (H13).
+ */
+export default function SongMetronome(props: Props) {
+  return <SongMetronomePanel key={props.song.id} {...props} />;
+}
+
+function SongMetronomePanel({ song, onSongChange, onSession }: Props) {
   const [nudge, setNudgeState] = useState(readNudge);
   const [roundTrip, setRoundTripState] = useState(readRoundTrip);
   const m = useSyncedMetronome(song.id, nudge, roundTrip);
@@ -328,6 +389,8 @@ export default function SongMetronome({ song, onSongChange, onSession }: Props) 
   const [pendingBpm, setPendingBpm] = useState<number | null>(null);
   const sendTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [localOnly, setLocalOnly] = useState(false);
+  /** The local metronome is playing: it stays on screen until it is stopped or switched from (H21). */
+  const [localPlaying, setLocalPlaying] = useState(false);
   const [calibrating, setCalibrating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -413,14 +476,25 @@ export default function SongMetronome({ song, onSongChange, onSession }: Props) 
     }
   }
 
-  const offline = localOnly || (session === undefined && !m.reachable);
+  const cantSync = localOnly || (session === undefined && !m.reachable);
+  /** The local metronome is on screen: it can't sync, or it is still playing after the network came back. */
+  const showLocal = cantSync || localPlaying;
   let body;
-  if (offline) {
+  if (showLocal) {
     body = (
       <LocalMetronome
         tempo={tempo}
         onChange={changeIdle}
-        onRetry={() => setLocalOnly(false)}
+        onRetry={() => {
+          setLocalOnly(false);
+          return m.retry();
+        }}
+        onRunning={setLocalPlaying}
+        backOnline={!cantSync}
+        onSwitch={() => {
+          setLocalPlaying(false);
+          m.join();
+        }}
       />
     );
   } else if (session === undefined) {
@@ -428,7 +502,7 @@ export default function SongMetronome({ song, onSongChange, onSession }: Props) 
   } else if (running && !m.joined) {
     body = (
       <>
-        <p className="metro-playing">{`Playing at ${session!.bpm} BPM`}</p>
+        <p className="metro-playing">{`${m.alreadyPlaying ? "Already playing" : "Playing"} at ${session!.bpm} BPM`}</p>
         <p className="actions">
           <button type="button" className="btn primary" onClick={m.join}>Join</button>
           <button type="button" className="btn" onClick={m.stopAll}>Stop for everyone</button>
@@ -462,39 +536,51 @@ export default function SongMetronome({ song, onSongChange, onSession }: Props) 
     );
   }
 
+  const lostServerText = "Can't reach the server: changes from others won't show until it's back.";
   let status = "";
-  if (!offline && m.joined) {
-    const bound = `±${Math.max(1, Math.round(m.clock.rttMs / 2))} ms`;
+  /** The status is a warning: a clock-only sync whose bound is too wide to play together by (H11). */
+  let rough = false;
+  // Out of touch with the session, the phone can't hear changes to it: no claim of being synced.
+  if (!showLocal && m.joined && session !== undefined && !m.reachable) status = lostServerText;
+  else if (!showLocal && m.joined) {
+    const boundMs = Math.max(1, Math.round(m.clock.rttMs / 2));
+    const bound = `±${boundMs} ms`;
     if (m.clock.status === "synced") {
       if (m.phase === "leading") status = `Leading · synced ${bound}`;
       else if (m.phase === "listening") status = "Listening to the band…";
       else if (m.phase === "matched") status = `Matched to the band ±${Math.max(1, Math.round(m.matchSpreadMs ?? 0))} ms`;
       else if (m.phase === "failed") status = `Couldn't hear the band, synced by clock ${bound}`;
       else status = `Synced ${bound}`;
+      // By the clock alone (couldn't hear the band, or nothing to match it with): a wide bound is a real error.
+      rough = (m.phase === "failed" || m.phase === "clock") && boundMs > ROUGH_SYNC_MS;
+      if (rough) status += ". Rough sync: measure this phone or use Wi-Fi.";
     } else if (m.clock.status === "syncing") status = "Syncing...";
   }
   // Save as song tempo saves what is on screen: the shared tempo while it plays, else the controls'.
   // Only once it has been played: before that the controls' starting value is nobody's choice.
-  const onScreen: Tempo | null = offline || !session ? null : running ? session : tempo;
+  const onScreen: Tempo | null = showLocal || !session ? null : running ? session : tempo;
   const differs = onScreen && (onScreen.bpm !== songT.bpm || onScreen.beatsPerBar !== songT.beatsPerBar);
 
   return (
     <section className="tool song-metronome" aria-label="Metronome">
-      {status && <p className="metro-status" role="status">{status}</p>}
-      {!offline && m.joined && m.phase === "failed" && (
+      {status && <p className={rough ? "metro-status warn" : "metro-status"} role="status">{status}</p>}
+      {!showLocal && m.joined && m.phase === "failed" && (
         <p className="actions">
           <button type="button" className="btn" onClick={m.listenAgain}>Listen again</button>
         </p>
       )}
-      {!offline && m.needsRoundTrip && (
+      {!showLocal && m.needsRoundTrip && (
         <p className="muted tool-note">
           To match the band by ear, open Calibrate this phone and tap Measure this phone.
         </p>
       )}
       {m.noSound && m.joined && <p className="muted">No sound on this phone: follow the flash.</p>}
-      {!offline && session !== undefined && !m.reachable && (
-        <p className="muted">Can't reach the server: changes from others won't show until it's back.</p>
+      {!showLocal && m.soundPaused && (
+        <p className="actions">
+          <button type="button" className="btn primary" onClick={m.resumeSound}>Sound paused — tap to resume</button>
+        </p>
       )}
+      {!showLocal && !m.joined && session !== undefined && !m.reachable && <p className="muted">{lostServerText}</p>}
       {body}
       {m.error && <p role="alert" className="error">{m.error}</p>}
       {differs && (

@@ -56,6 +56,7 @@ interface FakeLoop {
 class FakeAudioContext {
   static instances: FakeAudioContext[] = [];
   currentTime = 0;
+  state = "running";
   sampleRate = 48000;
   destination = {};
   started: number[] = [];
@@ -95,7 +96,20 @@ class FakeAudioContext {
 }
 
 let perf = 0;
+/** How far the server's clock is ahead of performance.now() (ms). */
+let serverAhead = 5000;
 const onSongChange = vi.fn();
+
+/** Answers a metronome call with `session` and the server's time when it answers (instantly). */
+const serve = (fn: ReturnType<typeof vi.fn>, session: MetroSession | null) =>
+  fn.mockImplementation(async () => ({ session, now: perf + serverAhead }));
+
+/** Answers a PUT with `session`, and from then on every GET too, as the server stores it. */
+const store = (session: MetroSession) =>
+  mocked.putMetronome.mockImplementation(async () => {
+    serve(mocked.getMetronome, session);
+    return { session, now: perf + serverAhead };
+  });
 
 function renderPanel(s: Song = song) {
   return render(<SongMetronome song={s} onSongChange={onSongChange} />);
@@ -110,10 +124,11 @@ beforeEach(() => {
   FakeAudioContext.instances = [];
   (window as unknown as { AudioContext: unknown }).AudioContext = FakeAudioContext;
   perf = 0;
+  serverAhead = 5000;
   vi.spyOn(performance, "now").mockImplementation(() => perf);
-  mocked.getMetronome.mockResolvedValue(null);
+  serve(mocked.getMetronome, null);
   // The server's clock is 5 s ahead of performance.now(), and answers instantly.
-  mocked.getTime.mockImplementation(async () => ({ now: perf + 5000 }));
+  mocked.getTime.mockImplementation(async () => ({ now: perf + serverAhead }));
 });
 
 afterEach(() => {
@@ -123,10 +138,10 @@ afterEach(() => {
 
 describe("SongMetronome, nothing running", () => {
   it("starts from the song's tempo and starts it for everyone", async () => {
-    mocked.putMetronome.mockResolvedValue(running({ bpm: 96, beatsPerBar: 3 }));
+    serve(mocked.putMetronome, running({ bpm: 96, beatsPerBar: 3 }));
     renderPanel();
     await screen.findByRole("button", { name: "Start for everyone" });
-    expect(mocked.getMetronome).toHaveBeenCalledWith("s1");
+    expect(mocked.getMetronome).toHaveBeenCalledWith("s1", false); // not joined: doesn't mark it seen
     expect(document.querySelector(".metro-bpm")).toHaveTextContent("96");
     expect(screen.getByRole("button", { name: "3" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(screen.getByRole("button", { name: "Faster" }));
@@ -134,11 +149,44 @@ describe("SongMetronome, nothing running", () => {
     // ...as its leader: this phone's own id, made once and kept.
     const me = localStorage.getItem(DEVICE_KEY);
     expect(me).toBeTruthy();
-    expect(mocked.putMetronome).toHaveBeenCalledWith("s1", { bpm: 97, beatsPerBar: 3, running: true, leader: me });
+    // ...only if nobody has started it meanwhile.
+    expect(mocked.putMetronome).toHaveBeenCalledWith("s1", { bpm: 97, beatsPerBar: 3, running: true, leader: me, onlyIfStopped: true });
     // The one who starts it is joined straight away.
     await screen.findByRole("button", { name: "Stop for everyone" });
     expect(screen.getByRole("button", { name: "Leave" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Join" })).toBeNull();
+  });
+
+  it("a start that finds it already playing shows 'Already playing at N BPM', and Join plays theirs", async () => {
+    // This panel still shows stopped, but a bandmate started it at 120/4 meanwhile: the server leaves theirs alone.
+    const theirs = running({ leader: "drummer" });
+    mocked.putMetronome.mockImplementation(async () => ({ session: theirs, now: perf + serverAhead, applied: false }));
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Start for everyone" }));
+    expect(await screen.findByText("Already playing at 120 BPM")).toBeInTheDocument();
+    // Not joined: no Leave, no loop booked, no error.
+    expect(screen.queryByRole("button", { name: "Leave" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(FakeAudioContext.instances[0].loops).toEqual([]);
+    serve(mocked.getMetronome, theirs);
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    expect(await screen.findByRole("button", { name: "Leave" })).toBeInTheDocument();
+    expect(await screen.findByText(/Synced ±\d+ ms/)).toBeInTheDocument();
+    expect(screen.queryByText("Already playing at 120 BPM")).toBeNull();
+    expect(mocked.putMetronome).toHaveBeenCalledTimes(1); // Join changes nothing for everyone
+    await waitFor(() => expect(FakeAudioContext.instances[0].loops.length).toBeGreaterThan(0));
+  });
+
+  it("after 'Already playing', a Leave shows plain 'Playing at N BPM' again", async () => {
+    const theirs = running({ leader: "drummer" });
+    mocked.putMetronome.mockImplementation(async () => ({ session: theirs, now: perf + serverAhead, applied: false }));
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Start for everyone" }));
+    await screen.findByText("Already playing at 120 BPM");
+    serve(mocked.getMetronome, theirs);
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Leave" }));
+    expect(await screen.findByText("Playing at 120 BPM")).toBeInTheDocument();
   });
 
   it("uses this phone's last tempo when the song has none", async () => {
@@ -162,7 +210,7 @@ describe("SongMetronome, nothing running", () => {
 
 describe("SongMetronome, a session is running", () => {
   it("offers to join, and syncs the clock on Join", async () => {
-    mocked.getMetronome.mockResolvedValue(running());
+    serve(mocked.getMetronome, running());
     renderPanel();
     expect(await screen.findByText("Playing at 120 BPM")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
@@ -172,7 +220,7 @@ describe("SongMetronome, a session is running", () => {
   });
 
   it("Leave stops this phone only", async () => {
-    mocked.getMetronome.mockResolvedValue(running());
+    serve(mocked.getMetronome, running());
     renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: "Join" }));
     fireEvent.click(await screen.findByRole("button", { name: "Leave" }));
@@ -181,8 +229,8 @@ describe("SongMetronome, a session is running", () => {
   });
 
   it("Stop for everyone stops the session", async () => {
-    mocked.getMetronome.mockResolvedValue(running());
-    mocked.putMetronome.mockResolvedValue(running({ running: false }));
+    serve(mocked.getMetronome, running());
+    store(running({ running: false, updatedAt: "2026-11-15T10:00:01.000Z" }));
     renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: "Join" }));
     fireEvent.click(await screen.findByRole("button", { name: "Stop for everyone" }));
@@ -191,8 +239,8 @@ describe("SongMetronome, a session is running", () => {
   });
 
   it("sends a tempo change from a joined phone", async () => {
-    mocked.getMetronome.mockResolvedValue(running());
-    mocked.putMetronome.mockResolvedValue(running({ beatsPerBar: 6, startAt: 12_000 }));
+    serve(mocked.getMetronome, running());
+    store(running({ beatsPerBar: 6, startAt: 12_000, updatedAt: "2026-11-15T10:00:01.000Z" }));
     renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: "Join" }));
     await screen.findByRole("button", { name: "Leave" });
@@ -224,7 +272,7 @@ describe("SongMetronome, a session is running", () => {
       vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
       localStorage.setItem(NUDGE_KEY, "100");
       perf = 4000; // server time 9000; beat 0 is at 10 000, bars of 2000 ms
-      mocked.getMetronome.mockResolvedValue(running());
+      serve(mocked.getMetronome, running());
       renderPanel();
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
@@ -243,7 +291,7 @@ describe("SongMetronome, a session is running", () => {
       expect(ctx.loops[0].loop).toBe(true);
       // Later ticks and polls of the same session leave it alone.
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(1600);
+        await vi.advanceTimersByTimeAsync(2100);
       });
       await moveTo(6000);
       await moveTo(9000);
@@ -272,9 +320,9 @@ describe("SongMetronome, a session is running", () => {
     it("joins part-way through a bar that is already playing", async () => {
       await moveTo(4010);
       // A session that started long ago (server 1000): its bar lines are at audio -8.1 + 2k.
-      mocked.getMetronome.mockResolvedValue(running({ startAt: 1000, updatedAt: "2026-11-15T10:00:07.000Z" }));
+      serve(mocked.getMetronome, running({ startAt: 1000, updatedAt: "2026-11-15T10:00:07.000Z" }));
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(1600);
+        await vi.advanceTimersByTimeAsync(2100);
       });
       const fresh = ctx.loops[ctx.loops.length - 1];
       expect(fresh.when!).toBeLessThan(0.2); // straight away, not at the next bar
@@ -284,9 +332,9 @@ describe("SongMetronome, a session is running", () => {
 
     it("switches to a new tempo exactly on the server's bar line", async () => {
       await moveTo(4010);
-      mocked.getMetronome.mockResolvedValue(running({ bpm: 60, startAt: 12_000, updatedAt: "2026-11-15T10:00:05.000Z" }));
+      serve(mocked.getMetronome, running({ bpm: 60, startAt: 12_000, updatedAt: "2026-11-15T10:00:05.000Z" }));
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(1600);
+        await vi.advanceTimersByTimeAsync(2100);
       });
       await moveTo(5700);
       // New bar (4 beats at 60 = 4 s) from server 12 000 = audio 2.9; the old loop stops right there.
@@ -300,28 +348,32 @@ describe("SongMetronome, a session is running", () => {
 
     it("pulls a loop that drifted back onto the grid at the next bar line", async () => {
       await moveTo(4010);
-      // The audio clock runs 30 ms ahead of where it was: the loop now sounds 30 ms early.
+      // The audio clock runs 30 ms ahead of where it was: the loop now sounds 30 ms early. One tick of it isn't
+      // enough (that could be jitter); it is moved once the error has lasted a few ticks.
       await moveTo(6000, 0.03);
+      expect(ctx.loops).toHaveLength(1);
+      for (let ms = 6030; ms <= 6300; ms += 30) await moveTo(ms, 0.03);
       expect(ctx.loops).toHaveLength(2);
       const [old, fresh] = ctx.loops;
       expect(fresh.offset).toBe(0);
-      expect(old.stoppedAt).toBeCloseTo(fresh.when!);
+      // The old loop runs 30 ms early: it stops at its own bar line, before that line's click (H9).
+      expect(old.stoppedAt).toBeCloseTo(fresh.when! - 0.03);
       // The new loop's bar lines are back on the grid (bar line at audio 0.9 + 2k, plus the 30 ms).
       expect(offBar(fresh.when!, 0.93)).toBeLessThan(1e-6);
     });
 
     it("stops the loop when someone stops it for everyone", async () => {
       await moveTo(4010);
-      mocked.getMetronome.mockResolvedValue(running({ running: false, updatedAt: "2026-11-15T10:00:09.000Z" }));
+      serve(mocked.getMetronome, running({ running: false, updatedAt: "2026-11-15T10:00:09.000Z" }));
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(1600);
+        await vi.advanceTimersByTimeAsync(2100);
       });
       expect(playing()).toHaveLength(0);
     });
   });
 
   it("offers to save the session's tempo to the song", async () => {
-    mocked.getMetronome.mockResolvedValue(running({ bpm: 100, beatsPerBar: 3 }));
+    serve(mocked.getMetronome, running({ bpm: 100, beatsPerBar: 3 }));
     mocked.updateSong.mockResolvedValue({ ...song, bpm: 100, updatedAt: "y" });
     renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: "Save as song tempo" }));
@@ -330,14 +382,14 @@ describe("SongMetronome, a session is running", () => {
   });
 
   it("hides Save as song tempo when the song already has that tempo", async () => {
-    mocked.getMetronome.mockResolvedValue(running({ bpm: 96, beatsPerBar: 3 }));
+    serve(mocked.getMetronome, running({ bpm: 96, beatsPerBar: 3 }));
     renderPanel();
     await screen.findByText("Playing at 96 BPM");
     expect(screen.queryByRole("button", { name: "Save as song tempo" })).toBeNull();
   });
 
   it("shows a conflict when someone changed the song first", async () => {
-    mocked.getMetronome.mockResolvedValue(running({ bpm: 100, beatsPerBar: 3 }));
+    serve(mocked.getMetronome, running({ bpm: 100, beatsPerBar: 3 }));
     const current = { ...song, title: "Renamed", updatedAt: "z" };
     mocked.updateSong.mockRejectedValue(new ApiError(409, "Someone else changed this song.", current));
     renderPanel();
@@ -350,8 +402,8 @@ describe("SongMetronome, a session is running", () => {
 
 describe("SongMetronome after a stop", () => {
   it("keeps the tempo it was playing at, so a restart and a save use what is on screen", async () => {
-    mocked.getMetronome.mockResolvedValue(running({ bpm: 123 }));
-    mocked.putMetronome.mockResolvedValue(running({ bpm: 123, running: false }));
+    serve(mocked.getMetronome, running({ bpm: 123 }));
+    store(running({ bpm: 123, running: false, updatedAt: "2026-11-15T10:00:01.000Z" }));
     mocked.updateSong.mockResolvedValue({ ...song, bpm: 123, beatsPerBar: 4, updatedAt: "y" });
     renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: "Stop for everyone" }));
@@ -362,7 +414,7 @@ describe("SongMetronome after a stop", () => {
   });
 
   it("saves the tempo on screen, not an older stopped session's", async () => {
-    mocked.getMetronome.mockResolvedValue(running({ bpm: 140, running: false }));
+    serve(mocked.getMetronome, running({ bpm: 140, running: false }));
     mocked.updateSong.mockResolvedValue({ ...song, bpm: 97, updatedAt: "y" });
     renderPanel();
     await screen.findByRole("button", { name: "Start for everyone" });
@@ -386,10 +438,14 @@ describe("SongMetronome fallback", () => {
   });
 
   it("plays on this phone only when the clock can't be synced", async () => {
-    mocked.getMetronome.mockResolvedValue(running());
+    // Answers that carry no server time (an older server), so only the time calls could sync the clock.
+    mocked.getMetronome.mockImplementation(async () => ({ session: running() }));
     mocked.getTime.mockRejectedValue(new ApiError(0, "Can't reach the server."));
     renderPanel();
-    fireEvent.click(await screen.findByRole("button", { name: "Join" }));
+    const join = await screen.findByRole("button", { name: "Join" });
+    // The network goes after that first check, so no answer brings the server's time either.
+    mocked.getMetronome.mockRejectedValue(new ApiError(0, "Can't reach the server."));
+    fireEvent.click(join);
     expect(await screen.findByText("Can't sync: playing on this phone only")).toBeInTheDocument();
   });
 });
@@ -431,7 +487,7 @@ describe("matching the band by ear", () => {
     if (measured) localStorage.setItem(ROUNDTRIP_KEY, "50");
     localStorage.setItem(DEVICE_KEY, "me");
     perf = 4000; // server time 9000; beat 0 is at 10 000, bars of 2000 ms
-    mocked.getMetronome.mockResolvedValue(session);
+    serve(mocked.getMetronome, session);
     renderPanel();
     await flush();
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
@@ -498,9 +554,9 @@ describe("matching the band by ear", () => {
     await joinAs(running({ leader: "them" }));
     calls[0].resolve(band(20));
     await moveTo(4010);
-    mocked.getMetronome.mockResolvedValue(running({ leader: "them", bpm: 60, startAt: 12_000, updatedAt: "2026-11-15T10:00:05.000Z" }));
+    serve(mocked.getMetronome, running({ leader: "them", bpm: 60, startAt: 12_000, updatedAt: "2026-11-15T10:00:05.000Z" }));
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1600);
+      await vi.advanceTimersByTimeAsync(2100);
     });
     await moveTo(5700);
     expect(listenMock).toHaveBeenCalledTimes(1);
@@ -514,9 +570,9 @@ describe("matching the band by ear", () => {
     calls[0].resolve(band(20));
     await moveTo(4010);
     expect(playing()[0].when!).toBeCloseTo(0.88, 3);
-    mocked.getMetronome.mockResolvedValue(running({ leader: "someone-else", updatedAt: "2026-11-15T10:00:05.000Z" }));
+    serve(mocked.getMetronome, running({ leader: "someone-else", updatedAt: "2026-11-15T10:00:05.000Z" }));
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1600);
+      await vi.advanceTimersByTimeAsync(2100);
     });
     expect(listenMock).toHaveBeenCalledTimes(2);
     expect(playing()).toHaveLength(0);
@@ -535,13 +591,15 @@ describe("matching the band by ear", () => {
     await moveTo(4010);
     await moveTo(6000); // the loop is playing, so it is checked for drift
     const booked = ctx.loops.length;
+    const checks = mocked.getMetronome.mock.calls.length;
     // The clock estimate moves by 40 ms; once the first round has aged out, a clock-only phone would follow it.
-    mocked.getTime.mockImplementation(async () => ({ now: perf + 5040 }));
+    serverAhead = 5040;
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3 * 60_000 + 100);
     });
     await moveTo(6100);
-    expect(mocked.getTime.mock.calls.length).toBeGreaterThanOrEqual(29);
+    // The session checks brought the moved clock's samples, over more than ROUNDS_KEPT rounds.
+    expect(mocked.getMetronome.mock.calls.length - checks).toBeGreaterThanOrEqual(80);
     expect(ctx.loops).toHaveLength(booked);
     expect(screen.getByRole("status")).toHaveTextContent("Matched to the band");
   });
@@ -668,38 +726,40 @@ describe("session checks", () => {
   });
 
   it("checks every 10 s while the panel is open but this phone isn't joined", async () => {
-    mocked.getMetronome.mockResolvedValue(running());
+    serve(mocked.getMetronome, running());
     renderPanel();
     await advance(0);
     expect(calls()).toBe(1); // on open
     await advance(9_000);
-    expect(calls()).toBe(1); // not every 1.5 s any more
+    expect(calls()).toBe(1); // not every 2 s any more
     await advance(1_000);
     expect(calls()).toBe(2);
   });
 
-  it("checks at once on Join, then every 1.5 s", async () => {
-    mocked.getMetronome.mockResolvedValue(running());
+  it("checks at once on Join, then every 2 s", async () => {
+    serve(mocked.getMetronome, running());
     renderPanel();
     await advance(0);
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     await advance(0);
     expect(calls()).toBe(2);
-    await advance(1_500);
+    await advance(1_900);
+    expect(calls()).toBe(2); // not every 1.5 s any more
+    await advance(100);
     expect(calls()).toBe(3);
   });
 
-  it("joined with the session stopped still checks every 1.5 s", async () => {
+  it("joined with the session stopped still checks every 2 s", async () => {
     // Start for everyone joins this phone; the server answers with a session that someone then stops.
-    mocked.putMetronome.mockResolvedValue(running());
-    mocked.getMetronome.mockResolvedValue(null);
+    serve(mocked.putMetronome, running());
+    serve(mocked.getMetronome, null);
     renderPanel();
     await advance(0);
     fireEvent.click(screen.getByRole("button", { name: "Start for everyone" }));
     await advance(0);
-    mocked.getMetronome.mockResolvedValue(running({ running: false, updatedAt: "2026-11-15T10:00:09.000Z" }));
+    serve(mocked.getMetronome, running({ running: false, updatedAt: "2026-11-15T10:00:09.000Z" }));
     const before = calls();
-    await advance(3_000);
+    await advance(4_000);
     expect(calls() - before).toBe(2);
   });
 
@@ -716,7 +776,7 @@ describe("session checks", () => {
   });
 
   it("toggling visibility doesn't start a second chain", async () => {
-    mocked.getMetronome.mockResolvedValue(running());
+    serve(mocked.getMetronome, running());
     renderPanel();
     await advance(0);
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
@@ -727,33 +787,33 @@ describe("session checks", () => {
     setHidden(false);
     await advance(0);
     const before = calls();
-    await advance(3_000);
-    expect(calls() - before).toBe(2); // still one check per 1.5 s
+    await advance(4_000);
+    expect(calls() - before).toBe(2); // still one check per 2 s
   });
 
-  it("a failed check while joined keeps checking every 1.5 s", async () => {
-    mocked.getMetronome.mockResolvedValue(running());
+  it("a failed check while joined keeps checking every 2 s", async () => {
+    serve(mocked.getMetronome, running());
     renderPanel();
     await advance(0);
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     await advance(0);
     mocked.getMetronome.mockRejectedValue(new ApiError(0, "offline"));
     const before = calls();
-    await advance(3_000);
+    await advance(4_000);
     expect(calls() - before).toBe(2);
   });
 
-  it("a slow answer doesn't stretch the 1.5 s between checks while joined", async () => {
-    mocked.getMetronome.mockResolvedValue(running());
+  it("a slow answer doesn't stretch the 2 s between checks while joined", async () => {
+    serve(mocked.getMetronome, running());
     renderPanel();
     await advance(0);
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     await advance(0);
     // Every answer now takes 600 ms, as on a slow connection.
-    mocked.getMetronome.mockImplementation(() => new Promise((r) => setTimeout(() => r(running()), 600)));
+    mocked.getMetronome.mockImplementation(() => new Promise((r) => setTimeout(() => r({ session: running(), now: perf + serverAhead }), 600)));
     const before = calls();
-    await advance(6_000);
-    expect(calls() - before).toBe(4); // one every 1.5 s, not every 2.1 s
+    await advance(8_000);
+    expect(calls() - before).toBe(4); // one every 2 s, not every 2.6 s
   });
 
   it("no checks after the panel closes", async () => {

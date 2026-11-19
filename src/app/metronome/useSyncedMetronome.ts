@@ -2,26 +2,29 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import { audioLink, createAudioContext, preferPlaybackAudio, startClickLoop, type ClickLoop } from "../audio";
 import { deviceId } from "../device";
-import type { MetroChange, MetroSession } from "../../shared/metronome";
-import { toAudioTime } from "./clock";
+import type { MetroAnswer, MetroChange, MetroGrid, MetroSession } from "../../shared/metronome";
+import { linkSmoother, toAudioTime, type TimeSample } from "./clock";
 import { listen } from "./listen";
-import { loopStart, phaseError } from "./loop";
+import { loopStart, phaseError, REALIGN_TICKS, shouldRealign } from "./loop";
 import { detectOnsets, matchShift } from "./match";
 import { useClockSync } from "./useClockSync";
 
 /**
  * How often a joined phone checks the session, also while it is stopped, so a restart reaches it in time.
- * Shorter than the server's 2 s lead.
+ * Shorter than the server's 3 s lead (LEAD_MS): a downlink up to about 900 ms still hears a change before its bar line.
  */
-export const POLL_JOINED_MS = 1500;
+export const POLL_JOINED_MS = 2000;
 /** How often an open panel checks the session while this phone isn't joined. */
 export const POLL_IDLE_MS = 10_000;
 /** How often the page lines the loop up with the grid and moves the flash. The clicks themselves don't need it. */
-const TICK_MS = 25;
+export const TICK_MS = 25;
+/**
+ * An audio clock that hasn't moved for this long, while performance.now() has, is frozen even if the context says
+ * it is running (H12). A running clock moves every render quantum (a few ms).
+ */
+const FROZEN_MS = 500;
 /** A loop never starts sooner than this from now, so the audio engine gets it in time. */
-const START_MARGIN_S = 0.05;
-/** A loop further than this from the grid is moved back onto it, at the next bar line. */
-const REALIGN_S = 0.01;
+export const START_MARGIN_S = 0.05;
 
 /** A joining phone listens to the band for this many bars (and at least LISTEN_MIN_S) before it plays. */
 const LISTEN_BARS = 2;
@@ -65,13 +68,31 @@ interface Playing {
   when: number;
   /** Audio time it is set to stop, if any. */
   stopAt?: number;
+  /** Its phase error (s) on each of the last REALIGN_TICKS ticks since it started playing, oldest first. */
+  errors: number[];
 }
+
+/** Whether two grids put every beat in the same place. */
+const sameGrid = (a: MetroGrid, b: MetroGrid) => a.bpm === b.bpm && a.beatsPerBar === b.beatsPerBar && a.startAt === b.startAt;
 
 /** Stops a loop at `at`, unless it is already set to stop sooner. */
 function stopBy(p: Playing, at: number) {
   const t = p.stopAt === undefined ? at : Math.min(p.stopAt, at);
   p.loop.stop(t);
   p.stopAt = t;
+}
+
+/**
+ * Makes a metronome call and hands its answer to `addSample` as a clock sample (local send and receive times, and
+ * the server's time in the answer). Resolves the answer. An answer that may be a shared copy (`shared`) is no
+ * sample: its server time can be up to about 1 s old.
+ */
+async function sampledAnswer(call: () => Promise<MetroAnswer>, addSample: (s: TimeSample) => void): Promise<MetroAnswer> {
+  const sentMs = performance.now();
+  const answer = await call();
+  const receivedMs = performance.now();
+  if (typeof answer.now === "number" && !answer.shared) addSample({ sentMs, serverMs: answer.now, receivedMs });
+  return answer;
 }
 
 const sameSession = (a: MetroSession | null, b: MetroSession | null) =>
@@ -100,14 +121,26 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
   const [beat, setBeat] = useState<{ index: number; n: number } | null>(null);
   const [error, setError] = useState("");
   const [noSound, setNoSound] = useState(false);
-  const clock = useClockSync(joined);
+  /** True while joined and the phone has paused the sound (a call, Siri, the lock screen): see soundIsPaused. */
+  const [soundPaused, setSoundPaused] = useState(false);
+  /** Mirrors soundPaused for the tick. */
+  const pausedRef = useRef(false);
+  /** When (performance.now()) the audio clock was last seen moving, and what it read then. */
+  const clockSeen = useRef<{ perfMs: number; audioS: number } | null>(null);
+  /** True after this phone's start found the session already running (it was left as it is). */
+  const [alreadyPlaying, setAlreadyPlaying] = useState(false);
+  /** True while the checks' answers may be shared copies (#25): they are no clock samples, so time calls return. */
+  const [sharedAnswers, setSharedAnswers] = useState(false);
+  // The clock syncs from when the panel opens, so it is ready by the time this phone starts or joins (H1).
+  const clock = useClockSync(true, sharedAnswers);
+  const { addSample } = clock;
 
   const ctxRef = useRef<AudioContext | null>(null);
   /** Mirrors `joined` for the session checks, which pick their next delay without restarting. */
   const joinedRef = useRef(false);
   joinedRef.current = joined;
-  /** Checks the session now (set while the panel is open). */
-  const checkNowRef = useRef<(() => void) | null>(null);
+  /** Checks the session now (set while the panel is open). Resolves whether that check was answered. */
+  const checkNowRef = useRef<(() => Promise<boolean>) | null>(null);
   // `cur` is undefined until the first answer, so a first answer of "no session" still counts as news.
   // `prev` is the grid that was sounding before the latest change; the flash follows it until the new one starts.
   const grid = useRef<{ prev: MetroSession | null; cur: MetroSession | null | undefined }>({ prev: null, cur: undefined });
@@ -121,6 +154,10 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
   const [matchView, setMatchView] = useState<MatchView | null>(null);
   /** True while listening: no loops are booked. */
   const listening = useRef(false);
+  /** The audio link, averaged over the last LINK_WINDOW_MS, so its jitter doesn't move the loops. */
+  const smoother = useRef(linkSmoother());
+  /** Takes a reading of the audio link and gives back the smoothed link. */
+  const smoothedLink = (ctx: AudioContext) => smoother.current.add(audioLink(ctx));
   /** Bumped by "Listen again" (and by a listen spoilt by a tempo change), to listen once more. */
   const [attempt, setAttempt] = useState(0);
 
@@ -135,9 +172,6 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     return { offsetMs: m.offsetMs + driftPerMs * (performance.now() - m.atMs), nudgeMs: nudge + m.shiftMs };
   };
 
-  /** Best guess at the server's time now; before syncing, this phone's own clock. */
-  const serverNow = () => (live.current.synced ? performance.now() + aligned().offsetMs : Date.now());
-
   /** Stops every loop at `at` (audio s; default now). */
   const stopAudio = useCallback((at = 0) => {
     for (const p of audio.current) p.loop.stop(at);
@@ -148,17 +182,18 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     (next: MetroSession | null) => {
       const old = grid.current.cur;
       if (old !== undefined && sameSession(old, next)) return;
+      // An answer that left the server before the session held here was last changed (a check in flight when this
+      // phone sent a change) would undo that change until the next check (H4). The ISO times compare in order.
+      if (old && next && next.updatedAt < old.updatedAt) return;
       if (next?.running) {
-        if (old?.running && old.startAt < next.startAt) {
-          // The flash keeps following whatever is sounding until the new grid starts on its bar line.
-          if (old.startAt <= serverNow()) grid.current.prev = old;
-        } else {
-          grid.current.prev = null;
-        }
+        // Until the new grid starts, the clicks and the flash follow the grid that is sounding, as the server
+        // keeps it: right even on a phone that missed a change, or saw one that was since replaced (H23).
+        grid.current.prev = next.prev ? { ...next.prev, running: true, updatedAt: next.updatedAt } : null;
       } else {
         grid.current.prev = null;
         stopAudio();
         setBeat(null);
+        setAlreadyPlaying(false);
       }
       // A different leader: the match was against someone else's phone. (A stop keeps the leader, and the match.)
       if (next && match.current && next.leader !== match.current.leader) match.current = null;
@@ -179,36 +214,45 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     setReachable(true);
     const hidden = () => document.visibilityState === "hidden";
     const current = (gen: number) => alive && gen === generation;
-    // The next check is timed from when this one starts, so a slow answer doesn't stretch the gap; it still
-    // waits for this answer, so checks never overlap.
-    function check(gen: number) {
-      let due = false;
-      let settled = false;
+    /** Numbers each check; `heard` is the newest one that has answered or failed. Older results count for nothing. */
+    let sentSeq = 0;
+    let heard = 0;
+    /** Failed checks in a row (a timeout is a failure), and whether any check has answered since the panel opened. */
+    let failures = 0;
+    let answered = false;
+    // The next check is timed from when this one starts, and goes out even if this one hasn't answered (it gives
+    // up after METRONOME_TIMEOUT_MS), so a request that hangs can't stop the checks (H22).
+    function check(gen: number): Promise<boolean> {
+      const seq = ++sentSeq;
       timer = setTimeout(() => {
-        due = true;
-        if (settled && current(gen)) check(gen);
+        if (current(gen) && !hidden()) check(gen);
       }, joinedRef.current ? POLL_JOINED_MS : POLL_IDLE_MS);
-      api
-        .getMetronome(songId)
-        .then(
-          (s) => {
-            if (!current(gen)) return;
-            setReachable(true);
-            accept(s);
-          },
-          () => {
-            if (current(gen)) setReachable(false);
-          },
-        )
-        .finally(() => {
-          settled = true;
-          if (due && current(gen) && !hidden()) check(gen);
-        });
+      // A joined phone's check also marks the session seen, so it doesn't go stale while the band plays along.
+      return sampledAnswer(() => api.getMetronome(songId, joinedRef.current), addSample).then(
+        (answer) => {
+          if (!current(gen) || seq < heard) return true;
+          heard = seq;
+          failures = 0;
+          answered = true;
+          setReachable(true);
+          setSharedAnswers(!!answer.shared);
+          accept(answer.session);
+          return true;
+        },
+        () => {
+          if (!current(gen) || seq < heard) return false;
+          heard = seq;
+          failures++;
+          // One failure can be a blip; before the first answer there is nothing to keep showing, so say so at once.
+          if (failures >= 2 || !answered) setReachable(false);
+          return false;
+        },
+      );
     }
     /** Drops the pending check and checks now. */
     function restart() {
       clearTimeout(timer);
-      check(++generation);
+      return check(++generation);
     }
     const onVisibility = () => {
       if (hidden()) {
@@ -228,7 +272,7 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
       checkNowRef.current = null;
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [songId, accept]);
+  }, [songId, accept, addSample]);
 
   /** Makes the loops match the current grid. Safe to call any time; does nothing when they already match. */
   const reconcile = useCallback(() => {
@@ -240,23 +284,51 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     }
     const { offsetMs, nudgeMs: nudge } = aligned();
     const now = ctx.currentTime;
-    const startS = toAudioTime(cur.startAt, offsetMs, audioLink(ctx), nudge);
+    const startS = toAudioTime(cur.startAt, offsetMs, smoothedLink(ctx), nudge);
     const barS = (cur.beatsPerBar * 60) / cur.bpm;
     const loops = (audio.current = audio.current.filter((p) => p.stopAt === undefined || p.stopAt > now));
     const last = loops[loops.length - 1];
     if (last?.grid === cur) {
-      // Booked for this grid already. Once it plays, check it hasn't drifted (clock offset, nudge or audio clock).
-      if (last.when > now || Math.abs(phaseError(startS, last.loop.origin, barS)) <= REALIGN_S) return;
-      const at = startS + Math.ceil((now + 0.1 - startS) / barS) * barS;
-      stopBy(last, at);
-      loops.push({ loop: startClickLoop(ctx, cur.bpm, cur.beatsPerBar, at, 0), grid: cur, when: at });
+      // Booked for this grid already. Once it plays, check it hasn't drifted (clock offset, nudge or audio clock):
+      // only a lasting error moves it, onto the grid itself, at the next bar line.
+      if (last.when > now) return;
+      last.errors = [...last.errors, phaseError(startS, last.loop.origin, barS)].slice(-REALIGN_TICKS);
+      if (!shouldRealign(last.errors)) return;
+      // The error lasted, so the clocks really moved: place the new loop from the readings of those ticks only,
+      // which are all from after the move, not from the full average, which is still catching up.
+      const gridS = toAudioTime(cur.startAt, offsetMs, smoother.current.keepNewest(REALIGN_TICKS), nudge);
+      // A late loop stops at the grid's bar line, after its last click of the bar has finished. An early one
+      // stops at its own bar line, before that line's click, so the click is neither cut nor played twice (H9).
+      const earlyS = Math.min(0, phaseError(gridS, last.loop.origin, barS));
+      const at = gridS + Math.ceil((now + 0.1 - earlyS - gridS) / barS) * barS;
+      stopBy(last, at + earlyS);
+      loops.push({ loop: startClickLoop(ctx, cur.bpm, cur.beatsPerBar, at, 0), grid: cur, when: at, errors: [] });
       return;
     }
     // A new grid: book it from its start (or join it part-way). Whatever is booked so far plays until then;
     // a loop that would only start after it never plays.
     const { when, offset } = loopStart(startS, barS, now + START_MARGIN_S);
+    // Until then the grid that is sounding plays. A phone that booked a change since replaced (H23), or that joins
+    // during the lead, has no loop for it that lasts until `when`: it books one now, from the same place in the bar,
+    // and drops the rest (a loop that hasn't started yet never plays).
+    const prev = grid.current.prev;
+    const earliest = now + START_MARGIN_S;
+    if (prev?.running && when > earliest) {
+      const lasts = (p: Playing) => p.when <= earliest && (p.stopAt === undefined || p.stopAt >= when);
+      if (!loops.some((p) => sameGrid(p.grid, prev) && lasts(p))) {
+        for (const p of loops) stopBy(p, earliest);
+        const prevS = toAudioTime(prev.startAt, offsetMs, smoothedLink(ctx), nudge);
+        const at = loopStart(prevS, (prev.beatsPerBar * 60) / prev.bpm, earliest);
+        loops.push({
+          loop: startClickLoop(ctx, prev.bpm, prev.beatsPerBar, at.when, at.offset),
+          grid: prev,
+          when: at.when,
+          errors: [],
+        });
+      }
+    }
     for (const p of loops) stopBy(p, when);
-    loops.push({ loop: startClickLoop(ctx, cur.bpm, cur.beatsPerBar, when, offset), grid: cur, when });
+    loops.push({ loop: startClickLoop(ctx, cur.bpm, cur.beatsPerBar, when, offset), grid: cur, when, errors: [] });
   }, [stopAudio]);
 
   /** Lights the beat this phone is playing now, from the grid alone. */
@@ -299,7 +371,7 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     const atMs = performance.now();
     const beatS = 60 / cur.bpm;
     const barS = cur.beatsPerBar * beatS;
-    const gridStartS = () => toAudioTime(cur.startAt, offsetMs, audioLink(ctx), nudge);
+    const gridStartS = () => toAudioTime(cur.startAt, offsetMs, smoothedLink(ctx), nudge);
     // Don't count the silence before a session that hasn't started yet.
     const waitS = Math.max(0, gridStartS() - ctx.currentTime);
     const seconds = waitS + Math.max(LISTEN_MIN_S, LISTEN_BARS * barS);
@@ -344,19 +416,62 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     };
   }, [shouldListen, leader, me, roundTripMs, attempt, stopAudio]);
 
+  // The phone slept (H7): the clock sync drops its samples and re-syncs. A match was made against the clock as it
+  // was, and is frozen, so it would stay off: drop it and listen to the band again (the flash keeps going).
+  const { wakes } = clock;
+  useEffect(() => {
+    if (wakes === 0) return;
+    smoother.current.clear();
+    if (!match.current) return;
+    match.current = null;
+    setAttempt((n) => n + 1);
+  }, [wakes]);
+
+  /** Checks the session now ("Try syncing again"). Resolves whether the server answered. */
+  const retry = useCallback(() => checkNowRef.current?.() ?? Promise.resolve(false), []);
+
   /** Goes silent and matches the band by ear again. */
   const listenAgain = useCallback(() => setAttempt((n) => n + 1), []);
+
+  /**
+   * Whether the phone has paused this phone's sound: the context isn't running (suspended or interrupted), or its
+   * clock has stopped moving while it says it is running (H12).
+   */
+  const soundIsPaused = useCallback((ctx: AudioContext) => {
+    const perfMs = performance.now();
+    const audioS = ctx.currentTime;
+    const seen = clockSeen.current;
+    if (!seen || audioS !== seen.audioS) clockSeen.current = { perfMs, audioS };
+    const frozen = !!seen && audioS === seen.audioS && perfMs - seen.perfMs >= FROZEN_MS;
+    return ctx.state !== "running" || frozen;
+  }, []);
 
   useEffect(() => {
     if (!joined || !synced) return;
     const tick = () => {
-      reconcile();
+      const ctx = ctxRef.current;
+      const paused = !!ctx && soundIsPaused(ctx);
+      if (paused !== pausedRef.current) {
+        pausedRef.current = paused;
+        setSoundPaused(paused);
+        // Paused: whatever is booked is dropped, so it can't play off the grid once the clock moves on. Either way
+        // the link readings from before are wrong now (the audio clock stood still while performance.now() ran),
+        // so the loops are booked afresh from new ones once it plays again.
+        stopAudio();
+        smoother.current.clear();
+      }
+      if (!paused) reconcile();
       flash();
     };
     tick();
     const t = setInterval(tick, TICK_MS);
     return () => clearInterval(t);
-  }, [joined, synced, reconcile, flash]);
+  }, [joined, synced, reconcile, flash, soundIsPaused, stopAudio]);
+
+  /** Resumes paused sound. Call it from a tap: the phone may refuse a resume that doesn't come from one. */
+  const resumeSound = useCallback(() => {
+    ctxRef.current?.resume().catch(() => {});
+  }, []);
 
   /** Starts this phone's audio and marks it joined. */
   const joinPhone = useCallback(() => {
@@ -369,12 +484,14 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     }
     // No sound: the flash still follows the beat.
     setNoSound(!ctx);
+    clockSeen.current = null;
     joinedRef.current = true;
     setJoined(true);
   }, []);
 
   /** Starts this phone playing along. Call it from a tap: browsers only start audio from a user gesture. */
   const join = useCallback(() => {
+    setAlreadyPlaying(false);
     joinPhone();
     checkNowRef.current?.();
   }, [joinPhone]);
@@ -388,6 +505,10 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     joinedRef.current = false;
     setJoined(false);
     setBeat(null);
+    pausedRef.current = false;
+    setSoundPaused(false);
+    // Suspended, the audio clock stands still while performance.now() runs on: the old readings are wrong now.
+    smoother.current.clear();
     ctxRef.current?.suspend().catch(() => {});
   }, [stopAudio]);
 
@@ -400,30 +521,52 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     [stopAudio],
   );
 
-  const send = useCallback(
-    async (change: MetroChange): Promise<boolean> => {
+  /** Sends a change and takes the session it answers with. Resolves the answer, or null when it failed. */
+  const put = useCallback(
+    async (change: MetroChange): Promise<MetroAnswer | null> => {
       setError("");
       try {
-        accept(await api.putMetronome(songId, change));
+        const answer = await sampledAnswer(() => api.putMetronome(songId, change), addSample);
+        accept(answer.session);
         setReachable(true);
-        return true;
+        return answer;
       } catch (e) {
         setError(e instanceof ApiError ? e.message : "Couldn't reach the server.");
-        return false;
+        return null;
       }
     },
-    [songId, accept],
+    [songId, accept, addSample],
   );
 
-  /** Starts the session for everyone, and joins it on this phone. */
+  /** Sends a stop or a change, then checks at once (as `start` does), dropping a check still in flight. */
+  const send = useCallback(
+    async (change: MetroChange) => {
+      if ((await put(change)) === null) return false;
+      checkNowRef.current?.();
+      return true;
+    },
+    [put],
+  );
+
+  /**
+   * Starts the session for everyone, and joins it on this phone. Only if it is stopped: if a bandmate has started it
+   * meanwhile, theirs is left as it is, and this phone leaves and offers to join it (`alreadyPlaying`).
+   */
   const start = useCallback(
     async (bpm: number, beatsPerBar: number) => {
+      setAlreadyPlaying(false);
       joinPhone();
-      if (!(await send({ bpm, beatsPerBar, running: true, leader: me }))) return leave();
+      const answer = await put({ bpm, beatsPerBar, running: true, leader: me, onlyIfStopped: true });
+      if (!answer) return leave();
+      if (answer.applied === false) {
+        leave();
+        setAlreadyPlaying(!!answer.session?.running);
+        return;
+      }
       // Check after the answer, not before it: a check answered before the start could undo it until the next one.
       checkNowRef.current?.();
     },
-    [joinPhone, leave, send, me],
+    [joinPhone, leave, put, me],
   );
 
   let phase: SyncPhase = "clock";
@@ -438,6 +581,11 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     beat,
     error,
     noSound,
+    /** Joined, and the phone has paused the sound: `resumeSound` from a tap brings it back. */
+    soundPaused: joined && soundPaused,
+    resumeSound,
+    /** This phone's Start for everyone found it already playing, so it offers to join instead. */
+    alreadyPlaying,
     /** How this phone is lined up with the band (see SyncPhase). */
     phase,
     /** With phase "matched": how much the heard beats disagreed (ms). */
@@ -445,6 +593,7 @@ export function useSyncedMetronome(songId: string, nudgeMs: number, roundTripMs:
     /** Someone else leads, but this phone can't match by ear until its round trip is measured. */
     needsRoundTrip: joined && !!session?.running && !!leader && leader !== me && roundTripMs === null,
     listenAgain,
+    retry,
     join,
     leave,
     start,

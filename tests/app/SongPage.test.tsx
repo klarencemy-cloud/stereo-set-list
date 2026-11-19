@@ -11,6 +11,7 @@ vi.mock("../../src/app/api", async () => {
 });
 
 import { api, ApiError } from "../../src/app/api";
+import type { MetroSession } from "../../src/shared/metronome";
 import SongPage from "../../src/app/pages/SongPage";
 import { clearSongCache, peekSong } from "../../src/app/songCache";
 
@@ -39,6 +40,10 @@ function renderPage(path = "/songs/s1") {
   );
 }
 
+/** Answers a metronome call with `session` and the server's time (the same clock as this phone, here). */
+const serve = (fn: ReturnType<typeof vi.fn>, session: MetroSession | null) =>
+  fn.mockImplementation(async () => ({ session, now: performance.now() }));
+
 beforeEach(() => {
   document.body.className = "";
   localStorage.clear();
@@ -46,7 +51,7 @@ beforeEach(() => {
   clearSongCache();
   Object.values(mocked).forEach((f) => f.mockReset());
   mocked.getSong.mockResolvedValue({ ...song });
-  mocked.getMetronome.mockResolvedValue(null);
+  serve(mocked.getMetronome, null);
 });
 
 describe("SongPage", () => {
@@ -598,7 +603,7 @@ describe("SongPage metronome pill", () => {
   });
 
   it("shows a live dot when someone is playing it", async () => {
-    mocked.getMetronome.mockResolvedValue({ bpm: 120, beatsPerBar: 4, startAt: 1, running: true, updatedAt: "t" });
+    serve(mocked.getMetronome, { bpm: 120, beatsPerBar: 4, startAt: 1, running: true, updatedAt: "t" });
     renderPage();
     await screen.findByText("[Intro]");
     await waitFor(() => expect(pill().querySelector(".live-dot")).not.toBeNull());
@@ -617,7 +622,7 @@ describe("SongPage metronome pill", () => {
   });
 
   it("shows a tempo saved from the panel at once", async () => {
-    mocked.getMetronome.mockResolvedValue({ bpm: 100, beatsPerBar: 4, startAt: 1, running: true, updatedAt: "t" });
+    serve(mocked.getMetronome, { bpm: 100, beatsPerBar: 4, startAt: 1, running: true, updatedAt: "t" });
     mocked.updateSong.mockResolvedValue({ ...song, bpm: 100, beatsPerBar: 4, updatedAt: "y" });
     renderPage();
     await screen.findByText("[Intro]");

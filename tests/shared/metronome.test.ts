@@ -80,7 +80,7 @@ describe("applyChange", () => {
 
   it("starts a new session the lead time ahead", () => {
     const s = applyChange(null, { bpm: 90, beatsPerBar: 3, running: true }, now);
-    expect(s).toEqual({ bpm: 90, beatsPerBar: 3, startAt: 52_000, running: true, updatedAt: new Date(now).toISOString() });
+    expect(s).toEqual({ bpm: 90, beatsPerBar: 3, startAt: 53_000, running: true, updatedAt: new Date(now).toISOString() });
   });
 
   it("restarts a stopped session from now + lead with the stored tempo", () => {
@@ -89,13 +89,14 @@ describe("applyChange", () => {
   });
 
   it("puts a tempo change on the first bar line at or after now + lead", () => {
-    // Bars are 2000 ms long from 10 000: bar lines at ..., 50 000, 52 000, 54 000. now + lead = 52 100.
-    const s = applyChange(session(), { bpm: 100 }, 50_100);
-    expect(s).toMatchObject({ bpm: 100, beatsPerBar: 4, startAt: 54_000, running: true });
+    // Bars are 2000 ms long from 10 000: bar lines at ..., 52 000, 54 000, 56 000. now + lead = 54 100.
+    const s = applyChange(session(), { bpm: 100 }, 51_100);
+    expect(s).toMatchObject({ bpm: 100, beatsPerBar: 4, startAt: 56_000, running: true });
   });
 
   it("keeps a bar line that falls exactly on now + lead", () => {
-    expect(applyChange(session(), { bpm: 100 }, 50_000).startAt).toBe(52_000);
+    // now + lead = 54 000, a bar line.
+    expect(applyChange(session(), { bpm: 100 }, 51_000).startAt).toBe(54_000);
   });
 
   it("puts a beats-per-bar change on the next bar line of the old bar length", () => {
@@ -139,5 +140,53 @@ describe("applyChange", () => {
 
   it("refuses to start with no session and no tempo rather than inventing one", () => {
     expect(() => applyChange(null, { running: true }, now)).toThrow(/bpm/);
+  });
+});
+
+describe("applyChange: the grid that is sounding until a change starts (H23)", () => {
+  // The sounding grid: 120/4 from 10 000, so bars are 2000 ms long and bar lines fall on even thousands.
+  const sounding = session();
+  const grid = { bpm: 120, beatsPerBar: 4, startAt: 10_000 };
+  const now = 50_000;
+
+  it("a change while it plays keeps the grid that is sounding as the previous grid", () => {
+    const s = applyChange(sounding, { bpm: 100 }, 51_100);
+    expect(s).toMatchObject({ bpm: 100, beatsPerBar: 4, startAt: 56_000, prev: grid });
+  });
+
+  it("a second change before the first one starts replaces it, keeping its start when that is 1.5 s or more away", () => {
+    const first = applyChange(sounding, { beatsPerBar: 3 }, 50_100); // starts at 54 000
+    const second = applyChange(first, { bpm: 200 }, 52_500); // 1500 ms before 54 000
+    expect(second).toMatchObject({ bpm: 200, beatsPerBar: 3, startAt: 54_000, prev: grid });
+  });
+
+  it("a second change too close to the first one's start moves it to the next bar line of the sounding grid, a lead ahead", () => {
+    const first = applyChange(sounding, { beatsPerBar: 3 }, 50_100); // starts at 54 000
+    // 1499 ms before 54 000: now + lead = 55 501, so the next bar line of the 120/4 grid is 56 000.
+    const second = applyChange(first, { bpm: 200 }, 52_501);
+    expect(second).toMatchObject({ bpm: 200, beatsPerBar: 3, startAt: 56_000, prev: grid });
+  });
+
+  it("a change once the first change has started stacks on it as usual, with that one as the previous grid", () => {
+    const first = applyChange(sounding, { beatsPerBar: 3 }, 50_100); // 120/3 from 54 000, bars 1500 ms
+    const second = applyChange(first, { bpm: 200 }, 54_200); // now + lead = 57 200: bar line 57 000 + 1500
+    expect(second).toMatchObject({ bpm: 200, beatsPerBar: 3, startAt: 58_500, prev: { bpm: 120, beatsPerBar: 3, startAt: 54_000 } });
+  });
+
+  it("a change during a start's lead (nothing sounding yet) has no previous grid; it keeps the start, or moves it a lead ahead", () => {
+    const started = applyChange(null, { bpm: 120, beatsPerBar: 4, running: true }, now); // starts at 53 000
+    const kept = applyChange(started, { bpm: 90 }, now + 1000);
+    expect(kept).toMatchObject({ bpm: 90, startAt: 53_000 });
+    expect(kept).not.toHaveProperty("prev");
+    const moved = applyChange(started, { bpm: 90 }, now + 2000);
+    expect(moved).toMatchObject({ bpm: 90, startAt: now + 2000 + 3000 });
+    expect(moved).not.toHaveProperty("prev");
+  });
+
+  it("a stop and a fresh start carry no previous grid", () => {
+    const changed = applyChange(sounding, { bpm: 100 }, 51_100);
+    const stopped = applyChange(changed, { running: false }, 52_000);
+    expect(stopped).not.toHaveProperty("prev");
+    expect(applyChange(stopped, { running: true }, 53_000)).not.toHaveProperty("prev");
   });
 });

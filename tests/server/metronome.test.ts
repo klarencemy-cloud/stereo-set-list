@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { memoryKV } from "../../netlify/functions/lib/kv";
-import { makeRepo, METRO_STALE_MS, NotFoundError } from "../../netlify/functions/lib/repo";
-import { makeMetronomeHandler } from "../../netlify/functions/metronome";
+import { makeRepo, METRO_SEEN_EVERY_MS, METRO_STALE_MS, NotFoundError } from "../../netlify/functions/lib/repo";
+import { makeMetronomeHandler, sharedAnswersOn } from "../../netlify/functions/metronome";
 import { makeTimeHandler } from "../../netlify/functions/time";
 import { makeSongsHandler } from "../../netlify/functions/songs";
 import type { SongInput } from "../../src/shared/types";
+import { LEAD_MS } from "../../src/shared/metronome";
+
+/** The session from a metronome answer (the envelope is tested on its own). */
+const sessionOf = async (res: Response) => (await res.json()).session;
 
 const U = "http://localhost";
 const req = (method: string, path: string, body?: unknown) =>
@@ -42,30 +46,51 @@ describe("time API", () => {
 });
 
 describe("metronome API", () => {
+  it("answers GET and PUT with the session and the server's time when it answered", async () => {
+    const { metro, clock, id } = await setup();
+    const none = await metro(req("GET", `/api/metronome/${id}`));
+    expect(await none.json()).toEqual({ session: null, now: 1_000_000 });
+    clock.now = 1_000_250;
+    const put = await (await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }))).json();
+    expect(put).toEqual({
+      session: { bpm: 120, beatsPerBar: 4, startAt: 1_000_250 + LEAD_MS, running: true, updatedAt: new Date(1_000_250).toISOString() },
+      now: 1_000_250,
+      applied: true, // a start's answer says whether it was applied
+    });
+    clock.now = 1_000_900;
+    const got = await (await metro(req("GET", `/api/metronome/${id}`))).json();
+    expect(got).toEqual({ session: put.session, now: 1_000_900 });
+    // Only a start's answer carries `applied`.
+    const changed = await (await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90 }))).json();
+    expect(changed).not.toHaveProperty("applied");
+    const stop = await (await metro(req("PUT", `/api/metronome/missing-${id}`, { running: false }))).json();
+    expect(stop).toMatchObject({ message: expect.any(String) }); // still a 404, not an envelope
+  });
+
   it("has no session until someone starts one", async () => {
     const { metro, id } = await setup();
     const res = await metro(req("GET", `/api/metronome/${id}`));
     expect(res.status).toBe(200);
-    expect(await res.json()).toBeNull();
+    expect(await sessionOf(res)).toBeNull();
     expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 
-  it("starts 2 s ahead on the server clock, and everyone reads the same session", async () => {
+  it("starts 3 s ahead on the server clock, and everyone reads the same session", async () => {
     const { metro, id } = await setup();
     const put = await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
     expect(put.status).toBe(200);
-    const started = await put.json();
-    expect(started).toMatchObject({ bpm: 120, beatsPerBar: 4, startAt: 1_002_000, running: true });
-    expect(await (await metro(req("GET", `/api/metronome/${id}`))).json()).toEqual(started);
+    const started = await sessionOf(put);
+    expect(started).toMatchObject({ bpm: 120, beatsPerBar: 4, startAt: 1_003_000, running: true });
+    expect(await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).toEqual(started);
   });
 
   it("puts a tempo change on the next bar line and stops on request", async () => {
     const { metro, clock, id } = await setup();
     await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
-    clock.now = 1_010_100; // bars of 2000 ms from 1 002 000; now + lead = 1 012 100
-    const changed = await (await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90 }))).json();
-    expect(changed).toMatchObject({ bpm: 90, beatsPerBar: 4, startAt: 1_014_000, running: true });
-    const stopped = await (await metro(req("PUT", `/api/metronome/${id}`, { running: false }))).json();
+    clock.now = 1_010_100; // bars of 2000 ms from 1 003 000; now + lead = 1 013 100
+    const changed = await sessionOf(await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90 })));
+    expect(changed).toMatchObject({ bpm: 90, beatsPerBar: 4, startAt: 1_015_000, running: true });
+    const stopped = await sessionOf(await metro(req("PUT", `/api/metronome/${id}`, { running: false })));
     expect(stopped).toMatchObject({ running: false, bpm: 90 });
   });
 
@@ -81,6 +106,8 @@ describe("metronome API", () => {
     [{ running: true, leader: "" }],
     [{ running: true, leader: "x".repeat(65) }],
     [{ leader: "phone-a" }],
+    [{ running: true, onlyIfStopped: "yes" }],
+    [{ onlyIfStopped: true }],
   ])("refuses %o", async (body) => {
     const { metro, id } = await setup();
     await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
@@ -89,14 +116,35 @@ describe("metronome API", () => {
     expect((await res.json()).message).toBeTruthy();
   });
 
+  it("a start only if stopped, from stopped, is applied and makes the starter the leader", async () => {
+    const { metro, clock, id } = await setup();
+    const first = await (await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true, leader: "a", onlyIfStopped: true }))).json();
+    expect(first).toMatchObject({ applied: true, session: { bpm: 120, running: true, leader: "a", startAt: clock.now + LEAD_MS } });
+    await metro(req("PUT", `/api/metronome/${id}`, { running: false }));
+    clock.now += 5000;
+    const again = await (await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90, beatsPerBar: 3, running: true, leader: "b", onlyIfStopped: true }))).json();
+    expect(again).toMatchObject({ applied: true, session: { bpm: 90, beatsPerBar: 3, running: true, leader: "b", startAt: clock.now + LEAD_MS } });
+  });
+
+  it("a start only if stopped, while it runs, leaves it as it is and answers 'not applied' with the running session", async () => {
+    const { metro, clock, id } = await setup();
+    const running = await sessionOf(await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true, leader: "a" })));
+    clock.now += 5000;
+    const res = await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90, beatsPerBar: 3, running: true, leader: "b", onlyIfStopped: true }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    expect(await res.json()).toEqual({ session: running, now: clock.now, applied: false });
+    expect(await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).toEqual(running);
+  });
+
   it("keeps the leader that started it, and everyone reads it", async () => {
     const { metro, clock, id } = await setup();
     const put = await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true, leader: "phone-a" }));
-    expect(await put.json()).toMatchObject({ leader: "phone-a" });
+    expect(await sessionOf(put)).toMatchObject({ leader: "phone-a" });
     clock.now += 5000;
-    const changed = await (await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90 }))).json();
+    const changed = await sessionOf(await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90 })));
     expect(changed.leader).toBe("phone-a");
-    expect((await (await metro(req("GET", `/api/metronome/${id}`))).json()).leader).toBe("phone-a");
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).leader).toBe("phone-a");
   });
 
   it("reads a session stored before leaders existed, or with a bad leader, as having none", async () => {
@@ -104,7 +152,7 @@ describe("metronome API", () => {
     const base = { bpm: 120, beatsPerBar: 4, startAt: 1_002_000, running: true, updatedAt: new Date(1_000_000).toISOString() };
     for (const stored of [base, { ...base, leader: 42 }, { ...base, leader: "x".repeat(500) }, { ...base, extra: "junk" }]) {
       await kv.setText(`metronome/${id}`, JSON.stringify(stored));
-      const got = await (await metro(req("GET", `/api/metronome/${id}`))).json();
+      const got = await sessionOf(await metro(req("GET", `/api/metronome/${id}`)));
       expect(got).toEqual(base);
       // Every read path agrees: a change read back through setMetronome is normalised the same way.
       const set = await repo.setMetronome(id, { beatsPerBar: 4 }, 1_000_100);
@@ -123,7 +171,7 @@ describe("metronome API", () => {
     const { metro, id } = await setup();
     const res = await metro(req("PUT", `/api/metronome/${id}`, { running: false }));
     expect(res.status).toBe(200);
-    expect(await res.json()).toBeNull();
+    expect(await sessionOf(res)).toBeNull();
   });
 
   it("404 for a song that doesn't exist, for bad paths and 405 for other methods", async () => {
@@ -175,22 +223,22 @@ describe("metronome API", () => {
     const { metro, clock, id } = await setup();
     await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
     clock.now += METRO_STALE_MS - 1;
-    expect((await (await metro(req("GET", `/api/metronome/${id}`))).json()).running).toBe(true);
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(true);
     clock.now += 2;
-    expect((await (await metro(req("GET", `/api/metronome/${id}`))).json()).running).toBe(false);
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(false);
     // A tempo change on a forgotten session doesn't restart it; Start does, from now.
-    expect((await (await metro(req("PUT", `/api/metronome/${id}`, { bpm: 80 }))).json()).running).toBe(false);
-    const restarted = await (await metro(req("PUT", `/api/metronome/${id}`, { running: true }))).json();
-    expect(restarted).toMatchObject({ running: true, bpm: 80, startAt: clock.now + 2000 });
+    expect((await sessionOf(await metro(req("PUT", `/api/metronome/${id}`, { bpm: 80 })))).running).toBe(false);
+    const restarted = await sessionOf(await metro(req("PUT", `/api/metronome/${id}`, { running: true })));
+    expect(restarted).toMatchObject({ running: true, bpm: 80, startAt: clock.now + 3000 });
   });
 
   it("treats a session nobody changed for 2 hours as stopped", async () => {
     const { metro, clock, id } = await setup();
     await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
     clock.now += 2 * 60 * 60 * 1000 - 1;
-    expect((await (await metro(req("GET", `/api/metronome/${id}`))).json()).running).toBe(true);
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(true);
     clock.now += 2;
-    expect((await (await metro(req("GET", `/api/metronome/${id}`))).json()).running).toBe(false);
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(false);
   });
 
   it("restarts the 2 hours on every change", async () => {
@@ -199,6 +247,275 @@ describe("metronome API", () => {
     clock.now += 90 * 60 * 1000;
     await metro(req("PUT", `/api/metronome/${id}`, { bpm: 100 }));
     clock.now += 90 * 60 * 1000;
-    expect((await (await metro(req("GET", `/api/metronome/${id}`))).json()).running).toBe(true);
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(true);
+  });
+});
+
+describe("seen-at: joined phones keep a session alive (H17)", () => {
+  const MIN = 60 * 1000;
+  /** A joined phone's check: it also asks the server to mark the session seen. */
+  const seen = (id: string) => req("GET", `/api/metronome/${id}?seen=1`);
+
+  /** setup() over a KV that counts the metronome writes. */
+  async function counted() {
+    const kv = memoryKV();
+    const writes: string[] = [];
+    const tally = (k: string) => k.startsWith("metronome/") && writes.push(k);
+    const wrapped = {
+      ...kv,
+      setText: async (k: string, v: string) => (tally(k), kv.setText(k, v)),
+      setTextIfMatch: async (k: string, v: string, e: string) => {
+        const ok = await kv.setTextIfMatch(k, v, e);
+        if (ok) tally(k);
+        return ok;
+      },
+      setTextIfNew: async (k: string, v: string) => {
+        const ok = await kv.setTextIfNew(k, v);
+        if (ok) tally(k);
+        return ok;
+      },
+    };
+    const repo = makeRepo(wrapped);
+    const clock = { now: 1_000_000 };
+    const metro = makeMetronomeHandler(repo, () => clock.now);
+    const song = await repo.createSong(songBody);
+    return { kv, repo, clock, metro, writes, id: song.id };
+  }
+
+  it("an unjoined session reads as stopped after 2 h, however often an open panel checks it", async () => {
+    const { metro, clock, id, writes } = await counted();
+    await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
+    for (let t = 0; t < METRO_STALE_MS; t += 10_000) {
+      clock.now += 10_000;
+      await metro(req("GET", `/api/metronome/${id}`));
+    }
+    clock.now += 1000;
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(false);
+    expect(writes).toHaveLength(1); // only the start
+  });
+
+  it("a session a joined phone checks runs past 2 h, and reads as stopped 2 h after the last check", async () => {
+    const { metro, clock, id } = await counted();
+    await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
+    for (let t = 0; t < 5 * 60 * MIN; t += 2000) {
+      clock.now += 2000;
+      expect((await sessionOf(await metro(seen(id)))).running).toBe(true);
+    }
+    // Everyone leaves: nothing marks it seen any more.
+    clock.now += METRO_STALE_MS + 1;
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(false);
+  });
+
+  it("writes seen-at at most once per 10 minutes, and never changes the tempo, start, leader or last change", async () => {
+    const { metro, clock, id, writes } = await counted();
+    const started = await sessionOf(
+      await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true, leader: "phone-a" })),
+    );
+    writes.length = 0;
+    const hour = 60 * MIN;
+    // Three joined phones, each checking every 2 s.
+    for (let t = 0; t < hour; t += 2000) {
+      clock.now += 2000;
+      for (let phone = 0; phone < 3; phone++) {
+        const s = await sessionOf(await metro(seen(id)));
+        const { seenAt, ...rest } = s;
+        expect(rest).toEqual(started);
+        if (seenAt !== undefined) expect(Date.parse(seenAt)).toBeLessThanOrEqual(clock.now);
+      }
+    }
+    expect(writes.length).toBeGreaterThan(0);
+    expect(writes.length).toBeLessThanOrEqual(hour / METRO_SEEN_EVERY_MS);
+  });
+
+  it("marks nothing seen on a stopped session, and doesn't bring back one that already reads as stopped", async () => {
+    const { metro, clock, id, writes } = await counted();
+    await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
+    clock.now += METRO_STALE_MS + 1;
+    expect((await sessionOf(await metro(seen(id)))).running).toBe(false);
+    clock.now += 1000;
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(false);
+    await metro(req("PUT", `/api/metronome/${id}`, { running: true }));
+    await metro(req("PUT", `/api/metronome/${id}`, { running: false }));
+    writes.length = 0;
+    clock.now += 30 * MIN;
+    expect((await sessionOf(await metro(seen(id)))).running).toBe(false);
+    expect(writes).toHaveLength(0);
+  });
+
+  it("a seen-at write never overwrites a change that landed after the check read the session", async () => {
+    const kv = memoryKV();
+    let stopFirst: (() => Promise<unknown>) | null = null;
+    const repo = makeRepo({
+      ...kv,
+      // A Stop lands between this check's read and its seen-at write.
+      setTextIfMatch: async (k, v, e) => {
+        const stop = stopFirst;
+        stopFirst = null;
+        if (stop) await stop();
+        return kv.setTextIfMatch(k, v, e);
+      },
+    });
+    const song = await repo.createSong(songBody);
+    await repo.setMetronome(song.id, { bpm: 120, beatsPerBar: 4, running: true }, 1_000_000);
+    const at = 1_000_000 + 30 * MIN;
+    stopFirst = () => repo.setMetronome(song.id, { running: false }, at);
+    const answer = await repo.getMetronome(song.id, at, { seen: true });
+    expect(answer!.running).toBe(false);
+    expect((await repo.getMetronome(song.id, at + 1000))!.running).toBe(false);
+  });
+
+  it("drops a bad seen-at on every read path, so it can't keep a session alive", async () => {
+    const { kv, repo, metro, clock, id } = await setup();
+    const base = { bpm: 120, beatsPerBar: 4, startAt: 1_002_000, running: true, updatedAt: new Date(1_000_000).toISOString() };
+    for (const seenAt of [42, "not a date", null, { at: 1 }]) {
+      await kv.setText(`metronome/${id}`, JSON.stringify({ ...base, seenAt }));
+      clock.now = 1_000_100;
+      expect(await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).toEqual(base);
+      expect(await repo.setMetronome(id, { beatsPerBar: 4 }, clock.now)).toEqual(base);
+      clock.now = 1_000_000 + METRO_STALE_MS + 1;
+      expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(false);
+    }
+  });
+
+  it("staleness runs from the later of the last change and seen-at, the same on GET and PUT", async () => {
+    const { kv, repo, metro, clock, id } = await setup();
+    const seenAt = new Date(1_000_000 + 90 * MIN).toISOString();
+    const stored = { bpm: 120, beatsPerBar: 4, startAt: 1_002_000, running: true, updatedAt: new Date(1_000_000).toISOString(), seenAt };
+    await kv.setText(`metronome/${id}`, JSON.stringify(stored));
+    clock.now = 1_000_000 + 90 * MIN + METRO_STALE_MS - 1;
+    expect(await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).toEqual(stored);
+    expect(await repo.setMetronome(id, { beatsPerBar: 4 }, clock.now)).toEqual(stored);
+    clock.now += 2;
+    expect((await sessionOf(await metro(req("GET", `/api/metronome/${id}`)))).running).toBe(false);
+    expect((await repo.setMetronome(id, { beatsPerBar: 4 }, clock.now))!.running).toBe(false);
+  });
+});
+
+describe("previous grid: two quick changes keep every phone on the same bar (H23)", () => {
+  const put = (metro: (r: Request) => Promise<Response>, id: string, body: unknown) =>
+    metro(req("PUT", `/api/metronome/${id}`, body)).then(sessionOf);
+  const get = (metro: (r: Request) => Promise<Response>, id: string) =>
+    metro(req("GET", `/api/metronome/${id}`)).then(sessionOf);
+
+  it("a second change before the first one starts replaces it, and every read path shows the sounding grid", async () => {
+    const { metro, clock, id } = await setup();
+    const started = await put(metro, id, { bpm: 120, beatsPerBar: 4, running: true });
+    const grid = { bpm: 120, beatsPerBar: 4, startAt: started.startAt };
+    clock.now = started.startAt + 10_000;
+    const first = await put(metro, id, { beatsPerBar: 3 });
+    expect(first.prev).toEqual(grid);
+    clock.now += 500;
+    const second = await put(metro, id, { bpm: 200 });
+    expect(second).toMatchObject({ bpm: 200, beatsPerBar: 3, startAt: first.startAt, prev: grid });
+    expect(await get(metro, id)).toEqual(second);
+  });
+
+  it("a session without a previous grid reads as before", async () => {
+    const { kv, metro, clock, repo, id } = await setup();
+    const stored = { bpm: 120, beatsPerBar: 4, startAt: 1_002_000, running: true, updatedAt: new Date(1_000_000).toISOString() };
+    await kv.setText(`metronome/${id}`, JSON.stringify(stored));
+    clock.now = 1_000_100;
+    expect(await get(metro, id)).toEqual(stored);
+    expect(await repo.setMetronome(id, { beatsPerBar: 4 }, clock.now)).toEqual(stored);
+  });
+
+  it("drops a bad previous grid on every read path", async () => {
+    const { kv, metro, clock, repo, id } = await setup();
+    const base = { bpm: 120, beatsPerBar: 4, startAt: 1_002_000, running: true, updatedAt: new Date(1_000_000).toISOString() };
+    const bad = [
+      42, "grid", null, [], {}, { bpm: 120, beatsPerBar: 4 },
+      { bpm: "120", beatsPerBar: 4, startAt: 1 }, { bpm: 120, beatsPerBar: 1, startAt: 1 },
+      { bpm: 0, beatsPerBar: 4, startAt: 1 }, { bpm: 120, beatsPerBar: 4, startAt: Infinity },
+    ];
+    for (const prev of bad) {
+      await kv.setText(`metronome/${id}`, JSON.stringify({ ...base, prev }));
+      clock.now = 1_000_100;
+      expect(await get(metro, id)).toEqual(base);
+      expect(await repo.setMetronome(id, { beatsPerBar: 4 }, clock.now)).toEqual(base);
+    }
+  });
+
+  it("keeps only the grid fields of a previous grid, and none on a stopped session", async () => {
+    const { kv, metro, clock, id } = await setup();
+    const prev = { bpm: 100, beatsPerBar: 3, startAt: 990_000 };
+    const base = { bpm: 120, beatsPerBar: 4, startAt: 1_002_000, running: true, updatedAt: new Date(1_000_000).toISOString() };
+    await kv.setText(`metronome/${id}`, JSON.stringify({ ...base, prev: { ...prev, extra: "x" } }));
+    clock.now = 1_000_100;
+    expect(await get(metro, id)).toEqual({ ...base, prev });
+    await kv.setText(`metronome/${id}`, JSON.stringify({ ...base, running: false, prev }));
+    expect(await get(metro, id)).toEqual({ ...base, running: false });
+  });
+});
+
+describe("shared answers (#25)", () => {
+  it("the switch is off unless set to 1, true or on", () => {
+    for (const v of [undefined, "", "0", "false", "off", "no"]) expect(sharedAnswersOn(v)).toBe(false);
+    for (const v of ["1", "true", "on", " ON "]) expect(sharedAnswersOn(v)).toBe(true);
+  });
+
+  /** A handler with the switch on, recording every cache tag it purges. */
+  async function shared(purgeFails = false) {
+    const repo = makeRepo(memoryKV());
+    const clock = { now: 1_000_000 };
+    const purged: string[] = [];
+    const metro = makeMetronomeHandler(repo, () => clock.now, {
+      purge: async (tag) => {
+        purged.push(tag);
+        if (purgeFails) throw new Error("429 Too Many Requests");
+      },
+    });
+    const song = await repo.createSong(songBody);
+    return { repo, clock, metro, purged, id: song.id };
+  }
+
+  it("with the switch off, every answer is never cached, carries no tag and says nothing of sharing", async () => {
+    const { metro, id } = await setup();
+    const put = await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
+    const get = await metro(req("GET", `/api/metronome/${id}?seen=1`));
+    for (const res of [put, get]) {
+      expect(res.headers.get("Cache-Control")).toBe("no-store");
+      expect(res.headers.get("Netlify-CDN-Cache-Control")).toBeNull();
+      expect(res.headers.get("Netlify-Cache-Tag")).toBeNull();
+      expect(await res.json()).not.toHaveProperty("shared");
+    }
+  });
+
+  it("with the switch on, a check's answer may be shared from Netlify's cache for 1 s, under the song's tag", async () => {
+    const { metro, id } = await shared();
+    const res = await metro(req("GET", `/api/metronome/${id}`));
+    expect(res.headers.get("Netlify-CDN-Cache-Control")).toBe("public, durable, s-maxage=1, must-revalidate");
+    expect(res.headers.get("Netlify-Cache-Tag")).toBe(`metronome-${id}`);
+    // Browsers never reuse it: every check still leaves the phone.
+    expect(res.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+    // The answer says so, so the phone doesn't take its server time as a clock sample.
+    expect(await res.json()).toEqual({ session: null, now: 1_000_000, shared: true });
+  });
+
+  it("with the switch on, a change's answer is never cached, and the change clears the song's tag", async () => {
+    const { metro, purged, id } = await shared();
+    const start = await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
+    expect(start.headers.get("Cache-Control")).toBe("no-store");
+    expect(start.headers.get("Netlify-CDN-Cache-Control")).toBeNull();
+    expect(await start.json()).not.toHaveProperty("shared");
+    expect(purged).toEqual([`metronome-${id}`]);
+    await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90 }));
+    await metro(req("PUT", `/api/metronome/${id}`, { running: false }));
+    expect(purged).toHaveLength(3);
+  });
+
+  it("with the switch on, a check clears nothing, and nor does a start that wasn't applied", async () => {
+    const { metro, purged, id } = await shared();
+    await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
+    await metro(req("GET", `/api/metronome/${id}?seen=1`));
+    const res = await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90, beatsPerBar: 4, running: true, onlyIfStopped: true }));
+    expect((await res.json()).applied).toBe(false);
+    expect(purged).toHaveLength(1);
+  });
+
+  it("a failed clear doesn't fail the change: it is stored, and the cached answer expires within 1 s anyway", async () => {
+    const { metro, repo, clock, id } = await shared(true);
+    const res = await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
+    expect(res.status).toBe(200);
+    expect((await repo.getMetronome(id, clock.now))?.running).toBe(true);
   });
 });

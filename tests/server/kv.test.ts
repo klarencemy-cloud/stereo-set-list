@@ -24,6 +24,12 @@ describe("blobsKV", () => {
     expect(store.set).toHaveBeenCalledWith("songs/a", "v2", { onlyIfMatch: '"e1"' });
   });
 
+  it("creates only when nothing is stored yet", async () => {
+    store.set.mockResolvedValueOnce({ modified: false });
+    expect(await blobsKV().setTextIfNew("metronome/a", "v")).toBe(false);
+    expect(store.set).toHaveBeenCalledWith("metronome/a", "v", { onlyIfNew: true });
+  });
+
   it("refuses to hand out a value without an etag rather than write unconditionally", async () => {
     store.getWithMetadata.mockResolvedValueOnce({ data: "v1", etag: undefined, metadata: {} });
     await expect(blobsKV().getTextTagged("songs/a")).rejects.toThrow(/etag/);
@@ -42,5 +48,12 @@ describe("memoryKV conditional writes", () => {
     await kv.delete("k");
     expect(await kv.setTextIfMatch("k", "d", first.etag)).toBe(false);
     expect(await kv.getText("k")).toBeNull();
+  });
+
+  it("creates only while nothing is stored", async () => {
+    const kv = memoryKV();
+    expect(await kv.setTextIfNew("k", "a")).toBe(true);
+    expect(await kv.setTextIfNew("k", "b")).toBe(false);
+    expect(await kv.getText("k")).toBe("a");
   });
 });

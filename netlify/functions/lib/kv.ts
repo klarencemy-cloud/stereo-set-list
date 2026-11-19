@@ -7,6 +7,8 @@ export interface KV {
   getTextTagged(k: string): Promise<{ value: string; etag: string } | null>;
   /** Writes only if the value still has `etag`. Resolves false, writing nothing, if it was changed or deleted since. */
   setTextIfMatch(k: string, v: string, etag: string): Promise<boolean>;
+  /** Writes only if nothing is stored at `k`. Resolves false, writing nothing, if something is. */
+  setTextIfNew(k: string, v: string): Promise<boolean>;
   getBytes(k: string): Promise<ArrayBuffer | null>;
   setBytes(k: string, v: ArrayBuffer): Promise<void>;
   delete(k: string): Promise<void>;
@@ -35,6 +37,11 @@ export function memoryKV(): KV {
     },
     async setTextIfMatch(k, v, etag) {
       if (!m.has(k) || etags.get(k) !== etag) return false;
+      put(k, v);
+      return true;
+    },
+    async setTextIfNew(k, v) {
+      if (m.has(k)) return false;
       put(k, v);
       return true;
     },
@@ -75,6 +82,10 @@ export function blobsKV(): KV {
     async setTextIfMatch(k, v, etag) {
       // Atomic on the Blobs side: the write lands only if nobody wrote the key since it was read.
       return (await store.set(k, v, { onlyIfMatch: etag })).modified;
+    },
+    async setTextIfNew(k, v) {
+      // Atomic on the Blobs side: the write lands only if the key doesn't exist yet.
+      return (await store.set(k, v, { onlyIfNew: true })).modified;
     },
     async getBytes(k) {
       return (await store.get(k, { type: "arrayBuffer" })) ?? null;

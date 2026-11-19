@@ -3,7 +3,7 @@ import type { BaseVersion, Gig, GigInput, SetlistItem, Song, SongInput, SongSumm
 import { fromSongIds, setlistOf, songIdsOf } from "../../../src/shared/setlist";
 import { toSongSummary } from "../../../src/shared/song";
 import { isValidKey } from "../../../src/shared/transpose";
-import { applyChange, BEATS_PER_BAR, MAX_BPM, MIN_BPM, type MetroChange, type MetroSession } from "../../../src/shared/metronome";
+import { applyChange, BEATS_PER_BAR, MAX_BPM, MIN_BPM, type MetroChange, type MetroGrid, type MetroSession } from "../../../src/shared/metronome";
 import { songMatchKey, songsByMatchKey, uniqueTracks, type PlaylistTrack } from "../../../src/shared/playlist";
 import type { KV } from "./kv";
 
@@ -18,6 +18,19 @@ export class NotFoundError extends Error {
   constructor(message = "not found") {
     super(message);
     this.name = "NotFoundError";
+  }
+}
+
+/**
+ * A start "only if stopped" that found the session already running: nothing was written, and `current` is the
+ * running session, left as it is.
+ */
+export class StartNotApplied extends Error {
+  current: MetroSession;
+  constructor(current: MetroSession) {
+    super("The metronome is already playing.");
+    this.name = "StartNotApplied";
+    this.current = current;
   }
 }
 
@@ -257,12 +270,21 @@ function blankSong({ id, title, artist, trackId }: { id: string; title: string; 
 }
 
 /**
- * A running metronome nobody has changed (start, stop, tempo) for 2 hours reads as stopped, so a
- * forgotten one doesn't trap people.
+ * A running metronome nobody has changed (start, stop, tempo) or seen (a joined phone's check) for 2 hours
+ * reads as stopped, so a forgotten one doesn't trap people.
  */
 export const METRO_STALE_MS = 2 * 60 * 60 * 1000;
 
-/** Checks a metronome change from a client: at least one of bpm, beatsPerBar and running, plus an optional leader. */
+/** A joined phone's check writes seen-at only when the session was last changed or seen longer ago than this. */
+export const METRO_SEEN_EVERY_MS = 10 * 60 * 1000;
+
+/** How many times a conditional write is re-applied to a record that changed under it before giving up. */
+export const WRITE_ATTEMPTS = 5;
+
+/**
+ * Checks a metronome change from a client: at least one of bpm, beatsPerBar and running, plus an optional leader
+ * and "only if stopped".
+ */
 function checkMetroChange(input: unknown): MetroChange {
   const src = (input ?? {}) as Record<string, unknown>;
   const out: MetroChange = {};
@@ -288,20 +310,49 @@ function checkMetroChange(input: unknown): MetroChange {
     if (!isMetroLeader(src.leader)) throw new ValidationError(`leader must be text of 1 to ${LIMITS.metroLeader} characters`);
     out.leader = src.leader;
   }
+  if (src.onlyIfStopped !== undefined) {
+    if (typeof src.onlyIfStopped !== "boolean") throw new ValidationError("onlyIfStopped must be true or false");
+    out.onlyIfStopped = src.onlyIfStopped;
+  }
   return out;
 }
 
 const isMetroLeader = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= LIMITS.metroLeader;
 
+const isMetroSeenAt = (v: unknown): v is string => typeof v === "string" && Number.isFinite(Date.parse(v));
+
+/** When the session was last changed or seen by a joined phone (ms). */
+const lastUsed = (s: MetroSession) => Math.max(Date.parse(s.updatedAt), s.seenAt ? Date.parse(s.seenAt) : -Infinity);
+
+/** A previous grid with only its grid fields, or undefined when it isn't a valid one. */
+function toMetroGrid(v: unknown): MetroGrid | undefined {
+  if (typeof v !== "object" || v === null) return undefined;
+  const { bpm, beatsPerBar, startAt } = v as Record<string, unknown>;
+  if (typeof bpm !== "number" || !Number.isFinite(bpm) || bpm < MIN_BPM || bpm > MAX_BPM) return undefined;
+  if (!(BEATS_PER_BAR as readonly unknown[]).includes(beatsPerBar)) return undefined;
+  if (typeof startAt !== "number" || !Number.isFinite(startAt)) return undefined;
+  return { bpm, beatsPerBar: beatsPerBar as number, startAt };
+}
+
 /**
- * The session as everyone reads it (every read path goes through this): only the known fields, a leader only
- * when it is a valid one, and a forgotten running one counts as stopped.
+ * The session as everyone reads it (every read path goes through this): only the known fields, a leader, a
+ * seen-at and a previous grid only when they are valid, and a forgotten running one (not changed or seen for
+ * METRO_STALE_MS) counts as stopped. A stopped session has no previous grid: nothing is sounding.
  */
 function toMetroSession(stored: MetroSession, nowMs: number): MetroSession {
-  const age = nowMs - Date.parse(stored.updatedAt);
-  const running = stored.running && age <= METRO_STALE_MS;
-  const { bpm, beatsPerBar, startAt, updatedAt, leader } = stored;
-  return { bpm, beatsPerBar, startAt, running, updatedAt, ...(isMetroLeader(leader) ? { leader } : {}) };
+  const { bpm, beatsPerBar, startAt, updatedAt, leader, seenAt } = stored;
+  const s: MetroSession = {
+    bpm,
+    beatsPerBar,
+    startAt,
+    running: stored.running,
+    updatedAt,
+    ...(isMetroLeader(leader) ? { leader } : {}),
+    ...(isMetroSeenAt(seenAt) ? { seenAt } : {}),
+  };
+  s.running = s.running && nowMs - lastUsed(s) <= METRO_STALE_MS;
+  const prev = s.running ? toMetroGrid(stored.prev) : undefined;
+  return prev ? { ...s, prev } : s;
 }
 
 /** A song as stored; songs saved before tempo existed have no bpm or beatsPerBar. */
@@ -355,7 +406,7 @@ export function makeRepo(kv: KV) {
    * Resolves null when the record doesn't exist.
    */
   async function modify<T>(key: string, change: (cur: T) => T | null): Promise<T | null> {
-    for (let attempt = 0; attempt < 5; attempt++) {
+    for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
       const got = await kv.getTextTagged(key);
       if (!got) return null;
       const cur = JSON.parse(got.value) as T;
@@ -450,10 +501,26 @@ export function makeRepo(kv: KV) {
    * The song's metronome session (null when nobody has started one). 404 when the song doesn't exist.
    * Reads the session first: a session implies the song exists (deleting a song deletes its session),
    * so the song is only looked up when there's no session. One storage read per check while playing.
+   *
+   * `seen` (a joined phone's check) marks a running session seen, so it doesn't go stale while phones play
+   * along. That is a write only when it was last changed or seen over METRO_SEEN_EVERY_MS ago, and it lands only
+   * if nobody wrote the session since it was read: a change that got there first is newer use anyway.
    */
-  async function getMetronome(songId: string, nowMs: number): Promise<MetroSession | null> {
-    const stored = await readJson<MetroSession>(`metronome/${songId}`);
-    if (stored) return toMetroSession(stored, nowMs);
+  async function getMetronome(songId: string, nowMs: number, opts: { seen?: boolean } = {}): Promise<MetroSession | null> {
+    const key = `metronome/${songId}`;
+    if (opts.seen) {
+      const got = await kv.getTextTagged(key);
+      if (got) {
+        const session = toMetroSession(JSON.parse(got.value) as MetroSession, nowMs);
+        if (!session.running || nowMs - lastUsed(session) <= METRO_SEEN_EVERY_MS) return session;
+        const seen = toMetroSession({ ...session, seenAt: new Date(nowMs).toISOString() }, nowMs);
+        if (await kv.setTextIfMatch(key, JSON.stringify(seen), got.etag)) return seen;
+        return getMetronome(songId, nowMs);
+      }
+    } else {
+      const stored = await readJson<MetroSession>(key);
+      if (stored) return toMetroSession(stored, nowMs);
+    }
     if ((await kv.getText(`songs/${songId}`)) === null) throw new NotFoundError("song not found");
     return null;
   }
@@ -461,19 +528,36 @@ export function makeRepo(kv: KV) {
   return {
     getMetronome,
     /**
-     * Applies a change on the server's clock (see applyChange) and stores it. The last change wins.
-     * Resolves null when asked to stop a session that was never started.
+     * Applies a change on the server's clock (see applyChange) to the latest stored session. Changes
+     * arriving together are all applied, one after another in the order their writes land: a write only lands if nobody wrote the
+     * session since it was read, otherwise the change is re-applied to the newer one. Resolves null
+     * when asked to stop a session that was never started. A conflict that outlasts the retries is a
+     * ConflictError (409) carrying the latest session, never a silently dropped change. A start "only if stopped"
+     * that finds it running (on the same read the write would be checked against) writes nothing and is a
+     * StartNotApplied carrying the running session.
      */
     async setMetronome(songId: string, input: unknown, nowMs: number): Promise<MetroSession | null> {
       const change = checkMetroChange(input);
-      const current = await getMetronome(songId, nowMs);
-      if (!current && (change.bpm === undefined || change.beatsPerBar === undefined)) {
-        if (change.running === false) return null;
-        throw new ValidationError("bpm and beatsPerBar are needed to start the metronome");
+      const key = `metronome/${songId}`;
+      for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
+        const got = await kv.getTextTagged(key);
+        if (!got) {
+          if ((await kv.getText(`songs/${songId}`)) === null) throw new NotFoundError("song not found");
+          if (change.bpm === undefined || change.beatsPerBar === undefined) {
+            if (change.running === false) return null;
+            throw new ValidationError("bpm and beatsPerBar are needed to start the metronome");
+          }
+          const next = applyChange(null, change, nowMs);
+          if (await kv.setTextIfNew(key, JSON.stringify(next))) return toMetroSession(next, nowMs);
+          continue;
+        }
+        const current = toMetroSession(JSON.parse(got.value) as MetroSession, nowMs);
+        if (change.running && change.onlyIfStopped && current.running) throw new StartNotApplied(current);
+        const next = applyChange(current, change, nowMs);
+        if (next === current) return current;
+        if (await kv.setTextIfMatch(key, JSON.stringify(next), got.etag)) return toMetroSession(next, nowMs);
       }
-      const next = applyChange(current, change, nowMs);
-      if (next !== current) await writeJson(`metronome/${songId}`, next);
-      return toMetroSession(next, nowMs);
+      throw new ConflictError("The metronome kept changing. Try again.", await getMetronome(songId, nowMs));
     },
     async listSongs(): Promise<SongSummary[]> {
       const songs = await readSongs();

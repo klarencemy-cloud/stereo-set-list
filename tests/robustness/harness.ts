@@ -1,23 +1,34 @@
 // Shared test world for the synced-metronome robustness tests (not a test file itself).
 //
 // One virtual clock drives everything: this phone's performance.now(), the fake timers, Date (the phone's wall
-// clock) and the fake AudioContext's currentTime. A fake network sends api calls to the REAL server code (repo
-// over memoryKV) after a configurable one-way delay each way, so out-of-order and slow answers come from timing,
-// not from hand-written mock answers. The fakes follow tests/app/SongMetronome.test.tsx (fake AudioContext and
-// buffer sources, api mocks, fake timers) but record enough to say what a listener would hear.
+// clock) and the fake AudioContext's currentTime. A fake network replaces fetch: the real api client's metronome
+// and time requests reach the REAL Netlify handlers (over the real repo on memoryKV) after a configurable one-way
+// delay each way, so out-of-order and slow answers come from timing, not from hand-written mock answers. The
+// fakes follow tests/app/SongMetronome.test.tsx (fake AudioContext and buffer sources, fake timers) but record
+// enough to say what a listener would hear.
 //
-// Each test file must declare the api mock itself (vi.mock is hoisted per file):
+// A fake mic (getUserMedia and the recorder worklet, so the real listen() runs) hears the leader's clicks on the
+// stored session's grid, world.mic.loopbackMs after they sound on this phone's clock, plus optional noise; it hears
+// only the leader, not this phone's own clicks, so "Measure this phone" can't run here: a test stores the loopback
+// delay itself. The leader plays exactly on the grid, and this phone has no output delay of its own, so the whole
+// loopback delay is on the mic's side. A test can block the mic, or keep the band out of earshot. A fake screen
+// keep-on (navigator.wakeLock) grants, refuses (world.wakeLock.refuse) or later drops (dropWakeLock) the request,
+// and drops it when the page is hidden, as browsers do.
+//
+// Only the song calls are mocked (answered straight from the repo). A test file that renders the app declares
+// that mock itself (vi.mock is hoisted per file), keeping the real metronome and time calls:
 //   vi.mock("../../src/app/api", async () => {
 //     const actual = await vi.importActual<typeof import("../../src/app/api")>("../../src/app/api");
-//     return { ...actual, api: { getMetronome: vi.fn(), putMetronome: vi.fn(), getTime: vi.fn(), updateSong: vi.fn(),
-//       getSong: vi.fn(), getGig: vi.fn() } };
+//     return { ...actual, api: { ...actual.api, updateSong: vi.fn(), getSong: vi.fn() } };
 //   });
 import { vi } from "vitest";
 import { act } from "@testing-library/react";
 import { api, ApiError } from "../../src/app/api";
 import { memoryKV } from "../../netlify/functions/lib/kv";
-import { makeRepo, NotFoundError, ValidationError } from "../../netlify/functions/lib/repo";
-import type { MetroChange } from "../../src/shared/metronome";
+import { makeRepo } from "../../netlify/functions/lib/repo";
+import { makeMetronomeHandler } from "../../netlify/functions/metronome";
+import { makeTimeHandler } from "../../netlify/functions/time";
+import { beatsInWindow, type MetroChange, type MetroSession } from "../../src/shared/metronome";
 import type { Song, SongInput } from "../../src/shared/types";
 
 /** Server time (ms since epoch) when this phone's performance.now() reads 0. */
@@ -37,6 +48,8 @@ export const world = {
   driftPpm: 0,
   /** One-way delays in ms, per endpoint. A function is called once per request. */
   latency: {} as Partial<Record<Endpoint, Leg | (() => Leg)>>,
+  /** Requests to anything but the metronome and time endpoints (a mistake in the test world). */
+  unrouted: [] as string[],
   /** Every request fails at once, as fetch does with no network. */
   offline: false,
   /** Requests never answer (a dead Wi-Fi that still looks connected). */
@@ -45,7 +58,71 @@ export const world = {
   served: { getTime: [] as number[], getMetronome: [] as number[], putMetronome: [] as number[] },
   /** Requests sent, per endpoint (counted when the phone sends, not when the server answers). */
   sent: { getTime: 0, getMetronome: 0, putMetronome: 0 },
+  /**
+   * Cache tags the server cleared, in order, with shared answers on (setupWorld's `sharedAnswers`). The world has no
+   * CDN: answers are never really shared, they only say they may be.
+   */
+  purged: [] as string[],
+  /** This phone's mic (see FakeAudioWorkletNode). */
+  mic: {
+    /** getUserMedia is refused, as when the permission is denied. */
+    blocked: false,
+    /** False: the leader's clicks don't reach the mic (too far away, too loud a room). */
+    hearsBand: true,
+    /** Speaker-to-mic delay (ms): a click sounding on this phone's clock is heard this much later. */
+    loopbackMs: 50,
+    /** Peak of the background noise added to every sample (seeded, so it repeats). */
+    noise: 0,
+    /** Mic streams granted and not yet stopped. */
+    open: 0,
+  },
+  /** The screen keep-on (navigator.wakeLock). */
+  wakeLock: {
+    /** Requests are refused (NotAllowedError), as with a battery saver on. They always are while hidden. */
+    refuse: false,
+    /** Requests made, granted or not. */
+    requests: 0,
+    /** Locks granted and not yet released. */
+    held: 0,
+    /** Every lock granted, oldest first. */
+    sentinels: [] as FakeWakeLockSentinel[],
+  },
 };
+
+/** A granted screen keep-on. Released by the page, or by the browser (dropWakeLock, or the page being hidden). */
+export class FakeWakeLockSentinel extends EventTarget {
+  readonly type = "screen";
+  released = false;
+  /** onrelease, like the real sentinel. */
+  onrelease: ((e: Event) => void) | null = null;
+  async release() {
+    if (this.released) return;
+    this.released = true;
+    world.wakeLock.held--;
+    const e = new Event("release");
+    this.onrelease?.(e);
+    this.dispatchEvent(e);
+  }
+}
+
+async function requestWakeLock(type: string) {
+  world.wakeLock.requests++;
+  if (type !== "screen") throw new TypeError(`unknown wake lock type ${type}`);
+  if (world.wakeLock.refuse || document.visibilityState === "hidden") {
+    throw new DOMException("Wake lock refused", "NotAllowedError");
+  }
+  const s = new FakeWakeLockSentinel();
+  world.wakeLock.held++;
+  world.wakeLock.sentinels.push(s);
+  return s;
+}
+
+const releaseWakeLocks = () => world.wakeLock.sentinels.forEach((s) => void s.release());
+
+/** The browser drops every held screen keep-on (e.g. low battery), even though the page is still visible. */
+export function dropWakeLock() {
+  act(releaseWakeLocks);
+}
 
 export const serverNow = () => world.perf * (1 + world.driftPpm * 1e-6) + world.serverAhead;
 /** This phone's performance.now() at a server time. */
@@ -56,33 +133,57 @@ const songBody: SongInput = {
   bpm: 96, beatsPerBar: 3,
 };
 
-/** The fake network: up-leg, run the real server code at the server's "now", down-leg. */
-function net<T>(name: Endpoint, run: () => Promise<T>): Promise<T> {
-  world.sent[name]++;
-  const l = world.latency[name];
-  const [up, down] = typeof l === "function" ? l() : (l ?? [0, 0]);
-  return new Promise<T>((resolve, reject) => {
-    if (world.offline) {
-      reject(new ApiError(0, "Can't reach the server. Check your connection."));
-      return;
+/** Which endpoint a request is for, by method and path; undefined for anything the world doesn't serve. */
+function endpointOf(method: string, path: string): Endpoint | undefined {
+  if (path === "/api/time" && method === "GET") return "getTime";
+  if (path.startsWith("/api/metronome/")) return method === "PUT" ? "putMetronome" : method === "GET" ? "getMetronome" : undefined;
+  return undefined;
+}
+
+const abortError = () => new DOMException("This operation was aborted", "AbortError");
+/** What fetch rejects with when there is no network. */
+const offlineError = () => new TypeError("Failed to fetch");
+
+/**
+ * The fake network, in place of fetch: up-leg, the real handler at the server's "now", down-leg. Fails at once
+ * while offline (as fetch does with no network), never settles while hung, and rejects when aborted.
+ */
+function makeFetch(handlers: Record<Endpoint, (req: Request) => Promise<Response>>) {
+  return (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const req = new Request(new URL(input instanceof Request ? input.url : String(input), "http://localhost"), init);
+    const name = endpointOf(req.method, new URL(req.url).pathname);
+    if (!name) {
+      world.unrouted.push(`${req.method} ${req.url}`);
+      return Promise.reject(new TypeError(`the test world doesn't serve ${req.method} ${req.url}`));
     }
-    if (world.hang) return; // never settles
-    setTimeout(async () => {
-      if (world.offline) {
-        reject(new ApiError(0, "Can't reach the server. Check your connection."));
-        return;
-      }
-      world.served[name].push(serverNow());
-      let out: { ok: true; v: T } | { ok: false; e: unknown };
-      try {
-        out = { ok: true, v: await run() };
-      } catch (e) {
-        const status = e instanceof NotFoundError ? 404 : e instanceof ValidationError ? 400 : 500;
-        out = { ok: false, e: new ApiError(status, e instanceof Error ? e.message : String(e)) };
-      }
-      setTimeout(() => (out.ok ? resolve(out.v) : reject(out.e)), down);
-    }, up);
-  });
+    world.sent[name]++;
+    const l = world.latency[name];
+    const [up, down] = typeof l === "function" ? l() : (l ?? [0, 0]);
+    const signal = init?.signal;
+    return new Promise<Response>((resolve, reject) => {
+      if (signal?.aborted) return reject(abortError());
+      if (world.offline) return reject(offlineError());
+      const timers: ReturnType<typeof setTimeout>[] = [];
+      signal?.addEventListener(
+        "abort",
+        () => {
+          timers.forEach(clearTimeout);
+          reject(abortError());
+        },
+        { once: true },
+      );
+      if (world.hang) return; // never settles (unless aborted)
+      timers.push(
+        setTimeout(async () => {
+          if (world.offline) return reject(offlineError());
+          world.served[name].push(serverNow());
+          const res = await handlers[name](req);
+          if (signal?.aborted) return; // aborted while the server worked: it keeps the change, the phone never hears
+          timers.push(setTimeout(() => resolve(res), down));
+        }, up),
+      );
+    });
+  };
 }
 
 export type Repo = ReturnType<typeof makeRepo>;
@@ -213,6 +314,11 @@ export class FakeAudioContext {
   createOscillator() {
     return { frequency: { value: 0 }, connect: (n: unknown) => n, start: () => {}, stop: () => {} };
   }
+  /** The recorder module always loads (FakeAudioWorkletNode stands in for it). */
+  audioWorklet = { addModule: vi.fn(async () => {}) };
+  createMediaStreamSource() {
+    return { connect: (n: unknown) => n, disconnect: () => {} };
+  }
   createGain() {
     return {
       gain: { setValueAtTime: () => {}, exponentialRampToValueAtTime: () => {} },
@@ -220,6 +326,90 @@ export class FakeAudioContext {
       disconnect: () => {},
     };
   }
+}
+
+/** The session the band is playing, as the server has it now (set by setupWorld). */
+let bandSession: () => Promise<MetroSession | null> = async () => null;
+/** The fake mic's noise source, reseeded by setupWorld. */
+let micNoise = rng(1);
+
+/** Frames the recorder worklet posts at once (as src/app/metronome/listen.ts buffers them). */
+const MIC_BLOCK = 2048;
+/** The click's decay, as src/app/metronome/loop.ts renders it. */
+const CLICK_DECAY = Math.log(1000) / CLICK_S;
+
+/** What this phone's mic hears in audio [fromS, fromS + n / sr): the leader's clicks, a loopback delay late, plus noise. */
+async function micSamples(ctx: FakeAudioContext, fromS: number, n: number): Promise<Float32Array> {
+  const sr = ctx.sampleRate;
+  const out = new Float32Array(n);
+  const s = await bandSession();
+  const lbS = world.mic.loopbackMs / 1000;
+  if (s?.running && s.leader && world.mic.hearsBand) {
+    const toS = fromS + n / sr;
+    // Clicks heard in the block, or still ringing into it.
+    for (const b of beatsInWindow(s, ctx.serverAtAudio(fromS - CLICK_S - lbS), ctx.serverAtAudio(toS - lbS))) {
+      const heardS = ctx.audioAt(b.timeMs) + lbS;
+      const freq = b.accent ? 1600 : 1000;
+      const amp = b.accent ? 1 : 0.6;
+      for (let i = Math.max(0, Math.ceil((heardS - fromS) * sr)); i < n; i++) {
+        const u = fromS + i / sr - heardS;
+        if (u >= CLICK_S) break;
+        out[i] += amp * Math.exp(-CLICK_DECAY * u) * Math.sin(2 * Math.PI * freq * u);
+      }
+    }
+  }
+  if (world.mic.noise) for (let i = 0; i < n; i++) out[i] += world.mic.noise * (2 * micNoise() - 1);
+  return out;
+}
+
+/**
+ * The recorder worklet (src/app/metronome/listen.ts) on the fake context: once made, it posts the mic's samples in
+ * blocks, each with the context frame of its first sample, as the audio clock passes them. Nothing while the audio
+ * clock is frozen. Stops on "stop" or when disconnected.
+ */
+export class FakeAudioWorkletNode {
+  port: { onmessage: ((e: { data: { frame: number; samples: Float32Array } }) => void) | null; postMessage: (m: unknown) => void };
+  private timer: ReturnType<typeof setInterval>;
+  constructor(ctx: FakeAudioContext) {
+    const sr = ctx.sampleRate;
+    // Render quanta are 128 frames.
+    let next = Math.ceil((ctx.currentTime * sr) / 128) * 128;
+    let queue = Promise.resolve();
+    let live = true;
+    const stop = () => {
+      live = false;
+      clearInterval(this.timer);
+    };
+    this.port = { onmessage: null, postMessage: (m) => m === "stop" && stop() };
+    this.timer = setInterval(() => {
+      while (live && ctx.currentTime * sr >= next + MIC_BLOCK) {
+        const frame = next;
+        next += MIC_BLOCK;
+        // In order, though each block waits for the server's session.
+        queue = queue.then(async () => {
+          const samples = await micSamples(ctx, frame / sr, MIC_BLOCK);
+          if (live) this.port.onmessage?.({ data: { frame, samples } });
+        });
+      }
+    }, 5);
+    this.disconnect = stop;
+  }
+  connect = (n: unknown) => n;
+  disconnect: () => void;
+}
+
+/** navigator.mediaDevices.getUserMedia: a stream (counted in world.mic.open), or NotAllowedError while blocked. */
+async function getUserMedia() {
+  if (world.mic.blocked) throw new DOMException("Permission denied", "NotAllowedError");
+  world.mic.open++;
+  let stopped = false;
+  const track = {
+    stop: () => {
+      if (!stopped) world.mic.open--;
+      stopped = true;
+    },
+  };
+  return { getTracks: () => [track] };
 }
 
 /** A click a listener would hear (audio s). `cut` = stopped before the click finished. */
@@ -277,40 +467,57 @@ export async function advanceUntil(cond: () => boolean, maxMs = 30_000, step = 1
   return spent;
 }
 
-export const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
+/** The api calls a test file mocked (the song calls); the rest are real functions, left alone. */
+const songMocks = () =>
+  Object.values(api).filter((f): f is ReturnType<typeof vi.fn> => vi.isMockFunction(f));
+const songMock = (name: keyof typeof api) => (vi.isMockFunction(api[name]) ? api[name] : undefined);
 
 /** Resets the world and wires the api mocks to a fresh server. Call from beforeEach. */
-export async function setupWorld(opts: { perf?: number } = {}) {
+export async function setupWorld(opts: { perf?: number; sharedAnswers?: boolean } = {}) {
   world.perf = opts.perf ?? 10_000;
   world.serverAhead = SERVER_AT_PERF_0;
   world.driftPpm = 0;
   world.latency = {};
   world.offline = false;
   world.hang = false;
+  world.unrouted = [];
   world.served = { getTime: [], getMetronome: [], putMetronome: [] };
   world.sent = { getTime: 0, getMetronome: 0, putMetronome: 0 };
+  world.purged = [];
+  world.mic = { blocked: false, hearsBand: true, loopbackMs: 50, noise: 0, open: 0 };
+  micNoise = rng(1);
+  world.wakeLock = { refuse: false, requests: 0, held: 0, sentinels: [] };
+  Object.defineProperty(navigator, "wakeLock", { configurable: true, value: { request: requestWakeLock } });
   FakeAudioContext.instances = [];
   FakeAudioContext.outputTimestampJitter = null;
   (window as unknown as { AudioContext: unknown }).AudioContext = FakeAudioContext;
+  vi.stubGlobal("AudioWorkletNode", FakeAudioWorkletNode);
+  Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
+  // jsdom has no object URLs; listen() makes one for the worklet's module.
+  Object.defineProperty(URL, "createObjectURL", { configurable: true, value: () => "blob:recorder" });
+  Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: () => {} });
   localStorage.clear();
 
   const repo = makeRepo(memoryKV());
   const song: Song = await repo.createSong(songBody);
+  bandSession = () => repo.getMetronome(song.id, serverNow());
 
   vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval", "Date"] });
   vi.setSystemTime(serverNow()); // this phone's wall clock happens to be right
   vi.spyOn(performance, "now").mockImplementation(() => world.perf);
 
-  Object.values(mocked).forEach((f) => f.mockReset?.());
-  mocked.getTime.mockImplementation(() => net("getTime", async () => ({ now: serverNow() })));
-  mocked.getMetronome.mockImplementation((id: string) => net("getMetronome", () => repo.getMetronome(id, serverNow())));
-  mocked.putMetronome.mockImplementation((id: string, change: MetroChange) =>
-    net("putMetronome", () => repo.setMetronome(id, change, serverNow())),
+  const shared = opts.sharedAnswers ? { purge: async (tag: string) => void world.purged.push(tag) } : undefined;
+  const metronome = makeMetronomeHandler(repo, serverNow, shared);
+  vi.stubGlobal(
+    "fetch",
+    makeFetch({ getTime: makeTimeHandler(serverNow), getMetronome: metronome, putMetronome: metronome }),
   );
-  mocked.updateSong?.mockImplementation(async (id: string, patch: Partial<SongInput>, baseVersion?: string) =>
+
+  songMocks().forEach((f) => f.mockReset());
+  songMock("updateSong")?.mockImplementation(async (id: string, patch: Partial<SongInput>, baseVersion?: string) =>
     repo.updateSong(id, { ...patch, ...(baseVersion ? { baseVersion } : {}) }),
   );
-  mocked.getSong?.mockImplementation(async (id: string) => {
+  songMock("getSong")?.mockImplementation(async (id: string) => {
     const s = await repo.getSong(id);
     if (!s) throw new ApiError(404, "song not found");
     return s;
@@ -325,14 +532,32 @@ export async function setupWorld(opts: { perf?: number } = {}) {
 export function teardownWorld() {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   delete (document as unknown as { visibilityState?: string }).visibilityState;
+  delete (navigator as unknown as { mediaDevices?: unknown }).mediaDevices;
+  delete (navigator as unknown as { wakeLock?: unknown }).wakeLock;
+  delete (URL as unknown as { createObjectURL?: unknown }).createObjectURL;
+  delete (URL as unknown as { revokeObjectURL?: unknown }).revokeObjectURL;
+  bandSession = async () => null;
+  if (world.unrouted.length) throw new Error(`the test world was sent requests it doesn't serve: ${world.unrouted.join(", ")}`);
 }
 
 export function setHidden(hidden: boolean) {
   Object.defineProperty(document, "visibilityState", { configurable: true, value: hidden ? "hidden" : "visible" });
   act(() => {
+    // Browsers drop the screen keep-on when the page is hidden.
+    if (hidden) releaseWakeLocks();
     document.dispatchEvent(new Event("visibilitychange"));
   });
+}
+
+/**
+ * The phone sleeps for `ms`: its performance.now() and audio clock stand still, while the server's clock and the
+ * phone's own wall clock (Date) run on. No timers fire. Hide the page first, as a phone does when its screen goes off.
+ */
+export function sleepPhone(ms: number) {
+  world.serverAhead += ms;
+  vi.setSystemTime(Date.now() + ms);
 }
 
 /** Seeded PRNG (mulberry32), so random latency and jitter repeat run to run. */
