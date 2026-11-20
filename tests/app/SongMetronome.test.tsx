@@ -81,6 +81,8 @@ class FakeAudioContext {
     };
     return node;
   }
+  /** The iPhone audio session type when this context was made (Safari keeps the mode it was made in). */
+  sessionType = (navigator as { audioSession?: { type: string } }).audioSession?.type;
   constructor() {
     FakeAudioContext.instances.push(this);
   }
@@ -667,6 +669,96 @@ describe("Calibrate this phone", () => {
     expect(await screen.findByText("Measured 142 ms, saved")).toBeInTheDocument();
     expect(Number(localStorage.getItem(ROUNDTRIP_KEY))).toBeCloseTo(142, 0);
     expect(screen.getByText(/Measured: 142 ms/)).toBeInTheDocument();
+  });
+
+  describe("on an iPhone, where the metronome leaves the audio session on playback", () => {
+    let audioSession: { type: string };
+    beforeEach(() => {
+      audioSession = { type: "playback" };
+      Object.defineProperty(navigator, "audioSession", { configurable: true, value: audioSession });
+    });
+    afterEach(() => {
+      delete (navigator as { audioSession?: unknown }).audioSession;
+    });
+
+    /** Runs a whole tap-along, so this panel already has Tap along's context. */
+    async function tapAlong() {
+      vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
+      fireEvent.click(screen.getByRole("button", { name: "Tap along" }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      vi.useRealTimers();
+    }
+
+    it("measures on a context of its own, made in play-and-record, then closes it and goes back to playback", async () => {
+      let sessionWhileListening = "";
+      listenMock.mockImplementation(async (ctx: FakeAudioContext, seconds: number, opts: { onStart?: () => void }) => {
+        sessionWhileListening = audioSession.type;
+        opts.onStart?.();
+        return recording(ctx.sampleRate, 0, seconds, ctx.started.map((t) => t + 0.142));
+      });
+      renderPanel();
+      fireEvent.click(screen.getByText("Calibrate this phone"));
+      await tapAlong();
+      const tapAlongCtx = FakeAudioContext.instances[0];
+      audioSession.type = "playback";
+      fireEvent.click(screen.getByRole("button", { name: "Measure this phone" }));
+      expect(await screen.findByText("Measured 142 ms, saved")).toBeInTheDocument();
+      expect(FakeAudioContext.instances).toHaveLength(2);
+      const measureCtx = FakeAudioContext.instances[1];
+      expect(measureCtx.sessionType).toBe("play-and-record");
+      expect(listenMock.mock.calls[0][0]).toBe(measureCtx);
+      expect(sessionWhileListening).toBe("play-and-record");
+      expect(measureCtx.close).toHaveBeenCalled();
+      expect(tapAlongCtx.close).not.toHaveBeenCalled();
+      expect(audioSession.type).toBe("playback");
+    });
+
+    it("also closes its context and goes back to playback when it can't hear the clicks", async () => {
+      listenMock.mockImplementation(async (_ctx: FakeAudioContext, seconds: number, opts: { onStart?: () => void }) => {
+        opts.onStart?.();
+        return recording(48000, 0, seconds, []);
+      });
+      renderPanel();
+      fireEvent.click(screen.getByText("Calibrate this phone"));
+      fireEvent.click(screen.getByRole("button", { name: "Measure this phone" }));
+      expect(await screen.findByText(/Couldn't hear the clicks/)).toBeInTheDocument();
+      expect(FakeAudioContext.instances[0].sessionType).toBe("play-and-record");
+      expect(FakeAudioContext.instances[0].close).toHaveBeenCalled();
+      expect(audioSession.type).toBe("playback");
+    });
+
+    it("also closes its context and goes back to playback when the mic fails", async () => {
+      listenMock.mockRejectedValue(new DOMException("bad state", "InvalidStateError"));
+      renderPanel();
+      fireEvent.click(screen.getByText("Calibrate this phone"));
+      fireEvent.click(screen.getByRole("button", { name: "Measure this phone" }));
+      expect(await screen.findByText(/Couldn't use the microphone/)).toBeInTheDocument();
+      expect(FakeAudioContext.instances[0].close).toHaveBeenCalled();
+      expect(audioSession.type).toBe("playback");
+    });
+  });
+
+  // [DEBUG-mic] Temporary: delete with the readout once Measure works on the iPhone (#33).
+  it("[DEBUG-mic] shows what the mic heard when it can't hear the clicks", async () => {
+    listenMock.mockImplementation(async (_ctx: FakeAudioContext, seconds: number, opts: { onStart?: () => void }) => {
+      opts.onStart?.();
+      return { ...recording(48000, 0, seconds, []), recorder: "worklet" };
+    });
+    renderPanel();
+    fireEvent.click(screen.getByText("Calibrate this phone"));
+    fireEvent.click(screen.getByRole("button", { name: "Measure this phone" }));
+    const readout = await screen.findByText(/^Mic heard:/);
+    expect(readout).toHaveTextContent("Mic heard: peak 0.000, background 0.0000, 0 onsets, delays none, 48000 Hz, worklet");
+  });
+
+  it("names the browser's error when the mic fails for another reason", async () => {
+    listenMock.mockRejectedValue(new DOMException("bad state", "InvalidStateError"));
+    renderPanel();
+    fireEvent.click(screen.getByText("Calibrate this phone"));
+    fireEvent.click(screen.getByRole("button", { name: "Measure this phone" }));
+    expect(await screen.findByText("Couldn't use the microphone (InvalidStateError). Try again.")).toBeInTheDocument();
   });
 
   it("saves nothing when no clicks are heard", async () => {

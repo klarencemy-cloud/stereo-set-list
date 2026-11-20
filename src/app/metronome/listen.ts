@@ -1,4 +1,4 @@
-import { preferPlaybackAudio } from "../audio";
+import { preferPlaybackAudio, preferRecordAudio } from "../audio";
 
 // Records the microphone on an AudioContext's own clock, so a heard click can be compared with when that context
 // plays (or would play) one. Used by "Measure this phone" and by a joining phone matching the band by ear.
@@ -8,6 +8,8 @@ export interface Recording {
   samples: Float32Array;
   /** Audio time (ctx.currentTime, s) of samples[0]. */
   startS: number;
+  /** [DEBUG-mic] Which recorder ran, for Measure's temporary readout (#33). */
+  recorder?: "worklet" | "script"; // [DEBUG-mic]
 }
 
 export interface ListenOptions {
@@ -66,18 +68,6 @@ function loadWorklet(ctx: AudioContext): Promise<void> {
     modules.set(ctx, p);
   }
   return p;
-}
-
-type AudioSessionNav = Navigator & { audioSession?: { type: string } };
-
-/** On iPhone, the mic needs a play-and-record audio session (Safari 16.4+). Elsewhere this does nothing. */
-function preferRecordAudio(): void {
-  const nav = navigator as AudioSessionNav;
-  try {
-    if (nav.audioSession) nav.audioSession.type = "play-and-record";
-  } catch {
-    // Older Safari: getUserMedia switches it anyway.
-  }
 }
 
 const abortError = () => new DOMException("Listening was stopped", "AbortError");
@@ -151,7 +141,7 @@ export async function listen(ctx: AudioContext, seconds: number, opts: ListenOpt
         const at = frame - first;
         if (at < 0) return;
         if (at < total) out.set(data.subarray(0, Math.min(data.length, total - at)), at);
-        if (at + data.length >= total) finish(null, { samples: out, startS: first / sr });
+        if (at + data.length >= total) finish(null, { samples: out, startS: first / sr, recorder: useWorklet ? "worklet" : "script" }); // [DEBUG-mic]
       };
       onAbort = () => finish(abortError());
       signal?.addEventListener("abort", onAbort, { once: true });

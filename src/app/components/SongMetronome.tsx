@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, conflictOf } from "../api";
-import { audioLink, click, createAudioContext, preferPlaybackAudio } from "../audio";
+import { audioLink, click, createAudioContext, preferPlaybackAudio, preferRecordAudio } from "../audio";
 import { BEATS_PER_BAR, MAX_BPM, MIN_BPM, clampBpm, type MetroSession } from "../../shared/metronome";
 import { songTempo } from "../../shared/song";
 import type { Song } from "../../shared/types";
 import { bpmFromTaps } from "../metronome/schedule";
 import { MAX_NUDGE_MS, NUDGE_STEP_MS, nudgeFromTaps } from "../metronome/clock";
-import { listen } from "../metronome/listen";
+import { listen, type Recording } from "../metronome/listen"; // [DEBUG-mic] Recording is only for the readout
 import { detectOnsets, measureRoundTrip } from "../metronome/match";
 import { useMetronome } from "../metronome/useMetronome";
 import { useSyncedMetronome } from "../metronome/useSyncedMetronome";
@@ -192,7 +192,29 @@ function measureError(e: unknown): string {
     return "Microphone access was blocked. Allow the microphone for this site, then try again.";
   }
   if (name === "NotSupportedError") return "This browser can't use the microphone here.";
-  return "Couldn't use the microphone. Try again.";
+  // A plain "Error" says nothing, so only a specific name is shown.
+  return name && name !== "Error" ? `Couldn't use the microphone (${name}). Try again.` : "Couldn't use the microphone. Try again.";
+}
+
+// [DEBUG-mic] Temporary (#33): what the mic heard, shown when Measure can't hear the clicks. Remove once Measure
+// works on the iPhone.
+function micReadout(rec: Recording, sampleRate: number, scheduled: number[], onsets: number[]): string {
+  let peak = 0;
+  const sampled: number[] = [];
+  for (let i = 0; i < rec.samples.length; i++) {
+    const v = Math.abs(rec.samples[i]);
+    if (v > peak) peak = v;
+    if (i % 16 === 0) sampled.push(v);
+  }
+  sampled.sort((a, b) => a - b);
+  const background = sampled.length ? sampled[Math.floor(sampled.length / 2)] : 0;
+  const delays = scheduled
+    .map((s) => onsets.find((o) => o > s && o < s + MEASURE_GAP_S))
+    .flatMap((o, i) => (o === undefined ? [] : [Math.round((o - scheduled[i]) * 1000)]));
+  return (
+    `Mic heard: peak ${peak.toFixed(3)}, background ${background.toFixed(4)}, ${onsets.length} onsets, ` +
+    `delays ${delays.length ? `${delays.join(", ")} ms` : "none"}, ${sampleRate} Hz, ${rec.recorder ?? "unknown recorder"}`
+  );
 }
 
 /** The nudge slider, the tap-along that measures it, and the round-trip measure for matching by ear. */
@@ -210,6 +232,7 @@ function Calibrate({
   const [tapping, setTapping] = useState(false);
   const [measuring, setMeasuring] = useState(false);
   const [message, setMessage] = useState("");
+  const [micDebug, setMicDebug] = useState(""); // [DEBUG-mic]
   const ctxRef = useRef<AudioContext | null>(null);
   const clicks = useRef<number[]>([]);
   const taps = useRef<number[]>([]);
@@ -262,16 +285,21 @@ function Calibrate({
 
   const tap = () => taps.current.push(performance.now());
 
-  /** Plays clicks on the speaker and times how long each takes to reach this phone's own mic. */
+  /**
+   * Plays clicks on the speaker and times how long each takes to reach this phone's own mic. On an iPhone the
+   * session must be play-and-record before the context is made: one made under "playback" hears nothing after the
+   * switch. So Measure makes its own context (not Tap along's), and closes it and goes back to "playback" after.
+   */
   async function measure() {
     setMessage("");
-    preferPlaybackAudio();
-    const ctx = ctxRef.current ?? createAudioContext();
+    setMicDebug(""); // [DEBUG-mic]
+    preferRecordAudio();
+    const ctx = createAudioContext();
     if (!ctx) {
+      preferPlaybackAudio();
       setMessage("This browser can't play sound.");
       return;
     }
-    ctxRef.current = ctx;
     ctx.resume().catch(() => {});
     setMeasuring(true);
     const scheduled: number[] = [];
@@ -292,6 +320,7 @@ function Calibrate({
       const r = measureRoundTrip(scheduled, onsets, MEASURE_GAP_S);
       if (!r || r.roundTripMs > MAX_ROUNDTRIP_MS) {
         setMessage("Couldn't hear the clicks. Turn the sound up, unplug earphones, and try again somewhere quiet.");
+        setMicDebug(micReadout(rec, ctx.sampleRate, scheduled, onsets)); // [DEBUG-mic]
         return;
       }
       const ms = Math.round(r.roundTripMs * 10) / 10;
@@ -301,6 +330,8 @@ function Calibrate({
       setMessage(measureError(e));
     } finally {
       setMeasuring(false);
+      ctx.close().catch(() => {});
+      preferPlaybackAudio();
     }
   }
 
@@ -355,6 +386,7 @@ function Calibrate({
         {roundTrip !== null ? ` Measured: ${Math.round(roundTrip)} ms.` : " Not measured yet."}
       </p>
       {message && <p role="status">{message}</p>}
+      {micDebug && <p className="muted">{micDebug}</p> /* [DEBUG-mic] */}
     </div>
   );
 }

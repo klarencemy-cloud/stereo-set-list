@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createAudioContext } from "../audio";
+import { createAudioContext, preferRecordAudio } from "../audio";
 import { analysisSize, detectPitch } from "./pitch";
 import { createSmoother } from "./smooth";
 
@@ -15,7 +15,8 @@ export function micErrorMessage(e: unknown): string {
   }
   if (name === "NotFoundError" || name === "OverconstrainedError") return "No microphone was found on this device.";
   if (name === "NotReadableError") return "The microphone is busy in another app. Close it and tap Start again.";
-  return "Could not start the microphone.";
+  // A plain "Error" says nothing, so only a specific name is shown.
+  return name && name !== "Error" ? `Could not start the microphone (${name}).` : "Could not start the microphone.";
 }
 
 interface Running {
@@ -66,6 +67,8 @@ export function useTuner() {
       return;
     }
     setStarting(true);
+    // The metronome leaves an iPhone on "playback", where Safari refuses the mic.
+    preferRecordAudio();
     let stream: MediaStream;
     try {
       // Voice processing smears pitch: turn it all off.

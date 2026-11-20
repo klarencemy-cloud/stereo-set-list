@@ -372,6 +372,39 @@ describe("Tuner", () => {
     expect(track.stop).toHaveBeenCalledTimes(2);
   });
 
+  it("asks an iPhone for a play-and-record audio session before the microphone, even after the metronome played", async () => {
+    // The metronome leaves the session on "playback", where Safari refuses the mic.
+    const audioSession = { type: "playback" };
+    Object.defineProperty(navigator, "audioSession", { configurable: true, value: audioSession });
+    let typeWhenAsked = "";
+    getUserMedia.mockImplementation(async () => {
+      typeWhenAsked = audioSession.type;
+      return { getTracks: () => [track] };
+    });
+    try {
+      renderTools();
+      fireEvent.click(screen.getByRole("button", { name: "Start tuner" }));
+      await screen.findByRole("button", { name: "Stop tuner" });
+      expect(typeWhenAsked).toBe("play-and-record");
+    } finally {
+      delete (navigator as { audioSession?: unknown }).audioSession;
+    }
+  });
+
+  it("names the browser's error when the microphone fails for another reason", async () => {
+    getUserMedia.mockRejectedValue(new DOMException("bad state", "InvalidStateError"));
+    renderTools();
+    fireEvent.click(screen.getByRole("button", { name: "Start tuner" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not start the microphone (InvalidStateError).");
+  });
+
+  it("doesn't add a name that says nothing to the message", async () => {
+    getUserMedia.mockRejectedValue(new Error("something"));
+    renderTools();
+    fireEvent.click(screen.getByRole("button", { name: "Start tuner" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/^Could not start the microphone\.$/);
+  });
+
   it("explains a blocked microphone", async () => {
     getUserMedia.mockRejectedValue(Object.assign(new Error("denied"), { name: "NotAllowedError" }));
     renderTools();

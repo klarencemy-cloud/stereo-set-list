@@ -24,6 +24,16 @@ export function preferPlaybackAudio(): void {
   }
 }
 
+/** On iPhone, the mic needs a play-and-record audio session (Safari 16.4+): call it before asking for the mic. Elsewhere this does nothing. */
+export function preferRecordAudio(): void {
+  const nav = navigator as Navigator & { audioSession?: { type: string } };
+  try {
+    if (nav.audioSession) nav.audioSession.type = "play-and-record";
+  } catch {
+    // Older Safari: getUserMedia switches it anyway.
+  }
+}
+
 /**
  * Books one metronome click at `time` on the context's clock. Returns a function that cancels it if it
  * hasn't sounded yet.
