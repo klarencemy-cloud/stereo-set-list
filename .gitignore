@@ -2,5 +2,5 @@ node_modules/
 dist/
 .netlify/
 .superpowers/
-.claude/
-.claude/worktrees/
+.claude/*
+!.claude/skills

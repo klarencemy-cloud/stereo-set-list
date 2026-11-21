@@ -8,7 +8,7 @@ Two lanes, built only from the skills in `.agents/skills` (Matt Pocock's set plu
 /bug <symptom or #issue>
 ```
 
-One command, one session. It reads the issue, builds a check that goes red on the bug (`diagnosing-bugs`), fixes it on a `fix/<slug>` branch with a regression test, runs `npm test` and `npm run build`, runs `code-review`, then opens a PR with `pr`. It never merges. If it can't build a failing check it stops and asks you. It never runs `/triage`; you run that yourself.
+One command, one session. It reads the issue, branches `fix/<slug>` from `main` (no edits before that), builds a check that goes red on the bug (`diagnosing-bugs`), fixes it with a regression test, runs `npm test` and `npm run build`, runs `code-review`, then opens a PR with `pr`. It never merges. If it can't build a failing check it stops and asks you. It never runs `/triage`; you run that yourself. A bare symptom gets an offer to file a plain issue first. It does at most two review rounds. `/bug all` does every open `ready-for-agent` issue in turn, one branch and PR each.
 
 ## Lane 2: features
 
@@ -27,6 +27,10 @@ Every skill here is user-invoked, so you type each one.
 ```
 
 `/implement-spec` builds the whole spec on one integration branch. To drive tickets by hand instead, run `/implement #<ticket>` per ticket and `/clear` between them.
+
+`/implement` and `/implement-spec` run the tests and `code-review`; the CLAUDE.md rule adds `npm run build` before any PR.
+
+**Rule of thumb:** if the work needs more than one session, or splits into more than about 3 separate pieces after grilling, use `/to-spec` -> `/to-tickets` -> `/implement-spec`. Otherwise `/implement`.
 
 ## Which skill does what
 
@@ -53,13 +57,12 @@ Every skill here is user-invoked, so you type each one.
 
 ## Windows setup
 
-`.claude/` is gitignored, so `.claude/skills` is not in the repo. Each clone links it to `.agents/skills`, from the repo root:
+`.claude/skills` is a committed symlink to `../.agents/skills`, so cloud sessions get `/bug` and the other skills. Git on Windows checks a symlink out as a plain text file, so each Windows clone needs one step, from the repo root:
 
 ```powershell
-# Needs admin or Developer Mode:
-New-Item -ItemType SymbolicLink -Path .claude\skills -Target ..\.agents\skills
-# Otherwise a junction works with no privileges:
-New-Item -ItemType Junction -Path .claude\skills -Target (Resolve-Path .agents\skills).Path
+powershell -File scripts/setup-skills.ps1
 ```
 
-Delete or move any existing `.claude/skills` folder first. Anything left in it stops loading once it's replaced. Check it worked by typing `/` in Claude Code and looking for `/bug`, `/implement` and `/to-spec`.
+It deletes the folder or text-file stand-in at `.claude/skills` (if it isn't a real link), makes a junction to `.agents/skills`, and prints what it did. No admin needed. Anything that was in an old `.claude/skills` folder stops loading. Check it worked by typing `/` in Claude Code and looking for `/bug`, `/grill-with-docs` and `/implement`.
+
+Git will then show `.claude/skills` as modified (the junction versus the committed symlink). Don't commit that.

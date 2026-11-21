@@ -59,4 +59,6 @@ Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root, created only
 
 ### Agent team
 
-Two lanes: `/bug <symptom or #issue>` takes a bug to an open PR (never merges); features are typed by hand (`/grill-with-docs` → `/implement`, or `/to-spec` → `/to-tickets` → `/implement-spec`). `.claude/skills` must link to `.agents/skills` (not committed; Windows setup in the guide). See `docs/agents/workflow.md`.
+Two lanes: `/bug <symptom or #issue>` takes a bug to an open PR (never merges); features are typed by hand (`/grill-with-docs` → `/implement`, or `/to-spec` → `/to-tickets` → `/implement-spec`). `.claude/skills` must link to `.agents/skills` (committed as a symlink; on Windows run `scripts/setup-skills.ps1` once per clone, see the guide). See `docs/agents/workflow.md`.
+
+Before opening any PR, run `npm test` and `npm run build` and show the output.
