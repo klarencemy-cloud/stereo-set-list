@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { memoryKV } from "../../netlify/functions/lib/kv";
 import { makeRepo, METRO_SEEN_EVERY_MS, METRO_STALE_MS, NotFoundError } from "../../netlify/functions/lib/repo";
-import { makeMetronomeHandler, sharedAnswersOn } from "../../netlify/functions/metronome";
+import { makeMetronomeHandler } from "../../netlify/functions/metronome";
 import { makeTimeHandler } from "../../netlify/functions/time";
 import { makeSongsHandler } from "../../netlify/functions/songs";
 import type { SongInput } from "../../src/shared/types";
@@ -444,78 +444,5 @@ describe("previous grid: two quick changes keep every phone on the same bar (H23
     expect(await get(metro, id)).toEqual({ ...base, prev });
     await kv.setText(`metronome/${id}`, JSON.stringify({ ...base, running: false, prev }));
     expect(await get(metro, id)).toEqual({ ...base, running: false });
-  });
-});
-
-describe("shared answers (#25)", () => {
-  it("the switch is off unless set to 1, true or on", () => {
-    for (const v of [undefined, "", "0", "false", "off", "no"]) expect(sharedAnswersOn(v)).toBe(false);
-    for (const v of ["1", "true", "on", " ON "]) expect(sharedAnswersOn(v)).toBe(true);
-  });
-
-  /** A handler with the switch on, recording every cache tag it purges. */
-  async function shared(purgeFails = false) {
-    const repo = makeRepo(memoryKV());
-    const clock = { now: 1_000_000 };
-    const purged: string[] = [];
-    const metro = makeMetronomeHandler(repo, () => clock.now, {
-      purge: async (tag) => {
-        purged.push(tag);
-        if (purgeFails) throw new Error("429 Too Many Requests");
-      },
-    });
-    const song = await repo.createSong(songBody);
-    return { repo, clock, metro, purged, id: song.id };
-  }
-
-  it("with the switch off, every answer is never cached, carries no tag and says nothing of sharing", async () => {
-    const { metro, id } = await setup();
-    const put = await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
-    const get = await metro(req("GET", `/api/metronome/${id}?seen=1`));
-    for (const res of [put, get]) {
-      expect(res.headers.get("Cache-Control")).toBe("no-store");
-      expect(res.headers.get("Netlify-CDN-Cache-Control")).toBeNull();
-      expect(res.headers.get("Netlify-Cache-Tag")).toBeNull();
-      expect(await res.json()).not.toHaveProperty("shared");
-    }
-  });
-
-  it("with the switch on, a check's answer may be shared from Netlify's cache for 1 s, under the song's tag", async () => {
-    const { metro, id } = await shared();
-    const res = await metro(req("GET", `/api/metronome/${id}`));
-    expect(res.headers.get("Netlify-CDN-Cache-Control")).toBe("public, durable, s-maxage=1, must-revalidate");
-    expect(res.headers.get("Netlify-Cache-Tag")).toBe(`metronome-${id}`);
-    // Browsers never reuse it: every check still leaves the phone.
-    expect(res.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
-    // The answer says so, so the phone doesn't take its server time as a clock sample.
-    expect(await res.json()).toEqual({ session: null, now: 1_000_000, shared: true });
-  });
-
-  it("with the switch on, a change's answer is never cached, and the change clears the song's tag", async () => {
-    const { metro, purged, id } = await shared();
-    const start = await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
-    expect(start.headers.get("Cache-Control")).toBe("no-store");
-    expect(start.headers.get("Netlify-CDN-Cache-Control")).toBeNull();
-    expect(await start.json()).not.toHaveProperty("shared");
-    expect(purged).toEqual([`metronome-${id}`]);
-    await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90 }));
-    await metro(req("PUT", `/api/metronome/${id}`, { running: false }));
-    expect(purged).toHaveLength(3);
-  });
-
-  it("with the switch on, a check clears nothing, and nor does a start that wasn't applied", async () => {
-    const { metro, purged, id } = await shared();
-    await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
-    await metro(req("GET", `/api/metronome/${id}?seen=1`));
-    const res = await metro(req("PUT", `/api/metronome/${id}`, { bpm: 90, beatsPerBar: 4, running: true, onlyIfStopped: true }));
-    expect((await res.json()).applied).toBe(false);
-    expect(purged).toHaveLength(1);
-  });
-
-  it("a failed clear doesn't fail the change: it is stored, and the cached answer expires within 1 s anyway", async () => {
-    const { metro, repo, clock, id } = await shared(true);
-    const res = await metro(req("PUT", `/api/metronome/${id}`, { bpm: 120, beatsPerBar: 4, running: true }));
-    expect(res.status).toBe(200);
-    expect((await repo.getMetronome(id, clock.now))?.running).toBe(true);
   });
 });

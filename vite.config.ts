@@ -4,6 +4,8 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  // Dev only: lets a cloudflared quick tunnel (random *.trycloudflare.com host) reach Vite.
+  server: { allowedHosts: [".trycloudflare.com"] },
   build: {
     rollupOptions: {
       // The offline service worker is a second entry, served at a fixed /sw.js.

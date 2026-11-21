@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0002
+---
+
 # Joining phones match the leader by ear
 
 Clock sync alone left phones audibly apart. It can't see a lopsided network round trip, and each phone's output delay is different. Phones on different networks were up to 85 ms apart in simulation. So a joining phone first listens to the leader through its mic for about 2 bars, and shifts its grid to match what it heard (a2acd91). The server still sets the grid. The leader never sends a beat. That is why this is not the "leader phone" the original spec ruled out.

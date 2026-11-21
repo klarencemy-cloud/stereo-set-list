@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loopStart, phaseError, renderBar, shouldRealign } from "../../src/app/metronome/loop";
+import { loopStart, phaseError, renderBar } from "../../src/app/metronome/loop";
 
 const SR = 48000;
 /** Where the clicks start: a sample that is silent before and sounding at the onset. */
@@ -55,22 +55,5 @@ describe("phaseError", () => {
     expect(phaseError(10, 10.004, 2)).toBeCloseTo(0.004);
     expect(phaseError(10, 11.998, 2)).toBeCloseTo(-0.002);
     expect(phaseError(10, 14, 2)).toBeCloseTo(0);
-  });
-});
-
-describe("shouldRealign", () => {
-  it("waits for 8 ticks of error", () => {
-    expect(shouldRealign(Array(7).fill(0.05))).toBe(false);
-    expect(shouldRealign(Array(8).fill(0.05))).toBe(true);
-  });
-
-  it("goes by the median, so a few wild readings don't move the loop", () => {
-    expect(shouldRealign([0.05, -0.05, 0.05, 0.002, 0.003, 0.001, 0.004, 0.05])).toBe(false);
-    expect(shouldRealign([-0.013, -0.014, -0.02, 0, -0.015, -0.013, 0.001, -0.016])).toBe(true);
-  });
-
-  it("needs a median over 12 ms, either way", () => {
-    expect(shouldRealign(Array(8).fill(0.011))).toBe(false);
-    expect(shouldRealign(Array(8).fill(-0.013))).toBe(true);
   });
 });

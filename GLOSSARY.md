@@ -23,24 +23,17 @@ Making this phone play a session that is already running. Leaving stops this pho
 _Avoid_: Connect, subscribe
 
 **Leader**:
-The phone that started the session. Joining phones match its clicks by ear. It does not set the grid or send the beat.
+The phone that started the session. It does not set the grid or send the beat.
 _Avoid_: Master, host
-
-**Match**:
-A joining phone's adjustment, found by listening to the leader through its mic, that lines its clicks up with the leader's.
-_Avoid_: Calibration (that is the nudge), sync
 
 **Nudge**:
 A per-phone setting that plays this phone's clicks earlier or later, to make up for its own speaker or earphone delay.
 _Avoid_: Offset, latency setting
 
 **Network round trip**:
-The time from a phone asking the server something to getting the answer. "Synced ±N ms" is half of it.
+The time from a phone asking the server something to getting the answer. Clock sync trusts the time call with the shortest one.
 _Avoid_: Round trip (on its own), ping, RTT
 
-**Loopback delay**:
-The time from this phone's speaker playing a click to its own mic hearing it, measured with "Measure this phone".
-_Avoid_: Round trip (on its own), output latency
 
 **Follow**:
 A per-phone switch that joins the running session of whichever song this phone opens, in any order.

@@ -6,18 +6,22 @@ What's new on Stereo Set, newest first.
 
 ### Fixed
 
+- **Back in time when you join.** A phone that joins now plays by its clock alone, which in the band's tests was only a few ms off. It no longer listens to the band through the mic (that made timing worse), so the metronome never asks for the microphone.
 - **Start for everyone no longer takes over.** If a bandmate has already started the metronome, tapping Start for everyone leaves theirs playing and shows "Already playing at 120 BPM" with Join, instead of switching everyone to your tempo.
 - **It no longer stops by itself mid-gig.** A metronome that phones have joined keeps going for as long as they play along. One nobody has joined still switches itself off after 2 hours, so a forgotten one doesn't get in the way.
 - **Stop for everyone always sticks.** Pressing Stop at the same moment as someone else changes the tempo no longer loses the Stop; the same goes for two tempo changes at once.
 - **Two quick changes keep everyone on the same bar.** Changing the beats per bar and then the tempo within a few seconds (or two people changing it at once) no longer leaves phones playing different bars for a moment. A phone that joins just before a change starts also plays along straight away.
 - **Changes reach every phone in time.** A start or a tempo change now begins 3 seconds after the tap (was 2), so a phone on a slow connection hears of it before it starts.
-- **Tighter timing.** Phones keep their clocks in step with every check, not only when they join, and a phone on a jittery connection no longer nudges its clicks every bar.
-- **Ready when you tap.** A phone starts setting its clock as soon as the metronome opens, not when you tap Start or Join. On a slow 4G connection the phone that starts it now hears its own count-in from beat 1, and Join plays straight away instead of after several seconds of silence. After that it makes no extra clock calls: the regular checks keep it in step.
-- **A warning when timing is rough.** A phone that keeps time by its clock alone (it couldn't hear the band, or hasn't been measured) shows its sync status as a warning when it may be more than 25 ms off, and suggests measuring this phone or using Wi-Fi. A phone matched to the band by ear never shows it.
+- **Ready when you tap.** A phone starts setting its clock as soon as the metronome opens, not when you tap Start or Join, so Join plays straight away.
+- **Timing moves when you move it.** Any change on the Adjust timing slider, even the smallest step, moves this phone's clicks from the next bar.
 - **Paused sound is shown.** When a call, Siri or the lock screen pauses a joined phone's sound, it now says "Sound paused — tap to resume" instead of flashing on in silence. One tap brings the clicks back, in time with the band, with no cut or doubled click.
-- **In time after the phone sleeps.** A joined phone whose screen was off long enough to sleep now notices when you come back and lines itself up again, instead of playing up to half a beat off while saying it is synced. A phone matched to the band by ear goes quiet for a few seconds and listens to the band again while the flash keeps going. A phone that didn't sleep carries on as it was. Phones also stay closer in time over a long rehearsal, as each one prefers its newest clock readings.
-- **Lighter on the server.** A phone playing along checks for changes every 2 seconds (was 1.5), about a quarter fewer calls, so a month of rehearsals is less likely to use up the site's free allowance. Changes still reach a phone in time on a connection up to about 0.9 s slow.
+- **In time after the phone sleeps.** A joined phone whose screen was off long enough to sleep now notices when you come back and sets its clock again, instead of playing up to half a beat off while saying it is synced.
 - **Back online doesn't cut you off.** Playing on this phone only while offline, the clicks now keep going when the network comes back, and the phone offers "Back online — switch to the shared metronome?" instead. "Try syncing again" checks straight away and says if it still can't reach the server.
+
+### Changed
+
+- **"Calibrate this phone" is now "Adjust timing"**, with just the slider. Tap along and Measure this phone are gone.
+- **The status just says "Synced".** No more "±N ms" or rough-timing warning.
 
 ## Unreleased: Lyrics and band tools
 
@@ -30,7 +34,7 @@ What's new on Stereo Set, newest first.
 - **Tuner: smooth and strict.** The needle glides and the cents reading holds steady instead of jumping. "In tune" (green, with a ✓) means within 3 cents either way: hold the note there for a second while a bar under the meter fills. 4 or more cents off says tune up or tune down. The needle has no outline. A new A4 applies straight away, even while you're still typing it.
 - **Metronome.** On Tools: 30-300 BPM with - / + and a slider, tap tempo, 2 to 7 beats per bar with an accented first beat, and a big flashing beat you can see on stage. Your phone remembers the tempo and beats per bar.
 - **Song tempo.** A song can have a tempo (30-300 BPM) and beats per bar (2-7), set on its Edit page. Leave them empty if nobody knows yet: nothing made-up is shown.
-- **Metronome for the whole band.** On a song, tap "Metronome" (it shows the song's tempo, and a green dot while someone is playing it). Tap "Start for everyone": anyone else who opens that song's metronome sees "Playing at 120 BPM" and taps Join, and every phone clicks and flashes in time. Anyone can change the tempo (it switches on the next bar for everyone), tap Leave to stop just their phone, or Stop for everyone. "Save as song tempo" keeps the tempo on the song. If a phone sounds late (Bluetooth earphones lag), use "Calibrate this phone": move the slider, or tap along to 12 clicks and it measures the delay for you. With no connection it says so and plays on that phone only. An open metronome that you haven't joined checks for changes only every 10 seconds, and a phone with its screen off doesn't check at all, so it uses far less data.
+- **Metronome for the whole band.** On a song, tap "Metronome" (it shows the song's tempo, and a green dot while someone is playing it). Tap "Start for everyone": anyone else who opens that song's metronome sees "Playing at 120 BPM" and taps Join, and every phone clicks and flashes in time. Anyone can change the tempo (it switches on the next bar for everyone), tap Leave to stop just their phone, or Stop for everyone. "Save as song tempo" keeps the tempo on the song. If a phone sounds late (Bluetooth earphones lag), open "Adjust timing" and move the slider. With no connection it says so and plays on that phone only. An open metronome that you haven't joined checks for changes only every 10 seconds, and a phone with its screen off doesn't check at all, so it uses far less data.
 
 ## Unreleased: Safer edits
 

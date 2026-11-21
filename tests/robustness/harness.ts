@@ -5,7 +5,8 @@
 // and time requests reach the REAL Netlify handlers (over the real repo on memoryKV) after a configurable one-way
 // delay each way, so out-of-order and slow answers come from timing, not from hand-written mock answers. The
 // fakes follow tests/app/SongMetronome.test.tsx (fake AudioContext and buffer sources, fake timers) but record
-// enough to say what a listener would hear.
+// enough to say what a listener would hear. Every getUserMedia call is counted (world.micRequests): with
+// LISTEN_BY_EAR off, the metronome must never ask for the mic.
 //
 // A fake mic (getUserMedia and the recorder worklet, so the real listen() runs) hears the leader's clicks on the
 // stored session's grid, world.mic.loopbackMs after they sound on this phone's clock, plus optional noise; it hears
@@ -48,6 +49,11 @@ export const world = {
   driftPpm: 0,
   /** One-way delays in ms, per endpoint. A function is called once per request. */
   latency: {} as Partial<Record<Endpoint, Leg | (() => Leg)>>,
+  /**
+   * Server work (ms) per endpoint before the handler reads the server's clock for its answer, as the storage read
+   * delays the metronome function's `now` on Netlify. 0 when not set: the handler answers the moment it is reached.
+   */
+  serverWork: {} as Partial<Record<Endpoint, number>>,
   /** Requests to anything but the metronome and time endpoints (a mistake in the test world). */
   unrouted: [] as string[],
   /** Every request fails at once, as fetch does with no network. */
@@ -58,11 +64,8 @@ export const world = {
   served: { getTime: [] as number[], getMetronome: [] as number[], putMetronome: [] as number[] },
   /** Requests sent, per endpoint (counted when the phone sends, not when the server answers). */
   sent: { getTime: 0, getMetronome: 0, putMetronome: 0 },
-  /**
-   * Cache tags the server cleared, in order, with shared answers on (setupWorld's `sharedAnswers`). The world has no
-   * CDN: answers are never really shared, they only say they may be.
-   */
-  purged: [] as string[],
+  /** Times anything asked for the mic (getUserMedia). With LISTEN_BY_EAR off, the metronome never should. */
+  micRequests: 0,
   /** This phone's mic (see FakeAudioWorkletNode). */
   mic: {
     /** getUserMedia is refused, as when the permission is denied. */
@@ -173,13 +176,18 @@ function makeFetch(handlers: Record<Endpoint, (req: Request) => Promise<Response
         { once: true },
       );
       if (world.hang) return; // never settles (unless aborted)
+      const work = world.serverWork[name] ?? 0;
+      const answer = async () => {
+        const res = await handlers[name](req);
+        if (signal?.aborted) return; // aborted while the server worked: it keeps the change, the phone never hears
+        timers.push(setTimeout(() => resolve(res), down));
+      };
       timers.push(
-        setTimeout(async () => {
+        setTimeout(() => {
           if (world.offline) return reject(offlineError());
           world.served[name].push(serverNow());
-          const res = await handlers[name](req);
-          if (signal?.aborted) return; // aborted while the server worked: it keeps the change, the phone never hears
-          timers.push(setTimeout(() => resolve(res), down));
+          if (work > 0) timers.push(setTimeout(answer, work));
+          else void answer();
         }, up),
       );
     });
@@ -398,8 +406,12 @@ export class FakeAudioWorkletNode {
   disconnect: () => void;
 }
 
-/** navigator.mediaDevices.getUserMedia: a stream (counted in world.mic.open), or NotAllowedError while blocked. */
+/**
+ * navigator.mediaDevices.getUserMedia: counted in world.micRequests; a stream (counted in world.mic.open), or
+ * NotAllowedError while blocked.
+ */
 async function getUserMedia() {
+  world.micRequests++;
   if (world.mic.blocked) throw new DOMException("Permission denied", "NotAllowedError");
   world.mic.open++;
   let stopped = false;
@@ -473,17 +485,18 @@ const songMocks = () =>
 const songMock = (name: keyof typeof api) => (vi.isMockFunction(api[name]) ? api[name] : undefined);
 
 /** Resets the world and wires the api mocks to a fresh server. Call from beforeEach. */
-export async function setupWorld(opts: { perf?: number; sharedAnswers?: boolean } = {}) {
+export async function setupWorld(opts: { perf?: number } = {}) {
   world.perf = opts.perf ?? 10_000;
   world.serverAhead = SERVER_AT_PERF_0;
   world.driftPpm = 0;
   world.latency = {};
+  world.serverWork = {};
   world.offline = false;
   world.hang = false;
   world.unrouted = [];
   world.served = { getTime: [], getMetronome: [], putMetronome: [] };
   world.sent = { getTime: 0, getMetronome: 0, putMetronome: 0 };
-  world.purged = [];
+  world.micRequests = 0;
   world.mic = { blocked: false, hearsBand: true, loopbackMs: 50, noise: 0, open: 0 };
   micNoise = rng(1);
   world.wakeLock = { refuse: false, requests: 0, held: 0, sentinels: [] };
@@ -506,8 +519,7 @@ export async function setupWorld(opts: { perf?: number; sharedAnswers?: boolean 
   vi.setSystemTime(serverNow()); // this phone's wall clock happens to be right
   vi.spyOn(performance, "now").mockImplementation(() => world.perf);
 
-  const shared = opts.sharedAnswers ? { purge: async (tag: string) => void world.purged.push(tag) } : undefined;
-  const metronome = makeMetronomeHandler(repo, serverNow, shared);
+  const metronome = makeMetronomeHandler(repo, serverNow);
   vi.stubGlobal(
     "fetch",
     makeFetch({ getTime: makeTimeHandler(serverNow), getMetronome: metronome, putMetronome: metronome }),

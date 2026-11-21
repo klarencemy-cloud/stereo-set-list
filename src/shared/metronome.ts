@@ -45,7 +45,7 @@ export interface MetroGrid {
 
 /**
  * Every metronome answer (GET and PUT): the session, or null when nobody has started one, and the server's time
- * (ms) when it answered, so each answer is also a clock sample.
+ * (ms) when it answered. Phones don't use that time as a clock sample: it is read after the storage work, so late.
  */
 export interface MetroAnswer {
   session: MetroSession | null;
@@ -55,11 +55,6 @@ export interface MetroAnswer {
    * running, so it was left as it is and `session` is the running one.
    */
   applied?: boolean;
-  /**
-   * On a check's answer only, while the server shares answers between phones (#25): this answer may be a copy
-   * Netlify's cache kept for up to about 1 s, so `now` can be that old and is no clock sample.
-   */
-  shared?: true;
 }
 
 /** What a client asks for. Anything left out stays as it is. */

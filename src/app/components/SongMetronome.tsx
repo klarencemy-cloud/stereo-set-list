@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, conflictOf } from "../api";
-import { audioLink, click, createAudioContext, preferPlaybackAudio } from "../audio";
 import { BEATS_PER_BAR, MAX_BPM, MIN_BPM, clampBpm, type MetroSession } from "../../shared/metronome";
 import { songTempo } from "../../shared/song";
 import type { Song } from "../../shared/types";
 import { bpmFromTaps } from "../metronome/schedule";
-import { MAX_NUDGE_MS, NUDGE_STEP_MS, nudgeFromTaps } from "../metronome/clock";
+import { MAX_NUDGE_MS, NUDGE_STEP_MS } from "../metronome/clock";
+import { click, createAudioContext, preferPlaybackAudio } from "../audio";
+import { LISTEN_BY_EAR } from "../metronome/byEar";
 import { listen } from "../metronome/listen";
 import { detectOnsets, measureRoundTrip } from "../metronome/match";
 import { useMetronome } from "../metronome/useMetronome";
@@ -23,8 +24,6 @@ const MAX_ROUNDTRIP_MS = 1000;
 /** A tempo dragged or tapped while playing is sent once it settles, not on every step. */
 const SEND_DELAY_MS = 400;
 const OFFLINE = "Can't sync: playing on this phone only";
-/** A phone synced by the clock alone warns when its bound is wider than this (H11). */
-const ROUGH_SYNC_MS = 25;
 
 function readNudge(): number {
   try {
@@ -49,7 +48,7 @@ function readRoundTrip(): number | null {
   return null;
 }
 
-const signed = (ms: number) => (ms > 0 ? `+${ms}` : `${ms}`);
+const signed =(ms: number) => (ms > 0 ? `+${ms}` : `${ms}`);
 
 interface Tempo {
   bpm: number;
@@ -178,8 +177,43 @@ function LocalMetronome({
   );
 }
 
-const TAP_ALONG_CLICKS = 12;
-const TAP_ALONG_BPM = 90;
+/** The nudge slider: this phone's own speaker or earphone delay. With LISTEN_BY_EAR on, also Measure this phone. */
+function AdjustTiming({
+  nudge,
+  onNudge,
+  roundTrip,
+  onRoundTrip,
+}: {
+  nudge: number;
+  onNudge: (ms: number) => void;
+  roundTrip: number | null;
+  onRoundTrip: (ms: number) => void;
+}) {
+  return (
+    <div className="metro-calibrate">
+      <label className="field">
+        Nudge
+        <input
+          className="metro-slider"
+          type="range"
+          min={-MAX_NUDGE_MS}
+          max={MAX_NUDGE_MS}
+          step={NUDGE_STEP_MS}
+          value={nudge}
+          aria-label="Nudge"
+          aria-valuetext={`${signed(nudge)} ms`}
+          onChange={(e) => onNudge(Number(e.target.value))}
+        />
+      </label>
+      <p className="muted">
+        <strong>{nudge === 0 ? "0 ms" : `${signed(nudge)} ms (plays ${nudge > 0 ? "earlier" : "later"})`}</strong>
+        {" · "}Move it right if this phone sounds late next to the others.
+      </p>
+      {LISTEN_BY_EAR && <MeasureRoundTrip roundTrip={roundTrip} onRoundTrip={onRoundTrip} />}
+    </div>
+  );
+}
+
 const MEASURE_CLICKS = 8;
 /** Far enough apart that even a slow phone hears each click before the next one plays. */
 const MEASURE_GAP_S = 0.8;
@@ -195,72 +229,18 @@ function measureError(e: unknown): string {
   return "Couldn't use the microphone. Try again.";
 }
 
-/** The nudge slider, the tap-along that measures it, and the round-trip measure for matching by ear. */
-function Calibrate({
-  nudge,
-  onNudge,
-  roundTrip,
-  onRoundTrip,
-}: {
-  nudge: number;
-  onNudge: (ms: number) => void;
-  roundTrip: number | null;
-  onRoundTrip: (ms: number) => void;
-}) {
-  const [tapping, setTapping] = useState(false);
+/** "Measure this phone": its speaker-to-mic round trip, for matching the band by ear (LISTEN_BY_EAR only). */
+function MeasureRoundTrip({ roundTrip, onRoundTrip }: { roundTrip: number | null; onRoundTrip: (ms: number) => void }) {
   const [measuring, setMeasuring] = useState(false);
   const [message, setMessage] = useState("");
   const ctxRef = useRef<AudioContext | null>(null);
-  const clicks = useRef<number[]>([]);
-  const taps = useRef<number[]>([]);
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(
     () => () => {
-      clearTimeout(timer.current);
       ctxRef.current?.close().catch(() => {});
     },
     [],
   );
-
-  function begin() {
-    setMessage("");
-    preferPlaybackAudio();
-    const ctx = ctxRef.current ?? createAudioContext();
-    if (!ctx) {
-      setMessage("This browser can't play sound.");
-      return;
-    }
-    ctxRef.current = ctx;
-    ctx.resume().catch(() => {});
-    const link = audioLink(ctx);
-    const first = ctx.currentTime + 1;
-    const gap = 60 / TAP_ALONG_BPM;
-    clicks.current = [];
-    taps.current = [];
-    for (let i = 0; i < TAP_ALONG_CLICKS; i++) {
-      const at = first + i * gap;
-      click(ctx, at, i % 4 === 0);
-      // When this click is heard, on performance.now(): the clock the taps are timed on.
-      clicks.current.push(link.perfMs + (at - link.audioS) * 1000);
-    }
-    setTapping(true);
-    const doneIn = (first + TAP_ALONG_CLICKS * gap - ctx.currentTime) * 1000 + 500;
-    timer.current = setTimeout(finish, doneIn);
-  }
-
-  function finish() {
-    setTapping(false);
-    const measured = nudgeFromTaps(clicks.current, taps.current);
-    if (measured === null) {
-      setMessage("Couldn't measure, try again");
-      return;
-    }
-    onNudge(measured);
-    setMessage(`Measured ${signed(measured)} ms, saved`);
-  }
-
-  const tap = () => taps.current.push(performance.now());
 
   /** Plays clicks on the speaker and times how long each takes to reach this phone's own mic. */
   async function measure() {
@@ -305,49 +285,11 @@ function Calibrate({
   }
 
   return (
-    <div className="metro-calibrate">
-      <label className="field">
-        Nudge
-        <input
-          className="metro-slider"
-          type="range"
-          min={-MAX_NUDGE_MS}
-          max={MAX_NUDGE_MS}
-          step={NUDGE_STEP_MS}
-          value={nudge}
-          aria-label="Nudge"
-          aria-valuetext={`${signed(nudge)} ms`}
-          onChange={(e) => onNudge(Number(e.target.value))}
-        />
-      </label>
-      <p className="muted">
-        <strong>{nudge === 0 ? "0 ms" : `${signed(nudge)} ms (plays ${nudge > 0 ? "earlier" : "later"})`}</strong>
-        {" · "}Move it right if this phone sounds late next to the others.
-      </p>
-      {tapping ? (
-        <button
-          type="button"
-          className="btn primary metro-tap"
-          onPointerDown={tap}
-          onKeyDown={(e) => {
-            if (e.key === " " || e.key === "Enter") {
-              e.preventDefault();
-              tap();
-            }
-          }}
-        >
-          Tap
+    <>
+      <p className="actions">
+        <button type="button" className="btn" disabled={measuring} onClick={measure}>
+          {measuring ? "Measuring..." : "Measure this phone"}
         </button>
-      ) : (
-        <p className="actions">
-          <button type="button" className="btn" disabled={measuring} onClick={begin}>Tap along</button>
-          <button type="button" className="btn" disabled={measuring} onClick={measure}>
-            {measuring ? "Measuring..." : "Measure this phone"}
-          </button>
-        </p>
-      )}
-      <p className="muted tool-note">
-        Tap along plays 12 clicks on this phone. Tap the big button on each click you hear; the first few don't count.
       </p>
       <p className="muted tool-note">
         Measure this phone plays 8 clicks and listens with the mic, so this phone can match the band by ear when it
@@ -355,7 +297,7 @@ function Calibrate({
         {roundTrip !== null ? ` Measured: ${Math.round(roundTrip)} ms.` : " Not measured yet."}
       </p>
       {message && <p role="status">{message}</p>}
-    </div>
+    </>
   );
 }
 
@@ -379,7 +321,7 @@ export default function SongMetronome(props: Props) {
 function SongMetronomePanel({ song, onSongChange, onSession }: Props) {
   const [nudge, setNudgeState] = useState(readNudge);
   const [roundTrip, setRoundTripState] = useState(readRoundTrip);
-  const m = useSyncedMetronome(song.id, nudge, roundTrip);
+  const m = useSyncedMetronome(song.id, nudge, LISTEN_BY_EAR ? roundTrip : null);
   const songT = songTempo(song);
   const [tempo, setTempo] = useState<Tempo>(() => {
     const saved = readSavedMetronome();
@@ -391,7 +333,7 @@ function SongMetronomePanel({ song, onSongChange, onSession }: Props) {
   const [localOnly, setLocalOnly] = useState(false);
   /** The local metronome is playing: it stays on screen until it is stopped or switched from (H21). */
   const [localPlaying, setLocalPlaying] = useState(false);
-  const [calibrating, setCalibrating] = useState(false);
+  const [adjusting, setAdjusting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [conflict, setConflict] = useState<Song | null>(null);
@@ -538,22 +480,15 @@ function SongMetronomePanel({ song, onSongChange, onSession }: Props) {
 
   const lostServerText = "Can't reach the server: changes from others won't show until it's back.";
   let status = "";
-  /** The status is a warning: a clock-only sync whose bound is too wide to play together by (H11). */
-  let rough = false;
   // Out of touch with the session, the phone can't hear changes to it: no claim of being synced.
   if (!showLocal && m.joined && session !== undefined && !m.reachable) status = lostServerText;
   else if (!showLocal && m.joined) {
-    const boundMs = Math.max(1, Math.round(m.clock.rttMs / 2));
-    const bound = `±${boundMs} ms`;
     if (m.clock.status === "synced") {
-      if (m.phase === "leading") status = `Leading · synced ${bound}`;
-      else if (m.phase === "listening") status = "Listening to the band…";
+      // The phases other than leading and clock only happen with LISTEN_BY_EAR on.
+      if (m.phase === "listening") status = "Listening to the band…";
       else if (m.phase === "matched") status = `Matched to the band ±${Math.max(1, Math.round(m.matchSpreadMs ?? 0))} ms`;
-      else if (m.phase === "failed") status = `Couldn't hear the band, synced by clock ${bound}`;
-      else status = `Synced ${bound}`;
-      // By the clock alone (couldn't hear the band, or nothing to match it with): a wide bound is a real error.
-      rough = (m.phase === "failed" || m.phase === "clock") && boundMs > ROUGH_SYNC_MS;
-      if (rough) status += ". Rough sync: measure this phone or use Wi-Fi.";
+      else if (m.phase === "failed") status = "Couldn't hear the band, synced by clock";
+      else status = "Synced";
     } else if (m.clock.status === "syncing") status = "Syncing...";
   }
   // Save as song tempo saves what is on screen: the shared tempo while it plays, else the controls'.
@@ -563,7 +498,7 @@ function SongMetronomePanel({ song, onSongChange, onSession }: Props) {
 
   return (
     <section className="tool song-metronome" aria-label="Metronome">
-      {status && <p className={rough ? "metro-status warn" : "metro-status"} role="status">{status}</p>}
+      {status && <p className="metro-status" role="status">{status}</p>}
       {!showLocal && m.joined && m.phase === "failed" && (
         <p className="actions">
           <button type="button" className="btn" onClick={m.listenAgain}>Listen again</button>
@@ -571,7 +506,7 @@ function SongMetronomePanel({ song, onSongChange, onSession }: Props) {
       )}
       {!showLocal && m.needsRoundTrip && (
         <p className="muted tool-note">
-          To match the band by ear, open Calibrate this phone and tap Measure this phone.
+          To match the band by ear, open Adjust timing and tap Measure this phone.
         </p>
       )}
       {m.noSound && m.joined && <p className="muted">No sound on this phone: follow the flash.</p>}
@@ -605,14 +540,14 @@ function SongMetronomePanel({ song, onSongChange, onSession }: Props) {
       <button
         type="button"
         className="metro-disclose"
-        aria-expanded={calibrating}
-        onClick={() => setCalibrating((v) => !v)}
+        aria-expanded={adjusting}
+        onClick={() => setAdjusting((v) => !v)}
       >
-        Calibrate this phone
+        Adjust timing
       </button>
-      {calibrating && <Calibrate nudge={nudge} onNudge={setNudge} roundTrip={roundTrip} onRoundTrip={setRoundTrip} />}
+      {adjusting && <AdjustTiming nudge={nudge} onNudge={setNudge} roundTrip={roundTrip} onRoundTrip={setRoundTrip} />}
       <p className="muted tool-note">
-        Bluetooth earphones lag 150–300 ms: use wired ones, or calibrate. On iPhone, check the silent switch.
+        Bluetooth earphones lag 150–300 ms: use wired ones, or adjust the timing. On iPhone, check the silent switch.
         Keep the screen on while it plays.
       </p>
     </section>

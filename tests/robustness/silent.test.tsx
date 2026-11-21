@@ -191,7 +191,7 @@ describe("H21: offline, then back online", () => {
   it("regression: a joined phone that loses the network keeps playing and says so within 4 s", async () => {
     const ctx = await joined();
     world.offline = true;
-    // Two failed checks in a row, 2 s apart.
+    // Two failed checks in a row, 1.5 s apart.
     await advance(4000, 10);
     expect(screen.getByText(/Can't reach the server/)).toBeInTheDocument();
     expect(soundingAt(ctx, ctx.currentTime)).toHaveLength(1);
@@ -217,7 +217,7 @@ describe("H22 (new): a request that never answers", () => {
     await joined();
     expect(screen.getByRole("status").textContent).toContain("Synced");
     world.hang = true;
-    // At worst: the first hung check goes out 2 s in, the second 2 s later, and it gives up 2.5 s after that.
+    // At worst: the first hung check goes out 1.5 s in, the second 1.5 s later, and it gives up 2.5 s after that.
     await advance(6500, 10);
     expect(screen.getByRole("status").textContent).toMatch(/Can't reach the server/);
     expect(screen.getByRole("status").textContent).not.toMatch(/Synced/i);
@@ -235,7 +235,7 @@ describe("H22 (new): a request that never answers", () => {
       told ||= screen.queryByText(/Can't reach the server/) !== null;
     }
     expect(told).toBe(false);
-    expect(world.sent.getMetronome - sent).toBeGreaterThanOrEqual(3); // ~2 s apart over 4.5 s, the hung one included
+    expect(world.sent.getMetronome - sent).toBeGreaterThanOrEqual(3); // ~1.5 s apart over 4.5 s, the hung one included
   });
 
   it("a slow check's late answer never overrides a newer check's answer", async () => {
@@ -247,11 +247,11 @@ describe("H22 (new): a request that never answers", () => {
     while (world.sent.getMetronome === sent) await advance(5, 5);
     await advance(50, 10);
     await w.other({ running: false }); // Stop for everyone, after the slow check was served
-    await advance(2050, 10); // the newer check (2 s after the slow one) has heard the Stop
+    await advance(1550, 10); // the newer check (1.5 s after the slow one) has heard the Stop
     expect(world.sent.getMetronome - sent).toBe(2);
     const t = ctx.currentTime;
-    // The slow answer lands ~2.3 s after it was sent; the check after that is due at 4 s.
-    await advance(1100, 10);
+    // The slow answer lands ~2.3 s after it was sent; the check after that is due at 3 s.
+    await advance(800, 10);
     expect(world.sent.getMetronome - sent).toBe(2);
     expect(heard(ctx, t, ctx.currentTime)).toEqual([]);
     expect(screen.getByRole("button", { name: "Start for everyone" })).toBeInTheDocument();

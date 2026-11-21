@@ -2,12 +2,11 @@
 //
 // Each phone has its own performance.now() (any origin, ±100 ppm against the server) and its own audio clock
 // (±100 ppm against true time), and reads the link between them with an optional jitter. It syncs as useClockSync
-// does with shared answers off: a first round of FIRST_ROUND time calls when the panel opens, then one sample per
-// session check (every POLL_JOINED_MS, each answer carries the server's time; a check slower than
-// METRONOME_TIMEOUT_MS gives no answer), grouped into ROUND_EVERY_MS rounds, best of the last ROUNDS_KEPT via the
-// real estimateOffset. It ticks every TICK_MS like useSyncedMetronome.reconcile: the real linkSmoother, the real
-// phaseError and shouldRealign (median over REALIGN_TICKS ticks above REALIGN_S), and a re-align placed from the
-// newest REALIGN_TICKS link readings that switches at the next bar line, an early loop at its own bar line (H9).
+// does: a first round of FIRST_ROUND serial time calls when the panel opens, then LATER_ROUND every ROUND_EVERY_MS
+// after the last one landed (a call slower than TIME_TIMEOUT_MS gives no sample), best of the last ROUNDS_KEPT
+// rounds via the real estimateOffset. Session checks are no clock samples. It ticks every TICK_MS like
+// useSyncedMetronome.reconcile: one link reading per tick, the real phaseError, and a loop more than REALIGN_S off
+// re-aligned at the next bar line, an early loop at its own bar line (H9).
 // "Error" is where a phone's bar line really sounds against the server's grid, ignoring output latency (i.e. as
 // if every phone were calibrated perfectly). Phones here sync by the clock alone: none is matched by ear.
 //
@@ -18,8 +17,8 @@
 // tables are the full run: SIM=1 npx vitest run tests/robustness/simulation.test.ts (PowerShell: $env:SIM=1 first).
 import { describe, it, expect } from "vitest";
 import { METRONOME_TIMEOUT_MS, TIME_TIMEOUT_MS } from "../../src/app/api";
-import { estimateOffset, LINK_WINDOW_MS, linkSmoother, toAudioTime, type ClockEstimate, type TimeSample } from "../../src/app/metronome/clock";
-import { phaseError, REALIGN_S, REALIGN_TICKS, shouldRealign } from "../../src/app/metronome/loop";
+import { estimateOffset, toAudioTime, type ClockEstimate, type TimeSample } from "../../src/app/metronome/clock";
+import { phaseError, REALIGN_S } from "../../src/app/metronome/loop";
 import { POLL_JOINED_MS, START_MARGIN_S, TICK_MS } from "../../src/app/metronome/useSyncedMetronome";
 import { FIRST_ROUND, LATER_ROUND, ROUND_EVERY_MS, ROUNDS_KEPT } from "../../src/app/metronome/useClockSync";
 import { applyChange, beatsInWindow, LEAD_MS, type MetroSession } from "../../src/shared/metronome";
@@ -52,19 +51,17 @@ class Phone {
   audioDrift: number;
   P0: number;
   A0: number;
-  /** useClockSync's rounds, and when the latest began (local ms). */
+  /** useClockSync's rounds. */
   rounds: TimeSample[][] = [];
-  roundStartMs = 0;
   estimate: ClockEstimate | null = null;
-  /** Checks sent but not answered yet: the sample, and the true time its answer lands. */
-  inFlight: { sample: TimeSample; at: number }[] = [];
-  nextCheckAt = 0;
-  smoother = linkSmoother();
+  /** The round of time calls running: its samples, and the true time it lands. */
+  pending: { samples: TimeSample[]; at: number } | null = null;
+  /** True time the next later round starts. */
+  nextRoundAt = 0;
   /** The loop sounding: its bar-0 origin (audio s). */
   origin: number | null = null;
   /** The loop a re-align booked: the old one sounds until `when`, then this one takes over and is checked. */
   next: { origin: number; when: number } | null = null;
-  errors: number[] = [];
   realigns = 0;
   constructor(r: Rand, t0: number, perfPpm: number, audioPpm: number, private jitterS: number) {
     this.perfDrift = (r() * 2 - 1) * perfPpm * 1e-6;
@@ -81,26 +78,21 @@ class Phone {
     const sample = { sentMs: this.perf(t), serverMs: t + up, receivedMs: this.perf(t + up + down) };
     return up + down <= timeoutMs ? { sample, at: t + up + down, ok: true } : { sample, at: t + timeoutMs, ok: false };
   }
-  /** The first round: FIRST_ROUND serial /api/time calls when the panel opens. Returns when it ends. */
-  firstRound(t: number, leg: Leg, r: Rand) {
-    const out: TimeSample[] = [];
-    for (let i = 0; i < FIRST_ROUND; i++) {
+  /** `n` serial /api/time calls from true time t: the samples, and when the round ends. */
+  round(n: number, t: number, leg: Leg, r: Rand) {
+    const samples: TimeSample[] = [];
+    for (let i = 0; i < n; i++) {
       const c = this.call(t, leg, r, TIME_TIMEOUT_MS);
-      if (c.ok) out.push(c.sample);
+      if (c.ok) samples.push(c.sample);
       t = c.at;
     }
-    this.newRound(out);
-    return t;
+    return { samples, at: t };
   }
-  newRound(samples: TimeSample[]) {
-    this.rounds = [...this.rounds, samples].slice(-ROUNDS_KEPT);
-    this.roundStartMs = Math.min(...samples.map((s) => s.sentMs));
-  }
-  /** useClockSync's sink: one more sample, from a session check's answer. */
-  addSample(s: TimeSample) {
-    if (s.sentMs - this.roundStartMs >= ROUND_EVERY_MS) this.newRound([s]);
-    else this.rounds[this.rounds.length - 1].push(s);
-    this.estimate = estimateOffset(this.rounds.flat());
+  /** A round landed: keep it (if it has samples), and the next one starts ROUND_EVERY_MS later. */
+  land(round: { samples: TimeSample[]; at: number }) {
+    if (round.samples.length) this.rounds = [...this.rounds, round.samples].slice(-ROUNDS_KEPT);
+    this.estimate = estimateOffset(this.rounds.flat()) ?? this.estimate;
+    this.nextRoundAt = round.at + ROUND_EVERY_MS;
   }
   /** A link reading as getOutputTimestamp() gives it, jittered by up to ±jitterS on the audio side. */
   reading(t: number, r: Rand) {
@@ -111,7 +103,6 @@ class Phone {
     if (this.next && a >= this.next.when) {
       this.origin = this.next.origin;
       this.next = null;
-      this.errors = [];
     }
     return this.origin!;
   }
@@ -140,37 +131,30 @@ function runError(
     // The panel opened a little before the start, and its first round landed before it (H1's fix).
     ps.forEach((p, i) => {
       const opened = t0 - 30_000 + r() * 1000;
-      p.firstRound(opened, legOf(i), r);
-      p.estimate = estimateOffset(p.rounds.flat());
-      p.nextCheckAt = opened + r() * POLL_JOINED_MS;
+      p.land(p.round(FIRST_ROUND, opened, legOf(i), r));
     });
     let tick = 0;
     for (let t = s.startAt; t < s.startAt + minutes * 60_000; t += TICK_MS, tick++) {
       const measure = tick % measureEvery === 0 && t >= s.startAt + 1000;
       const errs: number[] = [];
       for (const [i, p] of ps.entries()) {
-        // Session checks: one goes out every POLL_JOINED_MS, answered or not; each answer is a clock sample.
-        while (t >= p.nextCheckAt) {
-          const c = p.call(p.nextCheckAt, legOf(i), r, METRONOME_TIMEOUT_MS);
-          if (c.ok) p.inFlight.push(c);
-          p.nextCheckAt += POLL_JOINED_MS;
+        // Time rounds: LATER_ROUND serial calls every ROUND_EVERY_MS; the estimate moves when a round lands.
+        if (!p.pending && t >= p.nextRoundAt) p.pending = p.round(LATER_ROUND, p.nextRoundAt, legOf(i), r);
+        if (p.pending && t >= p.pending.at) {
+          p.land(p.pending);
+          p.pending = null;
         }
-        if (p.inFlight.some((c) => c.at <= t)) {
-          for (const c of p.inFlight.filter((c) => c.at <= t).sort((a, b) => a.at - b.at)) p.addSample(c.sample);
-          p.inFlight = p.inFlight.filter((c) => c.at > t);
-        }
-        // reconcile(): where this phone believes the grid's bar 0 is on its audio clock, now.
+        // reconcile(): where this phone believes the grid's bar 0 is on its audio clock, now (one link reading).
         const a = p.audio(t);
         const offsetMs = p.estimate!.offsetMs;
-        const startS = toAudioTime(s.startAt, offsetMs, p.smoother.add(p.reading(t, r)), 0);
+        const startS = toAudioTime(s.startAt, offsetMs, p.reading(t, r), 0);
         if (p.origin === null) p.origin = startS;
         const origin = p.soundingOrigin(a);
         if (!p.next) {
-          p.errors = [...p.errors, phaseError(startS, origin, barS)].slice(-REALIGN_TICKS);
-          if (shouldRealign(p.errors)) {
-            const gridS = toAudioTime(s.startAt, offsetMs, p.smoother.keepNewest(REALIGN_TICKS), 0);
-            const earlyS = Math.min(0, phaseError(gridS, origin, barS));
-            const at = gridS + Math.ceil((a + 0.1 - earlyS - gridS) / barS) * barS;
+          const errorS = phaseError(startS, origin, barS);
+          if (Math.abs(errorS) > REALIGN_S) {
+            const earlyS = Math.min(0, errorS);
+            const at = startS + Math.ceil((a + 0.1 - earlyS - startS) / barS) * barS;
             // The old loop plays on to at + earlyS (its own bar line when early); the new one starts at `at`.
             p.next = { origin: at, when: at };
             p.realigns++;
@@ -268,20 +252,18 @@ describe("Phase 2: protocol simulation", () => {
         extra.map(line).join("\n"),
     );
     expect(rows[0].p95).toBeLessThan(20); // T2 on Wi-Fi, from the protocol alone
-    // H8: jitter the median absorbs never re-aligns on every bar (120 BPM 4/4 has 1800 bars an hour).
-    expect(extra.find((x) => x.name.endsWith("±15 ms"))!.realignsPerHour).toBeLessThan(60);
   }, FULL ? 600_000 : 60_000);
 
   it("share of changes heard by all 5 phones before startAt; and with another lead or check interval (logged)", () => {
     const lines: string[] = [];
-    const header = `  profile                     kind   | lead ${LEAD_MS / 1000} s/check ${POLL_JOINED_MS / 1000} s (now) | lead 2 s | lead 4 s | check 1.5 s | check 1 s`;
+    const header = `  profile                     kind   | lead ${LEAD_MS / 1000} s/check ${POLL_JOINED_MS / 1000} s (now) | lead 2 s | lead 4 s | check 2 s | check 1 s`;
     for (const { name, leg } of PROFILES) {
       for (const kind of ["start", "tempo"] as const) {
         const now = runReach(leg, { kind });
         const cells = [
           runReach(leg, { kind, lead: 2000 }),
           runReach(leg, { kind, lead: 4000 }),
-          runReach(leg, { kind, poll: 1500 }),
+          runReach(leg, { kind, poll: 2000 }),
           runReach(leg, { kind, poll: 1000 }),
         ];
         lines.push(`  ${name.padEnd(26)}  ${kind.padEnd(5)}  | ${share(now.allPhones)} (1 phone misses ${share(now.perPhoneMiss).trim()}) | ${cells.map((c) => share(c.allPhones)).join(" | ")}`);
@@ -294,25 +276,21 @@ describe("Phase 2: protocol simulation", () => {
 
   it("requests per joined phone per hour, from the real constants (for H19)", () => {
     const polls = 3_600_000 / POLL_JOINED_MS;
-    // Shared answers off: only the first round makes time calls; after it, the session checks' answers are the
-    // samples. Shared answers on (#25): add LATER_ROUND time calls every ROUND_EVERY_MS.
-    const off = FIRST_ROUND;
-    const on = FIRST_ROUND + (LATER_ROUND * 3_600_000) / ROUND_EVERY_MS;
-    console.log(
-      `[SIM] per joined phone per hour: ${polls} session checks + ~${off} /api/time = ~${polls + off} function calls` +
-        ` (shared answers on: ~${on} /api/time, and the checks served from the cache don't run the function)`,
-    );
-    expect(polls).toBe(1800); // a 2 s check: 25 % fewer than the 1.5 s one (2400)
+    // The first round, then LATER_ROUND time calls every ROUND_EVERY_MS.
+    const time = FIRST_ROUND + (LATER_ROUND * 3_600_000) / ROUND_EVERY_MS;
+    console.log(`[SIM] per joined phone per hour: ${polls} session checks + ~${time} /api/time = ~${polls + time} function calls`);
+    expect(polls).toBe(2400); // a 1.5 s check, as in the old build
+    expect(time).toBe(200);
   });
 
   it("the app's constants are still the ones the review's tables were run with", () => {
     // The simulation imports the app's constants. When one changes, re-run the tables in the robustness review.
     const used = {
-      REALIGN_S, REALIGN_TICKS, TICK_MS, START_MARGIN_S, LINK_WINDOW_MS, POLL_JOINED_MS, LEAD_MS,
+      REALIGN_S, TICK_MS, START_MARGIN_S, POLL_JOINED_MS, LEAD_MS,
       FIRST_ROUND, LATER_ROUND, ROUND_EVERY_MS, ROUNDS_KEPT, METRONOME_TIMEOUT_MS, TIME_TIMEOUT_MS,
     };
     expect(used).toEqual({
-      REALIGN_S: 0.012, REALIGN_TICKS: 8, TICK_MS: 25, START_MARGIN_S: 0.05, LINK_WINDOW_MS: 1500, POLL_JOINED_MS: 2000,
+      REALIGN_S: 0.01, TICK_MS: 25, START_MARGIN_S: 0.05, POLL_JOINED_MS: 1500,
       LEAD_MS: 3000, FIRST_ROUND: 20, LATER_ROUND: 3, ROUND_EVERY_MS: 60_000, ROUNDS_KEPT: 3, METRONOME_TIMEOUT_MS: 2500,
       TIME_TIMEOUT_MS: 2000,
     });

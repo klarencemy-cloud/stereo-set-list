@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm run build` — `tsc --noEmit && vite build` (type-check is part of the build; there is no separate lint step).
 - `npm test` — `vitest run`. Single file: `npx vitest run tests/shared/transpose.test.ts`; by name: `npx vitest run -t "name"`.
 - Node 22+ required.
+- `cloudflared` (Windows: `winget install --id Cloudflare.cloudflared`) is required for testing on phones/bandmates' devices. With `npm run dev` running, start the tunnel in a second terminal: `cloudflared tunnel --url http://localhost:8888`. It prints a random `https://*.trycloudflare.com` URL (changes each run; no account needed). HTTPS is needed for the mic (tuner) and wake lock, which don't work over a plain LAN `http://` address. `vite.config.ts` has `server.allowedHosts: [".trycloudflare.com"]` so Vite accepts the tunnel host; restart `npm run dev` after changing it. The tunnel exposes the unauthenticated app to anyone with the URL, so only share it with the band, and close it when done.
 
 ## Architecture
 

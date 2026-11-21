@@ -36,20 +36,11 @@ export function loopStart(gridStartS: number, barS: number, earliestS: number): 
   return { when: earliestS, offset: into < 1e-9 || barS - into < 1e-9 ? 0 : into };
 }
 
-/** How many ticks in a row the drift check looks at, and how big the median phase error must be to re-align. */
-export const REALIGN_TICKS = 8;
-export const REALIGN_S = 0.012;
-
 /**
- * Whether a playing loop should be re-aligned, from its phase errors on the last REALIGN_TICKS ticks (s): only
- * when their median is over REALIGN_S, so a few jittery readings never move it.
+ * A loop further than this from the grid (s) is moved back onto it at the next bar line. Only for clock jitter and
+ * drift: a nudge the player changed moves it however small.
  */
-export function shouldRealign(errorsS: number[]): boolean {
-  if (errorsS.length < REALIGN_TICKS) return false;
-  const last = errorsS.slice(-REALIGN_TICKS).sort((a, b) => a - b);
-  const mid = REALIGN_TICKS / 2;
-  return Math.abs((last[mid - 1] + last[mid]) / 2) > REALIGN_S;
-}
+export const REALIGN_S = 0.01;
 
 /**
  * How far a playing loop is from where it should be (seconds, + = the loop is late), given where bar lines are

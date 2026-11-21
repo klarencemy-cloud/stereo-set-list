@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 const store = {
   getWithMetadata: vi.fn(),
+  get: vi.fn(),
+  list: vi.fn(),
   set: vi.fn(),
 };
 vi.mock("@netlify/blobs", () => ({ getStore: vi.fn(() => store) }));
@@ -30,8 +32,32 @@ describe("blobsKV", () => {
     expect(store.set).toHaveBeenCalledWith("metronome/a", "v", { onlyIfNew: true });
   });
 
-  it("refuses to hand out a value without an etag rather than write unconditionally", async () => {
+  it("takes the etag from the listing when a read has none (the local dev server)", async () => {
+    store.getWithMetadata.mockResolvedValueOnce({ data: "v0", etag: undefined, metadata: {} });
+    store.list.mockResolvedValue({ blobs: [{ key: "songs/ab", etag: '"x"' }, { key: "songs/a", etag: '"e1"' }], directories: [] });
+    store.get.mockResolvedValueOnce("v1");
+    expect(await blobsKV().getTextTagged("songs/a")).toEqual({ value: "v1", etag: '"e1"' });
+    expect(store.list).toHaveBeenCalledWith({ prefix: "songs/a" });
+  });
+
+  it("rereads when the value changed while its etag was being looked up", async () => {
+    store.getWithMetadata.mockResolvedValueOnce({ data: "v0", etag: undefined, metadata: {} });
+    const listing = (etag: string) => ({ blobs: [{ key: "k", etag }], directories: [] });
+    store.list.mockReset();
+    store.list
+      .mockResolvedValueOnce(listing('"e1"'))
+      .mockResolvedValueOnce(listing('"e2"'))
+      .mockResolvedValueOnce(listing('"e2"'))
+      .mockResolvedValueOnce(listing('"e2"'));
+    store.get.mockResolvedValueOnce("v1").mockResolvedValueOnce("v2");
+    expect(await blobsKV().getTextTagged("k")).toEqual({ value: "v2", etag: '"e2"' });
+  });
+
+  it("refuses to hand out a value without any etag rather than write unconditionally", async () => {
     store.getWithMetadata.mockResolvedValueOnce({ data: "v1", etag: undefined, metadata: {} });
+    store.list.mockReset();
+    store.list.mockResolvedValue({ blobs: [], directories: [] });
+    store.get.mockResolvedValue("v1");
     await expect(blobsKV().getTextTagged("songs/a")).rejects.toThrow(/etag/);
   });
 });

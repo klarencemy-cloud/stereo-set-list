@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CLOCK_PAUSE_MS, estimateOffset, fitDrift, linkSmoother, nudgeFromTaps, pausedMs, toAudioTime } from "../../src/app/metronome/clock";
+import { CLOCK_PAUSE_MS, estimateOffset, fitDrift, pausedMs, toAudioTime } from "../../src/app/metronome/clock";
 
 describe("estimateOffset", () => {
   it("is null with no samples", () => {
@@ -71,44 +71,6 @@ describe("toAudioTime", () => {
   });
 });
 
-describe("nudgeFromTaps", () => {
-  const clicks = Array.from({ length: 12 }, (_, i) => 1000 + i * 667);
-
-  it("is the median lateness of the taps after the first four", () => {
-    const late = [400, -300, 900, 50, 140, 150, 130, 145, 135, 160, 120, 140];
-    const taps = clicks.map((c, i) => c + late[i]);
-    expect(nudgeFromTaps(clicks, taps)).toBe(140);
-  });
-
-  it("matches each tap to its nearest click, whatever order or count", () => {
-    // Taps for clicks 4..11 only, all 100 ms late, after four warm-up taps.
-    const warmUp = [0, 10, 20, 30];
-    const taps = [...warmUp, ...clicks.slice(4).map((c) => c + 100)];
-    expect(nudgeFromTaps(clicks, taps)).toBe(100);
-  });
-
-  it("ignores taps more than 200 ms from any click", () => {
-    const late = [0, 0, 0, 0, -60, -55, 250, -60, 330, -65, -50, -60];
-    const taps = clicks.map((c, i) => c + late[i]);
-    expect(nudgeFromTaps(clicks, taps)).toBe(-60);
-  });
-
-  it("needs at least 5 good taps", () => {
-    const taps = clicks.slice(0, 8).map((c) => c + 80); // 4 warm-up + 4 good
-    expect(nudgeFromTaps(clicks, taps)).toBeNull();
-    expect(nudgeFromTaps(clicks, clicks.slice(0, 9).map((c) => c + 80))).toBe(80);
-  });
-
-  it("rounds to the slider's 5 ms steps", () => {
-    const taps = clicks.map((c) => c + 87);
-    expect(nudgeFromTaps(clicks, taps)).toBe(85);
-  });
-
-  it("is null without clicks", () => {
-    expect(nudgeFromTaps([], [1, 2, 3, 4, 5, 6, 7, 8, 9])).toBeNull();
-  });
-});
-
 describe("fitDrift", () => {
   /** A round of samples answered with `offset` at local time `at`, plus slower ones that are further off. */
   const round = (at: number, offset: number) => [
@@ -133,29 +95,5 @@ describe("fitDrift", () => {
 
   it("skips empty rounds", () => {
     expect(fitDrift([round(0, 100), [], round(60_000, 106), round(120_000, 112)])).toBeCloseTo(6 / 60_000, 12);
-  });
-});
-
-describe("linkSmoother", () => {
-  it("averages the offset between the clocks over the last 1.5 s, given back at the newest reading", () => {
-    const sm = linkSmoother();
-    sm.add({ perfMs: 1000, audioS: 0.01 }); // offset -0.99 s
-    const l = sm.add({ perfMs: 1100, audioS: 0.13 }); // offset -0.97 s
-    expect(l.perfMs).toBe(1100);
-    expect(l.audioS).toBeCloseTo(0.12, 9); // 1.1 - 0.98
-  });
-
-  it("drops readings older than 1.5 s before the newest", () => {
-    const sm = linkSmoother();
-    sm.add({ perfMs: 0, audioS: 5 });
-    expect(sm.add({ perfMs: 2000, audioS: 2 }).audioS).toBeCloseTo(2, 9);
-  });
-
-  it("keepNewest forgets the older readings", () => {
-    const sm = linkSmoother();
-    sm.add({ perfMs: 1000, audioS: 1 });
-    sm.add({ perfMs: 1025, audioS: 1.055 });
-    sm.add({ perfMs: 1050, audioS: 1.08 });
-    expect(sm.keepNewest(2).audioS).toBeCloseTo(1.08, 9); // offset 0.03, not the 0.02 average of all three
   });
 });

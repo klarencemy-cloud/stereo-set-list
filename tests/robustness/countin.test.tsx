@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// A. Missed count-in (H1, H2, H11). Every phone should hear beat 1 of a start (target T1, round trips up to 1 s).
+// A. Missed count-in (H1, H2). Every phone should hear beat 1 of a start (target T1, round trips up to 1 s).
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
@@ -8,7 +8,7 @@ vi.mock("../../src/app/api", async () => {
   return { ...actual, api: { ...actual.api, updateSong: vi.fn() } };
 });
 
-import SongMetronome, { ROUNDTRIP_KEY } from "../../src/app/components/SongMetronome";
+import SongMetronome from "../../src/app/components/SongMetronome";
 import { LEAD_MS, type MetroSession } from "../../src/shared/metronome";
 import { advance, advanceUntil, FakeAudioContext, heard, setupWorld, teardownWorld, world } from "./harness";
 
@@ -94,7 +94,7 @@ describe("H1: Join on a panel that has been open plays without waiting for the c
 
 /**
  * A follower that is joined while the session is stopped (someone pressed Stop, everyone stayed joined). Another
- * phone restarts it right after this phone's poll was read at the server: the worst case for the 2 s check.
+ * phone restarts it right after this phone's poll was read at the server: the worst case for the 1.5 s check.
  */
 async function followerOfRestart(metroLeg: [number, number], timeLeg: [number, number] = [10, 10]) {
   world.latency = { getTime: timeLeg, getMetronome: metroLeg, putMetronome: metroLeg };
@@ -129,14 +129,14 @@ describe("H2: a joined follower hears of a restart too late for the count-in", (
     expect(got).toHaveLength(want);
   });
 
-  it("H2 with the 2 s check: a downlink up to about 900 ms (50 ms up, 850 ms down) still hears beat 1", async () => {
-    const { got, want } = await followerOfRestart([50, 850]);
+  it("H2 with the 1.5 s check: a downlink up to about 1.4 s (50 ms up, 1350 ms down) still hears beat 1", async () => {
+    const { got, want } = await followerOfRestart([50, 1350]);
     expect(got).toHaveLength(want);
   });
 
   it("H2 measure: beats of bar 1 missed against the downlink delay, worst-case timing (logged)", async () => {
     const rows: string[] = [];
-    for (const down of [300, 500, 700, 850, 900, 950, 1000]) {
+    for (const down of [300, 700, 1000, 1300, 1350, 1400, 1450, 1500]) {
       cleanup();
       teardownWorld();
       w = await setupWorld();
@@ -144,74 +144,6 @@ describe("H2: a joined follower hears of a restart too late for the count-in", (
       rows.push(`  up 50 / down ${String(down).padStart(4)} ms: missed ${missed} of ${want}`);
     }
     console.log(`[H2] joined follower, restart right after its poll was read:\n${rows.join("\n")}`);
-    expect(rows).toHaveLength(7);
-  });
-});
-
-/** Joins a running session after the panel was open a moment, with this link on every call. Returns the status line. */
-async function joinWith(leg: [number, number], over: { leader?: string } = {}) {
-  world.latency = { getTime: leg, getMetronome: leg, putMetronome: leg };
-  await w.other({ bpm: 120, beatsPerBar: 4, running: true, ...over });
-  render(<SongMetronome song={w.song} onSongChange={() => {}} />);
-  await advance(25 * (leg[0] + leg[1]) + 100, 10);
-  fireEvent.click(screen.getByRole("button", { name: "Join" }));
-  await advance(1000, 10);
-  return screen.getByRole("status");
-}
-
-const ROUGH = /measure this phone or use Wi-Fi/i;
-
-describe("H11: the sync status is a fair bound, and a rough clock-only sync warns", () => {
-  it("a lopsided link (10 ms up, 70 ms down) puts the clicks 30 ms late, says 'Synced ±40 ms' and warns", async () => {
-    // One link for every call: the metronome answers carry the server's time too, so they are clock samples.
-    world.latency = { getTime: [10, 70], getMetronome: [10, 70], putMetronome: [10, 70] };
-    await w.other({ bpm: 120, beatsPerBar: 4, running: true });
-    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
-    await advance(100, 10);
-    fireEvent.click(screen.getByRole("button", { name: "Join" }));
-    await advance(4000, 10);
-    const s = (await w.stored())!;
-    const ctx = FakeAudioContext.instances[0];
-    const bar = heard(ctx, ctx.audioAt(s.startAt) + 2.5, ctx.audioAt(s.startAt) + 4.5).find((h) => h.accent)!;
-    // Grid bar lines are startAt + k·2000 ms; how far the played one is from the true one.
-    const errMs = (((bar.t - ctx.audioAt(s.startAt)) % 2) + 2) % 2 * 1000;
-    const late = errMs > 1000 ? errMs - 2000 : errMs;
-    expect(Math.round(late)).toBe(30);
-    // The bound shown is honest (error ≤ half the round trip), and over 25 ms it warns.
-    const status = screen.getByRole("status");
-    expect(status).toHaveTextContent("Synced ±40 ms");
-    expect(status).toHaveClass("warn");
-    expect(status).toHaveTextContent(ROUGH);
-  });
-
-  it("at a 400 ms network round trip it shows 'Synced ±200 ms' with the warning style", async () => {
-    const status = await joinWith([200, 200]);
-    expect(status).toHaveTextContent("Synced ±200 ms");
-    expect(status).toHaveClass("warn");
-    expect(status).toHaveTextContent(ROUGH);
-  });
-
-  it("at ±25 ms (a 50 ms network round trip) it doesn't warn", async () => {
-    const status = await joinWith([25, 25]);
-    expect(status).toHaveTextContent("Synced ±25 ms");
-    expect(status).not.toHaveClass("warn");
-    expect(status).not.toHaveTextContent(ROUGH);
-  });
-
-  it("a phone that couldn't hear the band warns over 25 ms", async () => {
-    localStorage.setItem(ROUNDTRIP_KEY, "50");
-    world.mic.blocked = true;
-    await joinWith([50, 50], { leader: "them" });
-    await advanceUntil(() => /Couldn't hear the band/.test(screen.getByRole("status").textContent ?? ""), 10_000, 10);
-    expect(screen.getByRole("status")).toHaveClass("warn");
-    expect(screen.getByRole("status")).toHaveTextContent(ROUGH);
-  });
-
-  it("a phone matched to the band by ear doesn't warn, however long its network round trip", async () => {
-    localStorage.setItem(ROUNDTRIP_KEY, String(world.mic.loopbackMs));
-    await joinWith([100, 100], { leader: "them" });
-    await advanceUntil(() => /Matched to the band/.test(screen.getByRole("status").textContent ?? ""), 10_000, 10);
-    expect(screen.getByRole("status")).not.toHaveClass("warn");
-    expect(screen.getByRole("status")).not.toHaveTextContent(ROUGH);
+    expect(rows).toHaveLength(8);
   });
 });

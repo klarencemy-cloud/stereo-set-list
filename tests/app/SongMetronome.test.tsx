@@ -11,6 +11,7 @@ vi.mock("../../src/app/metronome/listen", () => ({ listen: vi.fn(() => new Promi
 import { api, ApiError } from "../../src/app/api";
 import SongMetronome, { NUDGE_KEY, ROUNDTRIP_KEY } from "../../src/app/components/SongMetronome";
 import { DEVICE_KEY } from "../../src/app/device";
+import { LISTEN_BY_EAR } from "../../src/app/metronome/byEar";
 import { listen } from "../../src/app/metronome/listen";
 import { METRONOME_KEY } from "../../src/app/components/Metronome";
 import type { MetroSession } from "../../src/shared/metronome";
@@ -171,7 +172,7 @@ describe("SongMetronome, nothing running", () => {
     serve(mocked.getMetronome, theirs);
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     expect(await screen.findByRole("button", { name: "Leave" })).toBeInTheDocument();
-    expect(await screen.findByText(/Synced ±\d+ ms/)).toBeInTheDocument();
+    expect(await screen.findByText("Synced")).toBeInTheDocument();
     expect(screen.queryByText("Already playing at 120 BPM")).toBeNull();
     expect(mocked.putMetronome).toHaveBeenCalledTimes(1); // Join changes nothing for everyone
     await waitFor(() => expect(FakeAudioContext.instances[0].loops.length).toBeGreaterThan(0));
@@ -214,7 +215,7 @@ describe("SongMetronome, a session is running", () => {
     renderPanel();
     expect(await screen.findByText("Playing at 120 BPM")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
-    expect(await screen.findByText(/Synced ±\d+ ms/)).toBeInTheDocument();
+    expect(await screen.findByText("Synced")).toBeInTheDocument();
     expect(mocked.getTime.mock.calls.length).toBeGreaterThanOrEqual(10);
     expect(FakeAudioContext.instances).toHaveLength(1);
   });
@@ -252,9 +253,13 @@ describe("SongMetronome, a session is running", () => {
 
   describe("playing", () => {
     let ctx: FakeAudioContext;
-    /** Moves performance.now() and the audio clock together (audio 0 s = perf 4000 ms) and lets timers run. */
+    /**
+     * Moves performance.now(), the wall clock and the audio clock together (audio 0 s = perf 4000 ms) and lets timers
+     * run. The wall clock keeps step, so the clock sync never mistakes a jump for the phone having slept.
+     */
     const moveTo = async (ms: number, audioAheadS = 0) => {
       perf = ms;
+      vi.setSystemTime(ms - 30);
       ctx.currentTime = (ms - 4000) / 1000 + audioAheadS;
       await act(async () => {
         await vi.advanceTimersByTimeAsync(30);
@@ -269,9 +274,10 @@ describe("SongMetronome, a session is running", () => {
     const round = (l: FakeLoop) => ({ when: +l.when!.toFixed(3), offset: +l.offset!.toFixed(3), loopEnd: l.loopEnd });
 
     beforeEach(async () => {
-      vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
+      vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval", "Date"] });
       localStorage.setItem(NUDGE_KEY, "100");
       perf = 4000; // server time 9000; beat 0 is at 10 000, bars of 2000 ms
+      vi.setSystemTime(perf);
       serve(mocked.getMetronome, running());
       renderPanel();
       await act(async () => {
@@ -346,13 +352,10 @@ describe("SongMetronome, a session is running", () => {
       expect(ctx.loops[1].stoppedAt).toBeUndefined();
     });
 
-    it("pulls a loop that drifted back onto the grid at the next bar line", async () => {
+    it("pulls a loop that drifted more than 10 ms back onto the grid at the next bar line", async () => {
       await moveTo(4010);
-      // The audio clock runs 30 ms ahead of where it was: the loop now sounds 30 ms early. One tick of it isn't
-      // enough (that could be jitter); it is moved once the error has lasted a few ticks.
+      // The audio clock runs 30 ms ahead of where it was: the loop now sounds 30 ms early.
       await moveTo(6000, 0.03);
-      expect(ctx.loops).toHaveLength(1);
-      for (let ms = 6030; ms <= 6300; ms += 30) await moveTo(ms, 0.03);
       expect(ctx.loops).toHaveLength(2);
       const [old, fresh] = ctx.loops;
       expect(fresh.offset).toBe(0);
@@ -360,6 +363,12 @@ describe("SongMetronome, a session is running", () => {
       expect(old.stoppedAt).toBeCloseTo(fresh.when! - 0.03);
       // The new loop's bar lines are back on the grid (bar line at audio 0.9 + 2k, plus the 30 ms).
       expect(offBar(fresh.when!, 0.93)).toBeLessThan(1e-6);
+    });
+
+    it("leaves a loop that drifted 10 ms or less alone", async () => {
+      await moveTo(4010);
+      for (let ms = 6000; ms <= 9000; ms += 30) await moveTo(ms, 0.009);
+      expect(ctx.loops).toHaveLength(1);
     });
 
     it("stops the loop when someone stops it for everyone", async () => {
@@ -400,57 +409,62 @@ describe("SongMetronome, a session is running", () => {
   });
 });
 
-describe("SongMetronome after a stop", () => {
-  it("keeps the tempo it was playing at, so a restart and a save use what is on screen", async () => {
-    serve(mocked.getMetronome, running({ bpm: 123 }));
-    store(running({ bpm: 123, running: false, updatedAt: "2026-11-15T10:00:01.000Z" }));
-    mocked.updateSong.mockResolvedValue({ ...song, bpm: 123, beatsPerBar: 4, updatedAt: "y" });
-    renderPanel();
-    fireEvent.click(await screen.findByRole("button", { name: "Stop for everyone" }));
-    await screen.findByRole("button", { name: "Start for everyone" });
-    expect(document.querySelector(".metro-bpm")).toHaveTextContent("123");
-    fireEvent.click(screen.getByRole("button", { name: "Save as song tempo" }));
-    expect(mocked.updateSong).toHaveBeenCalledWith("s1", { bpm: 123, beatsPerBar: 4 }, "x");
+// With the LISTEN_BY_EAR test switch on, a measured phone listens instead: see "matching the band by ear".
+describe.skipIf(LISTEN_BY_EAR)("joining by the clock alone", () => {
+  let getUserMedia: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    getUserMedia = vi.fn(async () => ({ getTracks: () => [] }));
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
+    // A phone measured by an older version still has its loopback delay saved: it must not matter.
+    localStorage.setItem("stereo-set:metronome-roundtrip", "50");
+  });
+  afterEach(() => {
+    delete (navigator as unknown as { mediaDevices?: unknown }).mediaDevices;
   });
 
-  it("saves the tempo on screen, not an older stopped session's", async () => {
-    serve(mocked.getMetronome, running({ bpm: 140, running: false }));
-    mocked.updateSong.mockResolvedValue({ ...song, bpm: 97, updatedAt: "y" });
+  it("Join a bandmate's session never asks for the mic, and the status says just 'Synced'", async () => {
+    serve(mocked.getMetronome, running({ leader: "drummer" }));
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Join" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(/^Synced$/));
+    await waitFor(() => expect(FakeAudioContext.instances[0].loops.length).toBeGreaterThan(0));
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("a slow network shows no rough-sync warning", async () => {
+    // 200 ms network round trips: once '±100 ms', with a warning.
+    mocked.getTime.mockImplementation(async () => {
+      const sent = perf;
+      perf += 200;
+      return { now: sent + 100 + serverAhead };
+    });
+    serve(mocked.getMetronome, running({ leader: "drummer" }));
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Join" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(/^Synced$/));
+    expect(screen.getByRole("status")).not.toHaveClass("warn");
+  });
+
+  it("the phone that started it says just 'Synced' too", async () => {
+    store(running({ bpm: 96, beatsPerBar: 3, leader: undefined }));
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Start for everyone" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(/^Synced$/));
+  });
+
+  it("Adjust timing opens only the nudge slider", async () => {
     renderPanel();
     await screen.findByRole("button", { name: "Start for everyone" });
-    // The song's own tempo is on screen: nothing to save.
-    expect(document.querySelector(".metro-bpm")).toHaveTextContent("96");
-    expect(screen.queryByRole("button", { name: "Save as song tempo" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Faster" }));
-    fireEvent.click(screen.getByRole("button", { name: "Save as song tempo" }));
-    expect(mocked.updateSong).toHaveBeenCalledWith("s1", { bpm: 97, beatsPerBar: 3 }, "x");
+    expect(screen.queryByRole("button", { name: "Calibrate this phone" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Adjust timing" }));
+    expect(screen.getByRole("slider", { name: "Nudge" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Tap along" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Measure this phone" })).toBeNull();
+    expect(getUserMedia).not.toHaveBeenCalled();
   });
 });
 
-describe("SongMetronome fallback", () => {
-  it("plays on this phone only when the server can't be reached", async () => {
-    mocked.getMetronome.mockRejectedValue(new ApiError(0, "Can't reach the server."));
-    renderPanel();
-    expect(await screen.findByText("Can't sync: playing on this phone only")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Start on this phone" }));
-    expect(FakeAudioContext.instances[0].loops.length).toBe(1);
-    expect(mocked.putMetronome).not.toHaveBeenCalled();
-  });
-
-  it("plays on this phone only when the clock can't be synced", async () => {
-    // Answers that carry no server time (an older server), so only the time calls could sync the clock.
-    mocked.getMetronome.mockImplementation(async () => ({ session: running() }));
-    mocked.getTime.mockRejectedValue(new ApiError(0, "Can't reach the server."));
-    renderPanel();
-    const join = await screen.findByRole("button", { name: "Join" });
-    // The network goes after that first check, so no answer brings the server's time either.
-    mocked.getMetronome.mockRejectedValue(new ApiError(0, "Can't reach the server."));
-    fireEvent.click(join);
-    expect(await screen.findByText("Can't sync: playing on this phone only")).toBeInTheDocument();
-  });
-});
-
-describe("matching the band by ear", () => {
+describe.runIf(LISTEN_BY_EAR)("matching the band by ear", () => {
   let ctx: FakeAudioContext;
   /** Moves performance.now() and the audio clock together (audio 0 s = perf 4000 ms) and lets timers run. */
   const moveTo = async (ms: number) => {
@@ -520,7 +534,7 @@ describe("matching the band by ear", () => {
     await moveTo(4010);
     expect(listenMock).not.toHaveBeenCalled();
     expect(playing().map((l) => +l.when!.toFixed(3))).toEqual([0.9]);
-    expect(screen.getByRole("status")).toHaveTextContent(/^Leading · synced ±\d+ ms$/);
+    expect(screen.getByRole("status")).toHaveTextContent(/^Synced$/);
   });
 
   it("plays by the clock alone when it can't hear the band, and Listen again goes silent and tries again", async () => {
@@ -529,7 +543,7 @@ describe("matching the band by ear", () => {
     calls[0].reject(new DOMException("blocked", "NotAllowedError"));
     await moveTo(4010);
     expect(playing().map((l) => +l.when!.toFixed(3))).toEqual([0.9]);
-    expect(screen.getByRole("status")).toHaveTextContent(/^Couldn't hear the band, synced by clock ±\d+ ms$/);
+    expect(screen.getByRole("status")).toHaveTextContent(/^Couldn't hear the band, synced by clock$/);
     fireEvent.click(screen.getByRole("button", { name: "Listen again" }));
     await moveTo(4100);
     expect(listenMock).toHaveBeenCalledTimes(2);
@@ -591,15 +605,15 @@ describe("matching the band by ear", () => {
     await moveTo(4010);
     await moveTo(6000); // the loop is playing, so it is checked for drift
     const booked = ctx.loops.length;
-    const checks = mocked.getMetronome.mock.calls.length;
+    const timeCalls = mocked.getTime.mock.calls.length;
     // The clock estimate moves by 40 ms; once the first round has aged out, a clock-only phone would follow it.
     serverAhead = 5040;
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3 * 60_000 + 100);
     });
     await moveTo(6100);
-    // The session checks brought the moved clock's samples, over more than ROUNDS_KEPT rounds.
-    expect(mocked.getMetronome.mock.calls.length - checks).toBeGreaterThanOrEqual(80);
+    // Three later rounds of time calls brought the moved clock's samples, so the first round has aged out.
+    expect(mocked.getTime.mock.calls.length - timeCalls).toBeGreaterThanOrEqual(9);
     expect(ctx.loops).toHaveLength(booked);
     expect(screen.getByRole("status")).toHaveTextContent("Matched to the band");
   });
@@ -609,7 +623,7 @@ describe("matching the band by ear", () => {
     await moveTo(4010);
     expect(listenMock).not.toHaveBeenCalled();
     expect(playing().map((l) => +l.when!.toFixed(3))).toEqual([0.9]);
-    expect(screen.getByRole("status")).toHaveTextContent(/^Synced ±\d+ ms$/);
+    expect(screen.getByRole("status")).toHaveTextContent(/^Synced$/);
     expect(screen.getByText(/tap Measure this phone/)).toBeInTheDocument();
   });
 
@@ -620,87 +634,77 @@ describe("matching the band by ear", () => {
     expect(playing().map((l) => +l.when!.toFixed(3))).toEqual([0.9]);
     expect(screen.queryByText(/tap Measure this phone/)).toBeNull();
   });
+
+  it("Adjust timing has Measure this phone", async () => {
+    renderPanel();
+    await screen.findByRole("button", { name: "Start for everyone" });
+    fireEvent.click(screen.getByRole("button", { name: "Adjust timing" }));
+    expect(screen.getByRole("button", { name: "Measure this phone" })).toBeInTheDocument();
+    expect(screen.getByText(/Not measured yet/)).toBeInTheDocument();
+  });
 });
 
-describe("Calibrate this phone", () => {
+describe("SongMetronome after a stop", () => {
+  it("keeps the tempo it was playing at, so a restart and a save use what is on screen", async () => {
+    serve(mocked.getMetronome, running({ bpm: 123 }));
+    store(running({ bpm: 123, running: false, updatedAt: "2026-11-15T10:00:01.000Z" }));
+    mocked.updateSong.mockResolvedValue({ ...song, bpm: 123, beatsPerBar: 4, updatedAt: "y" });
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Stop for everyone" }));
+    await screen.findByRole("button", { name: "Start for everyone" });
+    expect(document.querySelector(".metro-bpm")).toHaveTextContent("123");
+    fireEvent.click(screen.getByRole("button", { name: "Save as song tempo" }));
+    expect(mocked.updateSong).toHaveBeenCalledWith("s1", { bpm: 123, beatsPerBar: 4 }, "x");
+  });
+
+  it("saves the tempo on screen, not an older stopped session's", async () => {
+    serve(mocked.getMetronome, running({ bpm: 140, running: false }));
+    mocked.updateSong.mockResolvedValue({ ...song, bpm: 97, updatedAt: "y" });
+    renderPanel();
+    await screen.findByRole("button", { name: "Start for everyone" });
+    // The song's own tempo is on screen: nothing to save.
+    expect(document.querySelector(".metro-bpm")).toHaveTextContent("96");
+    expect(screen.queryByRole("button", { name: "Save as song tempo" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Faster" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save as song tempo" }));
+    expect(mocked.updateSong).toHaveBeenCalledWith("s1", { bpm: 97, beatsPerBar: 3 }, "x");
+  });
+});
+
+describe("SongMetronome fallback", () => {
+  it("plays on this phone only when the server can't be reached", async () => {
+    mocked.getMetronome.mockRejectedValue(new ApiError(0, "Can't reach the server."));
+    renderPanel();
+    expect(await screen.findByText("Can't sync: playing on this phone only")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Start on this phone" }));
+    expect(FakeAudioContext.instances[0].loops.length).toBe(1);
+    expect(mocked.putMetronome).not.toHaveBeenCalled();
+  });
+
+  it("plays on this phone only when the clock can't be synced", async () => {
+    // Answers that carry no server time (an older server), so only the time calls could sync the clock.
+    mocked.getMetronome.mockImplementation(async () => ({ session: running() }));
+    mocked.getTime.mockRejectedValue(new ApiError(0, "Can't reach the server."));
+    renderPanel();
+    const join = await screen.findByRole("button", { name: "Join" });
+    // The network goes after that first check, so no answer brings the server's time either.
+    mocked.getMetronome.mockRejectedValue(new ApiError(0, "Can't reach the server."));
+    fireEvent.click(join);
+    expect(await screen.findByText("Can't sync: playing on this phone only")).toBeInTheDocument();
+  });
+});
+
+describe("Adjust timing", () => {
   it("saves the nudge on this phone", async () => {
     const { unmount } = renderPanel();
-    fireEvent.click(screen.getByText("Calibrate this phone"));
+    fireEvent.click(screen.getByRole("button", { name: "Adjust timing" }));
     fireEvent.change(screen.getByRole("slider", { name: "Nudge" }), { target: { value: "140" } });
     expect(localStorage.getItem(NUDGE_KEY)).toBe("140");
     expect(screen.getByText("+140 ms (plays earlier)")).toBeInTheDocument();
     unmount();
     renderPanel();
-    fireEvent.click(screen.getByText("Calibrate this phone"));
+    fireEvent.click(screen.getByRole("button", { name: "Adjust timing" }));
     expect(screen.getByRole("slider", { name: "Nudge" })).toHaveValue("140");
-  });
-
-  it("measures the nudge from a tap-along", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
-    renderPanel();
-    fireEvent.click(screen.getByText("Calibrate this phone"));
-    fireEvent.click(screen.getByRole("button", { name: "Tap along" }));
-    const ctx = FakeAudioContext.instances[0];
-    expect(ctx.started).toHaveLength(12);
-    // Tap every click 140 ms late (the audio clock and performance.now() both start at 0 here).
-    for (const t of ctx.started) {
-      perf = t * 1000 + 140;
-      fireEvent.pointerDown(screen.getByRole("button", { name: "Tap" }));
-    }
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(10_000);
-    });
-    expect(screen.getByText("Measured +140 ms, saved")).toBeInTheDocument();
-    expect(localStorage.getItem(NUDGE_KEY)).toBe("140");
-  });
-
-  it("measures this phone's round trip from clicks it plays and hears, and saves it", async () => {
-    listenMock.mockImplementation(async (ctx: FakeAudioContext, seconds: number, opts: { onStart?: () => void }) => {
-      opts.onStart?.();
-      expect(ctx.started).toHaveLength(8);
-      return recording(ctx.sampleRate, 0, seconds, ctx.started.map((t) => t + 0.142));
-    });
-    renderPanel();
-    fireEvent.click(screen.getByText("Calibrate this phone"));
-    expect(screen.getByText(/Not measured yet/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Measure this phone" }));
-    expect(await screen.findByText("Measured 142 ms, saved")).toBeInTheDocument();
-    expect(Number(localStorage.getItem(ROUNDTRIP_KEY))).toBeCloseTo(142, 0);
-    expect(screen.getByText(/Measured: 142 ms/)).toBeInTheDocument();
-  });
-
-  it("saves nothing when no clicks are heard", async () => {
-    listenMock.mockImplementation(async (_ctx: FakeAudioContext, seconds: number, opts: { onStart?: () => void }) => {
-      opts.onStart?.();
-      return recording(48000, 0, seconds, []);
-    });
-    renderPanel();
-    fireEvent.click(screen.getByText("Calibrate this phone"));
-    fireEvent.click(screen.getByRole("button", { name: "Measure this phone" }));
-    expect(await screen.findByText(/Couldn't hear the clicks/)).toBeInTheDocument();
-    expect(localStorage.getItem(ROUNDTRIP_KEY)).toBeNull();
-  });
-
-  it("says so when the mic is blocked, and saves nothing", async () => {
-    listenMock.mockRejectedValue(new DOMException("no", "NotAllowedError"));
-    renderPanel();
-    fireEvent.click(screen.getByText("Calibrate this phone"));
-    fireEvent.click(screen.getByRole("button", { name: "Measure this phone" }));
-    expect(await screen.findByText(/Microphone access was blocked/)).toBeInTheDocument();
-    expect(localStorage.getItem(ROUNDTRIP_KEY)).toBeNull();
-  });
-
-  it("says so when the taps are too few to measure", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
-    renderPanel();
-    fireEvent.click(screen.getByText("Calibrate this phone"));
-    fireEvent.click(screen.getByRole("button", { name: "Tap along" }));
-    fireEvent.pointerDown(screen.getByRole("button", { name: "Tap" }));
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(10_000);
-    });
-    expect(screen.getByText("Couldn't measure, try again")).toBeInTheDocument();
-    expect(localStorage.getItem(NUDGE_KEY)).toBeNull();
   });
 });
 
@@ -731,25 +735,25 @@ describe("session checks", () => {
     await advance(0);
     expect(calls()).toBe(1); // on open
     await advance(9_000);
-    expect(calls()).toBe(1); // not every 2 s any more
+    expect(calls()).toBe(1); // not every 1.5 s
     await advance(1_000);
     expect(calls()).toBe(2);
   });
 
-  it("checks at once on Join, then every 2 s", async () => {
+  it("checks at once on Join, then every 1.5 s", async () => {
     serve(mocked.getMetronome, running());
     renderPanel();
     await advance(0);
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     await advance(0);
     expect(calls()).toBe(2);
-    await advance(1_900);
-    expect(calls()).toBe(2); // not every 1.5 s any more
+    await advance(1_400);
+    expect(calls()).toBe(2);
     await advance(100);
     expect(calls()).toBe(3);
   });
 
-  it("joined with the session stopped still checks every 2 s", async () => {
+  it("joined with the session stopped still checks every 1.5 s", async () => {
     // Start for everyone joins this phone; the server answers with a session that someone then stops.
     serve(mocked.putMetronome, running());
     serve(mocked.getMetronome, null);
@@ -759,7 +763,7 @@ describe("session checks", () => {
     await advance(0);
     serve(mocked.getMetronome, running({ running: false, updatedAt: "2026-11-15T10:00:09.000Z" }));
     const before = calls();
-    await advance(4_000);
+    await advance(3_000);
     expect(calls() - before).toBe(2);
   });
 
@@ -787,11 +791,11 @@ describe("session checks", () => {
     setHidden(false);
     await advance(0);
     const before = calls();
-    await advance(4_000);
-    expect(calls() - before).toBe(2); // still one check per 2 s
+    await advance(3_000);
+    expect(calls() - before).toBe(2); // still one check per 1.5 s
   });
 
-  it("a failed check while joined keeps checking every 2 s", async () => {
+  it("a failed check while joined keeps checking every 1.5 s", async () => {
     serve(mocked.getMetronome, running());
     renderPanel();
     await advance(0);
@@ -799,11 +803,11 @@ describe("session checks", () => {
     await advance(0);
     mocked.getMetronome.mockRejectedValue(new ApiError(0, "offline"));
     const before = calls();
-    await advance(4_000);
+    await advance(3_000);
     expect(calls() - before).toBe(2);
   });
 
-  it("a slow answer doesn't stretch the 2 s between checks while joined", async () => {
+  it("a slow answer doesn't stretch the 1.5 s between checks while joined", async () => {
     serve(mocked.getMetronome, running());
     renderPanel();
     await advance(0);
@@ -812,8 +816,8 @@ describe("session checks", () => {
     // Every answer now takes 600 ms, as on a slow connection.
     mocked.getMetronome.mockImplementation(() => new Promise((r) => setTimeout(() => r({ session: running(), now: perf + serverAhead }), 600)));
     const before = calls();
-    await advance(8_000);
-    expect(calls() - before).toBe(4); // one every 2 s, not every 2.6 s
+    await advance(6_000);
+    expect(calls() - before).toBe(4); // one every 1.5 s, not every 2.1 s
   });
 
   it("no checks after the panel closes", async () => {
