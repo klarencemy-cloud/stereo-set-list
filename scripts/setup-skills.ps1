@@ -1,5 +1,5 @@
 # Links .claude/skills to .agents/skills with a junction (no admin needed).
-# Run from anywhere: powershell -File scripts/setup-skills.ps1
+# Run from anywhere: powershell -ExecutionPolicy Bypass -File scripts/setup-skills.ps1
 # On Windows git checks the committed symlink out as a text file (core.symlinks=false),
 # so this replaces that stand-in, or any real folder, with a working link.
 $ErrorActionPreference = 'Stop'

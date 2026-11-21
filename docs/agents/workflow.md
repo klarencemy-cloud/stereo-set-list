@@ -60,7 +60,7 @@ Every skill here is user-invoked, so you type each one.
 `.claude/skills` is a committed symlink to `../.agents/skills`, so cloud sessions get `/bug` and the other skills. Git on Windows checks a symlink out as a plain text file, so each Windows clone needs one step, from the repo root:
 
 ```powershell
-powershell -File scripts/setup-skills.ps1
+powershell -ExecutionPolicy Bypass -File scripts/setup-skills.ps1
 ```
 
 It deletes the folder or text-file stand-in at `.claude/skills` (if it isn't a real link), makes a junction to `.agents/skills`, and prints what it did. No admin needed. Anything that was in an old `.claude/skills` folder stops loading. Check it worked by typing `/` in Claude Code and looking for `/bug`, `/grill-with-docs` and `/implement`.
