@@ -56,3 +56,7 @@ The five default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready
 ### Domain docs
 
 Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root, created only when they're needed. See `docs/agents/domain.md`.
+
+### Agent team
+
+Two lanes: `/bug <symptom or #issue>` takes a bug to an open PR (never merges); features are typed by hand (`/grill-with-docs` → `/implement`, or `/to-spec` → `/to-tickets` → `/implement-spec`). `.claude/skills` must link to `.agents/skills` (not committed; Windows setup in the guide). See `docs/agents/workflow.md`.
