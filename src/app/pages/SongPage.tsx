@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, ApiError, conflictOf } from "../api";
+import { api, ApiError } from "../api";
 import { loadSetlist, loadSong, peekSong, prefetchSong, rememberSong } from "../songCache";
-import type { Song } from "../../shared/types";
+import type { Song, SongInput } from "../../shared/types";
 import { transposeContent } from "../../shared/sheet";
 import { transposeKey } from "../../shared/transpose";
 import ChordSheet from "../components/ChordSheet";
@@ -14,6 +14,7 @@ import { useWakeLock } from "../components/useWakeLock";
 import { useSongSpeed } from "../components/useSongSpeed";
 import { useStageMode } from "../components/useStageMode";
 import { useFontSize } from "../components/useFontSize";
+import { useVersionedRecord } from "../components/useVersionedRecord";
 import { useSwipe } from "../components/useSwipe";
 import { useShowChords } from "../components/useShowChords";
 import PrintLyrics, { PrintLyricsChoice, usePrintLyrics } from "../components/PrintLyrics";
@@ -29,7 +30,10 @@ export default function SongPage() {
   const gigId = searchParams.get("gig");
   const [neighbours, setNeighbours] = useState<{ prev: string | null; next: string | null }>({ prev: null, next: null });
   const [setlistNote, setSetlistNote] = useState<string | null>(null);
-  const [song, setSong] = useState<Song | null>(null);
+  // The key change and the metronome's tempo save both save through this one copy.
+  const doc = useVersionedRecord<Song, Partial<SongInput>>(api.updateSong, { onStored: rememberSong });
+  const song = doc.record;
+  // Loading the song, or a key that can't be transposed. Save errors (and any conflict) are doc's own.
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const speed = useSongSpeed(id);
@@ -38,9 +42,6 @@ export default function SongPage() {
   const chords = useShowChords();
   const printer = usePrintLyrics();
   const [choosingPrint, setChoosingPrint] = useState(false);
-  const [saving, setSaving] = useState(false);
-  // A bandmate changed the song since this copy loaded: what is stored now, shown on Reload.
-  const [conflict, setConflict] = useState<Song | null>(null);
   const [showMetronome, setShowMetronome] = useState(false);
   // For the pill's live dot: checked once when the song opens, then kept up to date by the open panel.
   const [metroSession, setMetroSession] = useState<MetroSession | null>(null);
@@ -49,9 +50,8 @@ export default function SongPage() {
     let alive = true;
     // Moving between songs reuses this component: start each one fresh, at the top.
     // A song fetched ahead of time shows straight away, with no loading screen.
-    setSong(peekSong(id) ?? null);
+    doc.load(peekSong(id) ?? null);
     setError(null);
-    setConflict(null);
     setRunning(false);
     setShowTranspose(false);
     setChoosingPrint(false);
@@ -65,7 +65,7 @@ export default function SongPage() {
       },
     );
     loadSong(id).then(
-      (s) => alive && setSong(s),
+      (s) => alive && doc.load(s),
       (e) => alive && setError(e instanceof ApiError ? e.message : "Could not load this song."),
     );
     return () => {
@@ -114,32 +114,16 @@ export default function SongPage() {
   });
 
   async function transpose(semitones: number) {
-    if (!song || saving) return;
-    const previous = song.bandKey;
+    if (!song || doc.saving) return;
     let next: string;
     try {
-      next = transposeKey(previous, semitones);
+      next = transposeKey(song.bandKey, semitones);
     } catch {
       setError(KEY_UNKNOWN);
       return;
     }
     setError(null);
-    setConflict(null);
-    setSaving(true);
-    setSong({ ...song, bandKey: next });
-    try {
-      // Keep the saved copy: its new updatedAt is the version the next transpose sends.
-      const saved = await api.updateSong(song.id, { bandKey: next }, song.updatedAt);
-      // The user may have swiped to another song while this saved.
-      setSong((s) => (s && s.id === saved.id ? saved : s));
-      rememberSong(saved);
-    } catch (e) {
-      setSong((s) => (s ? { ...s, bandKey: previous } : s));
-      setConflict(conflictOf<Song>(e));
-      setError(e instanceof ApiError ? e.message : "Could not save the new key.");
-    } finally {
-      setSaving(false);
-    }
+    await doc.save({ bandKey: next }, "Could not save the new key.");
   }
 
   // Also shown while a song loads or fails to load: the top bar is hidden in stage mode, so this is the way out.
@@ -234,26 +218,15 @@ export default function SongPage() {
         <SongMetronome
           song={song}
           onSession={setMetroSession}
-          onSongChange={(saved) => {
-            setSong((s) => (s && s.id === saved.id ? saved : s));
-            rememberSong(saved);
-          }}
+          onSaveTempo={(tempo) => doc.save(tempo, "Could not save the tempo.")}
+          saving={doc.saving}
         />
       )}
-      {showTranspose && <TransposeControl bandKey={song.bandKey || "?"} onChange={transpose} busy={saving} />}
-      {error && conflict?.id === song.id ? (
-        <ConflictNotice
-          message={error}
-          onReload={() => {
-            setSong(conflict!);
-            rememberSong(conflict!);
-            setConflict(null);
-            setError(null);
-          }}
-        />
-      ) : (
-        error && <p role="alert" className="error">{error}</p>
-      )}
+      {showTranspose && <TransposeControl bandKey={song.bandKey || "?"} onChange={transpose} busy={doc.saving} />}
+      {/* One save message for the song, whichever save failed (the key or the metronome's tempo). */}
+      {doc.error &&
+        (doc.conflict ? <ConflictNotice message={doc.error} onReload={doc.reload} /> : <p role="alert" className="error">{doc.error}</p>)}
+      {error && <p role="alert" className="error">{error}</p>}
       {setlistNote && <p className="setlist-note" role="note">{setlistNote}</p>}
       <p className="song-info">
         <span>Key: <strong>{song.bandKey || "?"}</strong></span>

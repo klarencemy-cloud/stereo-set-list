@@ -85,10 +85,10 @@ describe("H13: swiping to the next song with the metronome open", () => {
 
   it("regression: a SongMetronome re-rendered with another song starts fresh with that song's tempo", async () => {
     await w.other({ bpm: 120, beatsPerBar: 4, running: true });
-    const r = render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    const r = render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
     await advance(200, 10);
     expect(screen.getByText("Playing at 120 BPM")).toBeInTheDocument();
-    r.rerender(<SongMetronome song={songB} onSongChange={() => {}} />);
+    r.rerender(<SongMetronome song={songB} onSaveTempo={async () => true} saving={false} />);
     await advance(200, 10);
     expect(screen.queryByText("Playing at 120 BPM")).toBeNull();
     expect(document.querySelector(".metro-bpm")).toHaveTextContent("140"); // song B's tempo, not song A's 96
@@ -145,7 +145,7 @@ describe("the screen keep-on on a song page", () => {
 describe("H6: a joined phone with its screen off", () => {
   it("by design: it keeps playing the old grid after Stop for everyone, and stops at once when it is visible again", async () => {
     await w.other({ bpm: 120, beatsPerBar: 4, running: true });
-    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
     await advance(100, 10);
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     await advance(3000, 10);

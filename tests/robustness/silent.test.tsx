@@ -25,7 +25,7 @@ afterEach(teardownWorld);
 
 async function joined() {
   await w.other({ bpm: 120, beatsPerBar: 4, running: true });
-  render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+  render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
   await advance(100, 10);
   fireEvent.click(screen.getByRole("button", { name: "Join" }));
   await advance(3000, 10);
@@ -111,7 +111,7 @@ describe("H12: the audio context is suspended or interrupted (call, Siri, anothe
 describe("H21: offline, then back online", () => {
   it("H21 fixed: 'Try syncing again' checks straight away and shows the result", async () => {
     world.offline = true;
-    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
     await advance(100, 10);
     expect(screen.getByText(OFFLINE)).toBeInTheDocument();
     world.offline = false;
@@ -123,7 +123,7 @@ describe("H21: offline, then back online", () => {
 
   it("'Try syncing again' that still can't reach the server says so", async () => {
     world.offline = true;
-    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
     await advance(100, 10);
     fireEvent.click(screen.getByRole("button", { name: "Try syncing again" }));
     await advance(100, 10);
@@ -133,7 +133,7 @@ describe("H21: offline, then back online", () => {
 
   it("H21 fixed: the network coming back keeps the local metronome playing, and offers the shared one", async () => {
     world.offline = true;
-    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
     await advance(100, 10);
     fireEvent.click(screen.getByRole("button", { name: "Start on this phone" }));
     await advance(500, 10);
@@ -150,7 +150,7 @@ describe("H21: offline, then back online", () => {
 
   it("choosing to switch joins the shared session", async () => {
     world.offline = true;
-    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
     await advance(100, 10);
     fireEvent.click(screen.getByRole("button", { name: "Start on this phone" }));
     await advance(500, 10);
@@ -175,7 +175,7 @@ describe("H21: offline, then back online", () => {
     vi.spyOn(api, "getMetronome").mockImplementation(async (...a) => ({ ...(await getMetronome(...a)), now: undefined as unknown as number }));
     vi.spyOn(api, "getTime").mockRejectedValue(new Error("offline"));
     await w.other({ bpm: 120, beatsPerBar: 4, running: true });
-    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
     await advance(100, 10);
     world.offline = true;
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
@@ -262,7 +262,7 @@ describe("H17: a session running at one tempo for 2 h", () => {
   it("H17: a joined phone keeps it running past 2 h; it doesn't stop mid-song", async () => {
     // Started 2 h minus 5 s ago (server time) and never changed since.
     await w.repo.setMetronome(w.song.id, { bpm: 120, beatsPerBar: 4, running: true }, serverNow() - METRO_STALE_MS + 5000);
-    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
     await advance(100, 10);
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     await advance(3000, 10);

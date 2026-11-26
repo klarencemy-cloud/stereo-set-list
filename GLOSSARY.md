@@ -45,3 +45,13 @@ _Avoid_: Round trip (on its own), output latency
 **Follow**:
 A per-phone switch that joins the running session of whichever song this phone opens, in any order.
 _Avoid_: Gig mode, auto-join
+
+### Editing
+
+**Conflict**:
+A bandmate saved this song or gig after you opened it, so your change was not saved. Nothing is merged: you keep what you had until you choose to reload.
+_Avoid_: Clash, merge error, stale write
+
+**Reload**:
+Replacing what you see with the version a bandmate saved, after a conflict. It is always your choice and discards your unsaved change.
+_Avoid_: Refresh, sync, merge

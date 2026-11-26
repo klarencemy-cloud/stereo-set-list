@@ -3,7 +3,7 @@ import { act, render, screen, fireEvent, waitFor } from "@testing-library/react"
 
 vi.mock("../../src/app/api", async () => {
   const actual = await vi.importActual<typeof import("../../src/app/api")>("../../src/app/api");
-  return { ...actual, api: { getMetronome: vi.fn(), putMetronome: vi.fn(), getTime: vi.fn(), updateSong: vi.fn() } };
+  return { ...actual, api: { getMetronome: vi.fn(), putMetronome: vi.fn(), getTime: vi.fn() } };
 });
 
 vi.mock("../../src/app/metronome/listen", () => ({ listen: vi.fn(() => new Promise(() => {})) }));
@@ -98,7 +98,7 @@ class FakeAudioContext {
 let perf = 0;
 /** How far the server's clock is ahead of performance.now() (ms). */
 let serverAhead = 5000;
-const onSongChange = vi.fn();
+const onSaveTempo = vi.fn(async (_t: { bpm: number; beatsPerBar: number }) => true);
 
 /** Answers a metronome call with `session` and the server's time when it answers (instantly). */
 const serve = (fn: ReturnType<typeof vi.fn>, session: MetroSession | null) =>
@@ -112,7 +112,7 @@ const store = (session: MetroSession) =>
   });
 
 function renderPanel(s: Song = song) {
-  return render(<SongMetronome song={s} onSongChange={onSongChange} />);
+  return render(<SongMetronome song={s} onSaveTempo={onSaveTempo} saving={false} />);
 }
 
 beforeEach(() => {
@@ -120,7 +120,7 @@ beforeEach(() => {
   Object.values(mocked).forEach((f) => f.mockReset());
   listenMock.mockReset();
   listenMock.mockImplementation(() => new Promise(() => {}));
-  onSongChange.mockReset();
+  onSaveTempo.mockClear();
   FakeAudioContext.instances = [];
   (window as unknown as { AudioContext: unknown }).AudioContext = FakeAudioContext;
   perf = 0;
@@ -374,11 +374,15 @@ describe("SongMetronome, a session is running", () => {
 
   it("offers to save the session's tempo to the song", async () => {
     serve(mocked.getMetronome, running({ bpm: 100, beatsPerBar: 3 }));
-    mocked.updateSong.mockResolvedValue({ ...song, bpm: 100, updatedAt: "y" });
     renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: "Save as song tempo" }));
-    expect(mocked.updateSong).toHaveBeenCalledWith("s1", { bpm: 100, beatsPerBar: 3 }, "x");
-    await waitFor(() => expect(onSongChange).toHaveBeenCalledWith({ ...song, bpm: 100, updatedAt: "y" }));
+    expect(onSaveTempo).toHaveBeenCalledWith({ bpm: 100, beatsPerBar: 3 });
+  });
+
+  it("disables Save as song tempo while the song is saving", async () => {
+    serve(mocked.getMetronome, running({ bpm: 100, beatsPerBar: 3 }));
+    render(<SongMetronome song={song} onSaveTempo={onSaveTempo} saving />);
+    expect(await screen.findByRole("button", { name: "Save as song tempo" })).toBeDisabled();
   });
 
   it("hides Save as song tempo when the song already has that tempo", async () => {
@@ -387,35 +391,22 @@ describe("SongMetronome, a session is running", () => {
     await screen.findByText("Playing at 96 BPM");
     expect(screen.queryByRole("button", { name: "Save as song tempo" })).toBeNull();
   });
-
-  it("shows a conflict when someone changed the song first", async () => {
-    serve(mocked.getMetronome, running({ bpm: 100, beatsPerBar: 3 }));
-    const current = { ...song, title: "Renamed", updatedAt: "z" };
-    mocked.updateSong.mockRejectedValue(new ApiError(409, "Someone else changed this song.", current));
-    renderPanel();
-    fireEvent.click(await screen.findByRole("button", { name: "Save as song tempo" }));
-    expect(await screen.findByText(/Someone else changed this song/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
-    expect(onSongChange).toHaveBeenCalledWith(current);
-  });
 });
 
 describe("SongMetronome after a stop", () => {
   it("keeps the tempo it was playing at, so a restart and a save use what is on screen", async () => {
     serve(mocked.getMetronome, running({ bpm: 123 }));
     store(running({ bpm: 123, running: false, updatedAt: "2026-11-15T10:00:01.000Z" }));
-    mocked.updateSong.mockResolvedValue({ ...song, bpm: 123, beatsPerBar: 4, updatedAt: "y" });
     renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: "Stop for everyone" }));
     await screen.findByRole("button", { name: "Start for everyone" });
     expect(document.querySelector(".metro-bpm")).toHaveTextContent("123");
     fireEvent.click(screen.getByRole("button", { name: "Save as song tempo" }));
-    expect(mocked.updateSong).toHaveBeenCalledWith("s1", { bpm: 123, beatsPerBar: 4 }, "x");
+    expect(onSaveTempo).toHaveBeenCalledWith({ bpm: 123, beatsPerBar: 4 });
   });
 
   it("saves the tempo on screen, not an older stopped session's", async () => {
     serve(mocked.getMetronome, running({ bpm: 140, running: false }));
-    mocked.updateSong.mockResolvedValue({ ...song, bpm: 97, updatedAt: "y" });
     renderPanel();
     await screen.findByRole("button", { name: "Start for everyone" });
     // The song's own tempo is on screen: nothing to save.
@@ -423,7 +414,7 @@ describe("SongMetronome after a stop", () => {
     expect(screen.queryByRole("button", { name: "Save as song tempo" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Faster" }));
     fireEvent.click(screen.getByRole("button", { name: "Save as song tempo" }));
-    expect(mocked.updateSong).toHaveBeenCalledWith("s1", { bpm: 97, beatsPerBar: 3 }, "x");
+    expect(onSaveTempo).toHaveBeenCalledWith({ bpm: 97, beatsPerBar: 3 });
   });
 });
 

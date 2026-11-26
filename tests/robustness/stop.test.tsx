@@ -23,7 +23,7 @@ afterEach(teardownWorld);
 async function joinedPhone() {
   world.latency = { getTime: [10, 10], getMetronome: [50, 400], putMetronome: [50, 50] };
   await w.other({ bpm: 120, beatsPerBar: 4, running: true });
-  render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+  render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
   await advance(500, 10);
   fireEvent.click(screen.getByRole("button", { name: "Join" }));
   await advance(4000, 10);
@@ -101,7 +101,7 @@ describe("H5: two phones change it at the same moment", () => {
   it("refuted (audibly): the loser shows its own tempo until its next poll, but plays the winner's on the bar line", async () => {
     world.latency = { getTime: [10, 10], getMetronome: [50, 50], putMetronome: [50, 50] };
     await w.other({ bpm: 120, beatsPerBar: 4, running: true });
-    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
     await advance(300, 10);
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     await advance(3000, 10);
@@ -127,7 +127,7 @@ describe("H5: two phones change it at the same moment", () => {
 describe("H18: Start for everyone from a panel whose view is old", () => {
   it("H18: a phone that still shows 'stopped' leaves a bandmate's fresh start alone, shows 'Already playing at 120 BPM', and Join plays it", async () => {
     world.latency = { getMetronome: [20, 20], putMetronome: [20, 20], getTime: [10, 10] };
-    render(<SongMetronome song={w.song} onSongChange={() => {}} />); // the song's tempo is 96/3
+    render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />); // the song's tempo is 96/3
     await advance(100, 10);
     // Right after this panel's check, the drummer starts it at 120/4.
     const theirs = (await w.other({ bpm: 120, beatsPerBar: 4, running: true, leader: "drummer" })) as MetroSession;
@@ -176,8 +176,8 @@ describe("H23: two changes inside one lead keep every phone on the same bar", ()
     world.latency = { getTime: [10, 10], getMetronome: [10, 10], putMetronome: [10, 10] };
     // Short bars, so the second change always lands after the first one's bar line.
     await w.other({ bpm: 240, beatsPerBar: 2, running: true });
-    const a = render(<SongMetronome song={w.song} onSongChange={() => {}} />);
-    const b = render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    const a = render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
+    const b = render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
     await advance(100, 10);
     const joinA = serverNow();
     fireEvent.click(within(a.container).getByRole("button", { name: "Join" }));
@@ -201,7 +201,7 @@ describe("H23: two changes inside one lead keep every phone on the same bar", ()
   it("H23: a change replaced too close to its start never plays; the phone keeps the sounding grid until the new start", async () => {
     world.latency = { getTime: [10, 10], getMetronome: [10, 10], putMetronome: [10, 10] };
     const s0 = (await w.other({ bpm: 240, beatsPerBar: 2, running: true }))!;
-    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
     await advance(100, 10);
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     await advance(4000, 10);
@@ -221,12 +221,12 @@ describe("H23: two changes inside one lead keep every phone on the same bar", ()
   it("H23: a phone that joins during a change's lead plays the previous grid until the new start", async () => {
     world.latency = { getTime: [10, 10], getMetronome: [10, 10], putMetronome: [10, 10] };
     const s0 = (await w.other({ bpm: 240, beatsPerBar: 2, running: true }))!;
-    const a = render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    const a = render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
     await advance(100, 10);
     fireEvent.click(within(a.container).getByRole("button", { name: "Join" }));
     await advance(4000, 10);
     const s1 = (await w.other({ beatsPerBar: 3 }))!;
-    const c = render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    const c = render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
     await advance(100, 10);
     fireEvent.click(within(c.container).getByRole("button", { name: "Join" }));
     await advance(6000, 10);

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, ApiError, conflictOf } from "../api";
+import { api, ApiError } from "../api";
 import { NOT_READY, canSaveOffline, saveGigForOffline } from "../offline";
 import { formatGigDate } from "../formatDate";
 import SetlistEditor from "../components/SetlistEditor";
@@ -10,18 +10,21 @@ import ConflictNotice from "../components/ConflictNotice";
 import PrintLyrics, { PrintLyricsChoice, usePrintLyrics } from "../components/PrintLyrics";
 import { loadSong } from "../songCache";
 import { setlistOf, songIdsOf } from "../../shared/setlist";
+import { useVersionedRecord } from "../components/useVersionedRecord";
 import type { PlaylistTrack } from "../../shared/playlist";
 import { toSongSummary } from "../../shared/song";
-import type { Gig, SetlistItem, Song, SongSummary } from "../../shared/types";
+import type { Gig, GigInput, SetlistItem, Song, SongSummary } from "../../shared/types";
 
 export default function GigPage() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
-  const [gig, setGig] = useState<Gig | null>(null);
+  // The setlist and the details both save through this one copy.
+  const doc = useVersionedRecord<Gig, Partial<GigInput>>(api.updateGig);
+  const gig = doc.record;
   const [songs, setSongs] = useState<SongSummary[]>([]);
+  // Loading, importing, deleting, or a details form left blank. Save errors (and any conflict) are doc's own.
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [editingDetails, setEditingDetails] = useState(false);
   const [name, setName] = useState("");
   const [date, setDate] = useState("");
@@ -30,8 +33,6 @@ export default function GigPage() {
   const [importing, setImporting] = useState(false);
   const [importBusy, setImportBusy] = useState(false);
   const [ticked, setTicked] = useState<PlaylistTrack[]>([]);
-  // A bandmate saved this gig first: the gig as stored now, shown on Reload.
-  const [conflict, setConflict] = useState<Gig | null>(null);
   const printer = usePrintLyrics();
   const [choosingLyrics, setChoosingLyrics] = useState(false);
 
@@ -40,7 +41,7 @@ export default function GigPage() {
     Promise.all([api.getGig(id), api.listSongs()]).then(
       ([g, s]) => {
         if (!alive) return;
-        setGig(g);
+        doc.load(g);
         setSongs(s);
       },
       (e) => alive && setError(e instanceof ApiError ? e.message : "Could not load this gig."),
@@ -65,30 +66,14 @@ export default function GigPage() {
 
   /** Saves the setlist optimistically; resolves true when the server accepted it. */
   async function save(next: SetlistItem[]): Promise<boolean> {
-    if (!gig || saving) return false;
-    const previous = gig;
+    if (!gig || doc.saving) return false;
     setError("");
-    setConflict(null);
-    setSaving(true);
-    setGig({ ...gig, setlist: next, songIds: songIdsOf(next) });
-    try {
-      const saved = await api.updateGig(gig.id, { setlist: next }, gig.updatedAt);
-      // The new version is what the next save sends.
-      setGig((g) => (g ? { ...g, updatedAt: saved.updatedAt } : g));
-      return true;
-    } catch (e) {
-      setGig(previous);
-      setConflict(conflictOf<Gig>(e));
-      setError(e instanceof ApiError ? e.message : "Could not save the setlist.");
-      return false;
-    } finally {
-      setSaving(false);
-    }
+    return doc.save({ setlist: next }, "Could not save the setlist.");
   }
 
   /** Adds the ticked playlist tracks to the end of the setlist; the panel stays open until it saved. */
   async function addFromPlaylist() {
-    if (ticked.length === 0 || importBusy || saving) return;
+    if (ticked.length === 0 || importBusy || doc.saving) return;
     setImportBusy(true);
     setError("");
     try {
@@ -124,31 +109,20 @@ export default function GigPage() {
 
   async function saveDetails(e: FormEvent) {
     e.preventDefault();
-    if (!gig || saving) return;
+    if (!gig || doc.saving) return;
     if (!name.trim() || !date) {
       setError("Enter a name and a date.");
       return;
     }
     setError("");
-    setConflict(null);
-    setSaving(true);
-    try {
-      const updated = await api.updateGig(gig.id, { name: name.trim(), date }, gig.updatedAt);
-      setGig({ ...gig, name: updated.name, date: updated.date, updatedAt: updated.updatedAt });
-      setEditingDetails(false);
-    } catch (err) {
-      setConflict(conflictOf<Gig>(err));
-      setError(err instanceof ApiError ? err.message : "Could not save the gig.");
-    } finally {
-      setSaving(false);
-    }
+    // The form stays open, with what was typed, until the save went through.
+    if (await doc.save({ name: name.trim(), date }, "Could not save the gig.")) setEditingDetails(false);
   }
 
   /** Shows the gig as a bandmate saved it. Only on request: their changes are never merged in silently. */
   function reload() {
-    if (!conflict) return;
-    setGig(conflict);
-    setConflict(null);
+    if (!doc.conflict) return;
+    doc.reload();
     setError("");
     setEditingDetails(false);
     // Their setlist may have songs this page hasn't loaded yet.
@@ -198,10 +172,10 @@ export default function GigPage() {
             <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
           </label>
           <div className="row">
-            <button type="button" className="btn" onClick={() => { setEditingDetails(false); setError(""); setConflict(null); }}>
+            <button type="button" className="btn" onClick={() => { setEditingDetails(false); setError(""); doc.dismiss(); }}>
               Cancel
             </button>
-            <button type="submit" className="btn primary" disabled={saving}>Save</button>
+            <button type="submit" className="btn primary" disabled={doc.saving}>Save</button>
           </div>
         </form>
       ) : (
@@ -228,7 +202,7 @@ export default function GigPage() {
             songs={songs}
             inSetlist={new Set(ids)}
             onTicked={setTicked}
-            disabled={importBusy || saving}
+            disabled={importBusy || doc.saving}
           />
           <div className="row">
             <button type="button" className="btn" disabled={importBusy} onClick={() => setImporting(false)}>
@@ -237,7 +211,7 @@ export default function GigPage() {
             <button
               type="button"
               className="btn primary"
-              disabled={importBusy || saving || ticked.length === 0}
+              disabled={importBusy || doc.saving || ticked.length === 0}
               onClick={addFromPlaylist}
             >
               {ticked.length === 0 ? "Add songs" : `Add ${ticked.length} ${ticked.length === 1 ? "song" : "songs"}`}
@@ -292,14 +266,11 @@ export default function GigPage() {
         ) : (
           <p role="alert" className="error">{offline.text}</p>
         ))}
-      {error && conflict ? (
-        <ConflictNotice message={error} onReload={reload} />
-      ) : (
-        error && <p role="alert" className="error">{error}</p>
-      )}
+      {doc.error && (doc.conflict ? <ConflictNotice message={doc.error} onReload={reload} /> : <p role="alert" className="error">{doc.error}</p>)}
+      {error && <p role="alert" className="error">{error}</p>}
       {!editing && ids.length === 0 && <p className="muted">No songs in the setlist yet.</p>}
       {editing ? (
-        <SetlistEditor items={items} songs={byId} busy={saving} onChange={save} />
+        <SetlistEditor items={items} songs={byId} busy={doc.saving} onChange={save} />
       ) : (
         <>
           <ul className="list">

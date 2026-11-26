@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError, conflictOf } from "../api";
 import { audioLink, click, createAudioContext, preferPlaybackAudio } from "../audio";
 import { BEATS_PER_BAR, MAX_BPM, MIN_BPM, clampBpm, type MetroSession } from "../../shared/metronome";
 import { songTempo } from "../../shared/song";
@@ -11,7 +10,6 @@ import { detectOnsets, measureRoundTrip } from "../metronome/match";
 import { useMetronome } from "../metronome/useMetronome";
 import { useSyncedMetronome } from "../metronome/useSyncedMetronome";
 import BeatDisplay from "./BeatDisplay";
-import ConflictNotice from "./ConflictNotice";
 import { readSavedMetronome, saveMetronome } from "./Metronome";
 
 /** This phone's calibration in ms (plus = plays earlier). */
@@ -361,8 +359,10 @@ function Calibrate({
 
 interface Props {
   song: Song;
-  /** A saved song (Save as song tempo), or the stored copy after a conflict's Reload. */
-  onSongChange: (song: Song) => void;
+  /** Saves the tempo on the screen as the song's own (Save as song tempo). The song page shows any error. */
+  onSaveTempo: (tempo: Tempo) => Promise<boolean>;
+  /** A save of this song (tempo or key) is running. */
+  saving: boolean;
   /** The session whenever it is checked, for the pill's live dot. */
   onSession?: (session: MetroSession | null) => void;
 }
@@ -376,7 +376,7 @@ export default function SongMetronome(props: Props) {
   return <SongMetronomePanel key={props.song.id} {...props} />;
 }
 
-function SongMetronomePanel({ song, onSongChange, onSession }: Props) {
+function SongMetronomePanel({ song, onSaveTempo, saving, onSession }: Props) {
   const [nudge, setNudgeState] = useState(readNudge);
   const [roundTrip, setRoundTripState] = useState(readRoundTrip);
   const m = useSyncedMetronome(song.id, nudge, roundTrip);
@@ -392,9 +392,6 @@ function SongMetronomePanel({ song, onSongChange, onSession }: Props) {
   /** The local metronome is playing: it stays on screen until it is stopped or switched from (H21). */
   const [localPlaying, setLocalPlaying] = useState(false);
   const [calibrating, setCalibrating] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState("");
-  const [conflict, setConflict] = useState<Song | null>(null);
 
   const { session } = m;
   const running = !!session?.running;
@@ -462,18 +459,8 @@ function SongMetronomePanel({ song, onSongChange, onSession }: Props) {
     m.start(tempo.bpm, tempo.beatsPerBar);
   }
 
-  async function saveTempo(s: Tempo) {
-    setSaving(true);
-    setSaveError("");
-    setConflict(null);
-    try {
-      onSongChange(await api.updateSong(song.id, { bpm: s.bpm, beatsPerBar: s.beatsPerBar }, song.updatedAt));
-    } catch (e) {
-      setConflict(conflictOf<Song>(e));
-      setSaveError(e instanceof ApiError ? e.message : "Could not save the tempo.");
-    } finally {
-      setSaving(false);
-    }
+  function saveTempo(s: Tempo) {
+    void onSaveTempo({ bpm: s.bpm, beatsPerBar: s.beatsPerBar });
   }
 
   const cantSync = localOnly || (session === undefined && !m.reachable);
@@ -589,18 +576,6 @@ function SongMetronomePanel({ song, onSongChange, onSession }: Props) {
             Save as song tempo
           </button>
         </p>
-      )}
-      {saveError && conflict ? (
-        <ConflictNotice
-          message={saveError}
-          onReload={() => {
-            onSongChange(conflict);
-            setConflict(null);
-            setSaveError("");
-          }}
-        />
-      ) : (
-        saveError && <p role="alert" className="error">{saveError}</p>
       )}
       <button
         type="button"
