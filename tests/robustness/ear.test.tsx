@@ -28,7 +28,7 @@ const status = () => screen.queryByRole("status")?.textContent ?? "";
 async function joinLed() {
   localStorage.setItem(ROUNDTRIP_KEY, String(world.mic.loopbackMs));
   await w.other({ bpm: 120, beatsPerBar: 4, running: true, leader: "them" });
-  render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+  render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
   await advance(100, 10);
   fireEvent.click(screen.getByRole("button", { name: "Join" }));
   await advanceUntil(() => FakeAudioContext.instances.length > 0, 1000, 10);

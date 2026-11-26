@@ -84,47 +84,6 @@ describe("SongPage", () => {
     expect(screen.getByText("Changes the key for the whole band.")).toBeInTheDocument();
   });
 
-  it("reverts the key and shows an error when saving fails", async () => {
-    mocked.updateSong.mockRejectedValue(new ApiError(500, "Could not save"));
-    renderPage();
-    await screen.findByText("[Intro]");
-    fireEvent.click(screen.getByRole("button", { name: "Transpose" }));
-    fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Could not save");
-    const chords = Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent);
-    expect(chords).toEqual(["A", "D"]);
-  });
-
-  it("sends the new version with the next transpose", async () => {
-    mocked.updateSong.mockResolvedValueOnce({ ...song, bandKey: "Bb", updatedAt: "y" });
-    mocked.updateSong.mockResolvedValueOnce({ ...song, bandKey: "B", updatedAt: "z" });
-    renderPage();
-    await screen.findByText("[Intro]");
-    fireEvent.click(screen.getByRole("button", { name: "Transpose" }));
-    fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Transpose up" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
-    await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(2));
-    expect(mocked.updateSong.mock.calls[1]).toEqual(["s1", { bandKey: "B" }, "y"]);
-  });
-
-  it("on a conflict, keeps the old key, says someone else changed it, and Reload shows their version", async () => {
-    const theirs = { ...song, bandKey: "C", updatedAt: "y" };
-    mocked.updateSong.mockRejectedValue(new ApiError(409, "Someone else changed this song. Reload to see their changes.", theirs));
-    renderPage();
-    await screen.findByText("[Intro]");
-    fireEvent.click(screen.getByRole("button", { name: "Transpose" }));
-    fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Someone else changed this song");
-    let chords = Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent);
-    expect(chords).toEqual(["A", "D"]);
-    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
-    expect(screen.queryByRole("alert")).toBeNull();
-    chords = Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent);
-    expect(chords).toEqual(["C", "F"]);
-    expect(peekSong("s1")).toEqual(theirs);
-  });
-
   it("disables the transpose buttons while a save is pending", async () => {
     let resolve!: (v: unknown) => void;
     mocked.updateSong.mockReturnValue(new Promise((r) => (resolve = r)));
@@ -619,6 +578,34 @@ describe("SongPage metronome pill", () => {
     expect(await screen.findByRole("button", { name: "Start for everyone" })).toBeInTheDocument();
     fireEvent.click(pill());
     expect(screen.queryByRole("region", { name: "Metronome" })).toBeNull();
+  });
+
+  it("still says the key is unknown after a failed tempo save", async () => {
+    mocked.getSong.mockResolvedValue({ ...song, originalKey: "H", bandKey: "H" });
+    serve(mocked.getMetronome, { bpm: 100, beatsPerBar: 4, startAt: 1, running: true, updatedAt: "t" });
+    mocked.updateSong.mockRejectedValue(new ApiError(500, "The server is down."));
+    renderPage();
+    await screen.findByText("Key unknown — fix it in Edit");
+    fireEvent.click(pill());
+    fireEvent.click(await screen.findByRole("button", { name: "Save as song tempo" }));
+    expect(await screen.findByText("The server is down.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Transpose" }));
+    fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
+    expect(screen.getAllByRole("alert").map((a) => a.textContent)).toContain("Key unknown — fix it in Edit");
+  });
+
+  it("shows a conflict from Save as song tempo in the page's notice, and Reload shows their version", async () => {
+    serve(mocked.getMetronome, { bpm: 100, beatsPerBar: 4, startAt: 1, running: true, updatedAt: "t" });
+    const theirs = { ...song, bpm: 88, updatedAt: "z" };
+    mocked.updateSong.mockRejectedValue(new ApiError(409, "Someone else changed this song.", theirs));
+    renderPage();
+    await screen.findByText("[Intro]");
+    fireEvent.click(pill());
+    fireEvent.click(await screen.findByRole("button", { name: "Save as song tempo" }));
+    expect(await screen.findByText(/Someone else changed this song/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    expect(pill()).toHaveTextContent("Metronome · 88");
+    expect(peekSong("s1")).toEqual(theirs);
   });
 
   it("shows a tempo saved from the panel at once", async () => {

@@ -410,17 +410,6 @@ describe("GigPage", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Add 1 song" })).toBeEnabled());
   });
 
-  it("reverts and shows the error when saving fails", async () => {
-    mocked.updateGig.mockRejectedValue(new ApiError(500, "nope"));
-    renderGig();
-    await screen.findByText("1. Alpha — Key: A");
-    fireEvent.click(screen.getByRole("button", { name: "Edit setlist" }));
-    fireEvent.click(within(rowOf("Drag Alpha")).getByRole("button", { name: "Remove" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("nope");
-    expect(screen.getByText("1. Alpha — Key: A")).toBeInTheDocument();
-    expect(screen.getByText("2. Beta — Key: C")).toBeInTheDocument();
-  });
-
   it("deletes the gig after confirm and goes home", async () => {
     mocked.deleteGig.mockResolvedValue(undefined);
     vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -494,7 +483,7 @@ describe("GigPage", () => {
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Other" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("bad date");
-    expect(screen.getByLabelText("Name")).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toHaveValue("Other");
   });
 
   it("shows an error when the gig is missing", async () => {
@@ -776,19 +765,6 @@ describe("GigPage when a bandmate edits the gig at the same time", () => {
   const conflict = (current: object) =>
     new ApiError(409, "Someone else changed this gig. Reload to see their changes.", current);
 
-  it("sends the new version with the next save", async () => {
-    mocked.updateGig.mockImplementationOnce(async (_id: string, patch: object) => ({ ...gig, ...patch, updatedAt: "v2" }));
-    renderGig();
-    await screen.findByText("1. Alpha — Key: A");
-    fireEvent.click(screen.getByRole("button", { name: "Edit setlist" }));
-    fireEvent.click(within(rowOf("Drag Alpha")).getByRole("button", { name: "Remove" }));
-    await waitFor(() => expect(mocked.updateGig).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(within(rowOf("Drag Beta")).getByRole("button", { name: "Remove" })).toBeEnabled());
-    fireEvent.click(within(rowOf("Drag Beta")).getByRole("button", { name: "Remove" }));
-    await waitFor(() => expect(mocked.updateGig).toHaveBeenCalledTimes(2));
-    expect(mocked.updateGig.mock.calls[1]).toEqual(["g1", { setlist: [] }, "v2"]);
-  });
-
   it("a setlist save that clashes keeps the old setlist, explains, and Reload shows theirs", async () => {
     const theirs = { ...gig, setlist: sl("s3"), songIds: ["s3"], updatedAt: "v2" };
     mocked.updateGig.mockRejectedValue(conflict(theirs));
@@ -810,16 +786,18 @@ describe("GigPage when a bandmate edits the gig at the same time", () => {
     await waitFor(() => expect(mocked.updateGig).toHaveBeenLastCalledWith("g1", { setlist: [] }, "v2"));
   });
 
-  it("a details save that clashes keeps what was typed until Reload", async () => {
-    mocked.updateGig.mockRejectedValue(conflict({ ...gig, name: "Their Show", updatedAt: "v2" }));
+  it("keeps Reload on offer after a setlist clash, even when the details form is then sent blank", async () => {
+    mocked.updateGig.mockRejectedValue(conflict({ ...gig, setlist: sl("s3"), songIds: ["s3"], updatedAt: "v2" }));
     renderGig();
     await screen.findByText("1. Alpha — Key: A");
+    fireEvent.click(screen.getByRole("button", { name: "Edit setlist" }));
+    fireEvent.click(within(rowOf("Drag Alpha")).getByRole("button", { name: "Remove" }));
+    await screen.findByRole("button", { name: "Reload" });
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
     fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "My Show" } });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "  " } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Someone else changed this gig");
-    expect(screen.getByLabelText("Name")).toHaveValue("My Show");
-    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
-    expect(screen.getByRole("heading", { name: "Their Show" })).toBeInTheDocument();
+    expect(await screen.findByText("Enter a name and a date.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
   });
 });

@@ -39,7 +39,7 @@ function firstBar(s: MetroSession) {
  */
 async function starter(rttMs: number, openMs = rttMs + 20) {
   world.latency = { getTime: symmetric(rttMs), getMetronome: symmetric(rttMs), putMetronome: symmetric(rttMs) };
-  render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+  render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
   await advance(openMs, 10);
   fireEvent.click(screen.getByRole("button", { name: "Start for everyone" }));
   await advance(2600 + 11 * rttMs, 10);
@@ -81,7 +81,7 @@ describe("H1: Join on a panel that has been open plays without waiting for the c
   it("at a 300 ms network round trip, the first click comes within a beat of tapping Join", async () => {
     world.latency = { getTime: symmetric(300), getMetronome: symmetric(300), putMetronome: symmetric(300) };
     await w.other({ bpm: 120, beatsPerBar: 4, running: true });
-    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
     await advance(8000, 10);
     const timeCalls = world.sent.getTime;
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
@@ -99,7 +99,7 @@ describe("H1: Join on a panel that has been open plays without waiting for the c
 async function followerOfRestart(metroLeg: [number, number], timeLeg: [number, number] = [10, 10]) {
   world.latency = { getTime: timeLeg, getMetronome: metroLeg, putMetronome: metroLeg };
   await w.other({ bpm: 120, beatsPerBar: 4, running: true });
-  render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+  render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
   await advance(metroLeg[0] + metroLeg[1] + 20, 10);
   fireEvent.click(screen.getByRole("button", { name: "Join" }));
   await advance(12 * (timeLeg[0] + timeLeg[1]) + 3000, 10);
@@ -152,7 +152,7 @@ describe("H2: a joined follower hears of a restart too late for the count-in", (
 async function joinWith(leg: [number, number], over: { leader?: string } = {}) {
   world.latency = { getTime: leg, getMetronome: leg, putMetronome: leg };
   await w.other({ bpm: 120, beatsPerBar: 4, running: true, ...over });
-  render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+  render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
   await advance(25 * (leg[0] + leg[1]) + 100, 10);
   fireEvent.click(screen.getByRole("button", { name: "Join" }));
   await advance(1000, 10);
@@ -166,7 +166,7 @@ describe("H11: the sync status is a fair bound, and a rough clock-only sync warn
     // One link for every call: the metronome answers carry the server's time too, so they are clock samples.
     world.latency = { getTime: [10, 70], getMetronome: [10, 70], putMetronome: [10, 70] };
     await w.other({ bpm: 120, beatsPerBar: 4, running: true });
-    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
     await advance(100, 10);
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     await advance(4000, 10);

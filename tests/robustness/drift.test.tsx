@@ -22,7 +22,7 @@ afterEach(teardownWorld);
 /** Joined to a running 120/4 session (2 s bars). */
 async function joined() {
   await w.other({ bpm: 120, beatsPerBar: 4, running: true });
-  render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+  render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
   await advance(100, 10);
   fireEvent.click(screen.getByRole("button", { name: "Join" }));
   await advance(3000, 10);
@@ -94,7 +94,7 @@ describe("every metronome answer is a clock sample (#9)", () => {
     // says the server answered 50 ms before it really did, so the phone plays 50 ms early, within its ±100 ms.
     world.latency = { getTime: [150, 50], getMetronome: [150, 50], putMetronome: [150, 50] };
     await w.other({ bpm: 120, beatsPerBar: 4, running: true });
-    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
     await advance(300, 10);
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     await advance(4500, 10);
@@ -126,7 +126,7 @@ describe("shared answers (#25): a check's answer that may be cached is no clock 
     // As above: a slow, lopsided network while the first round of time calls runs.
     world.latency = { getTime: [150, 50], getMetronome: [150, 50], putMetronome: [150, 50] };
     await w.other({ bpm: 120, beatsPerBar: 4, running: true });
-    render(<SongMetronome song={w.song} onSongChange={() => {}} />);
+    render(<SongMetronome song={w.song} onSaveTempo={async () => true} saving={false} />);
     await advance(300, 10);
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     await advance(4500, 10);
