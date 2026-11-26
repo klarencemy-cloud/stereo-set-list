@@ -28,7 +28,9 @@ Every skill here is user-invoked, so you type each one.
 
 `/implement-spec` builds the whole spec on one integration branch. To drive tickets by hand instead, run `/implement #<ticket>` per ticket and `/clear` between them.
 
-`/implement` and `/implement-spec` run the tests and `code-review`; the CLAUDE.md rule adds `npm run build` before any PR.
+On the small-change route, the agreed decisions are the spec: once grilling ends, save them to `docs/superpowers/specs/<date>-<topic>.md`, and update that file whenever a decision changes. `code-review` reads it from there.
+
+`/implement` and `/implement-spec` run the tests and `code-review`; the CLAUDE.md rule adds `npm run build` before any PR, and CI runs both on every PR into `main`.
 
 **Rule of thumb:** if the work needs more than one session, or splits into more than about 3 separate pieces after grilling, use `/to-spec` -> `/to-tickets` -> `/implement-spec`. Otherwise `/implement`.
 
