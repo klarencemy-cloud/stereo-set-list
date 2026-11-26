@@ -8,7 +8,7 @@ import { transposeKey } from "../../shared/transpose";
 import ChordSheet from "../components/ChordSheet";
 import TrackPlayer from "../components/TrackPlayer";
 import TransposeControl from "../components/TransposeControl";
-import ConflictNotice from "../components/ConflictNotice";
+import SaveNotice from "../components/SaveNotice";
 import { useAutoscroll } from "../components/useAutoscroll";
 import { useWakeLock } from "../components/useWakeLock";
 import { useSongSpeed } from "../components/useSongSpeed";
@@ -31,9 +31,9 @@ export default function SongPage() {
   const [neighbours, setNeighbours] = useState<{ prev: string | null; next: string | null }>({ prev: null, next: null });
   const [setlistNote, setSetlistNote] = useState<string | null>(null);
   // The key change and the metronome's tempo save both save through this one copy.
-  const doc = useVersionedRecord<Song, Partial<SongInput>>(api.updateSong, { onStored: rememberSong });
-  const song = doc.record;
-  // Loading the song, or a key that can't be transposed. Save errors (and any conflict) are doc's own.
+  const songSave = useVersionedRecord<Song, Partial<SongInput>>(api.updateSong, { onStored: rememberSong });
+  const song = songSave.record;
+  // Loading the song, or a key that can't be transposed. Save errors (and any conflict) are songSave's own.
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const speed = useSongSpeed(id);
@@ -50,7 +50,7 @@ export default function SongPage() {
     let alive = true;
     // Moving between songs reuses this component: start each one fresh, at the top.
     // A song fetched ahead of time shows straight away, with no loading screen.
-    doc.load(peekSong(id) ?? null);
+    songSave.load(peekSong(id) ?? null);
     setError(null);
     setRunning(false);
     setShowTranspose(false);
@@ -65,7 +65,7 @@ export default function SongPage() {
       },
     );
     loadSong(id).then(
-      (s) => alive && doc.load(s),
+      (s) => alive && songSave.load(s),
       (e) => alive && setError(e instanceof ApiError ? e.message : "Could not load this song."),
     );
     return () => {
@@ -114,7 +114,7 @@ export default function SongPage() {
   });
 
   async function transpose(semitones: number) {
-    if (!song || doc.saving) return;
+    if (!song || songSave.saving) return;
     let next: string;
     try {
       next = transposeKey(song.bandKey, semitones);
@@ -123,7 +123,7 @@ export default function SongPage() {
       return;
     }
     setError(null);
-    await doc.save({ bandKey: next }, "Could not save the new key.");
+    await songSave.save({ bandKey: next }, "Could not save the new key.");
   }
 
   // Also shown while a song loads or fails to load: the top bar is hidden in stage mode, so this is the way out.
@@ -218,14 +218,13 @@ export default function SongPage() {
         <SongMetronome
           song={song}
           onSession={setMetroSession}
-          onSaveTempo={(tempo) => doc.save(tempo, "Could not save the tempo.")}
-          saving={doc.saving}
+          onSaveTempo={(tempo) => songSave.save(tempo, "Could not save the tempo.")}
+          saving={songSave.saving}
         />
       )}
-      {showTranspose && <TransposeControl bandKey={song.bandKey || "?"} onChange={transpose} busy={doc.saving} />}
+      {showTranspose && <TransposeControl bandKey={song.bandKey || "?"} onChange={transpose} busy={songSave.saving} />}
       {/* One save message for the song, whichever save failed (the key or the metronome's tempo). */}
-      {doc.error &&
-        (doc.conflict ? <ConflictNotice message={doc.error} onReload={doc.reload} /> : <p role="alert" className="error">{doc.error}</p>)}
+      <SaveNotice error={songSave.error} conflict={songSave.conflict} onReload={songSave.reload} />
       {error && <p role="alert" className="error">{error}</p>}
       {setlistNote && <p className="setlist-note" role="note">{setlistNote}</p>}
       <p className="song-info">

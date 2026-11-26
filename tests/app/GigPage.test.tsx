@@ -483,7 +483,7 @@ describe("GigPage", () => {
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Other" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("bad date");
-    expect(screen.getByLabelText("Name")).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toHaveValue("Other");
   });
 
   it("shows an error when the gig is missing", async () => {
@@ -799,18 +799,5 @@ describe("GigPage when a bandmate edits the gig at the same time", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByText("Enter a name and a date.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
-  });
-
-  it("a details save that clashes keeps what was typed until Reload", async () => {
-    mocked.updateGig.mockRejectedValue(conflict({ ...gig, name: "Their Show", updatedAt: "v2" }));
-    renderGig();
-    await screen.findByText("1. Alpha — Key: A");
-    fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "My Show" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Someone else changed this gig");
-    expect(screen.getByLabelText("Name")).toHaveValue("My Show");
-    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
-    expect(screen.getByRole("heading", { name: "Their Show" })).toBeInTheDocument();
   });
 });

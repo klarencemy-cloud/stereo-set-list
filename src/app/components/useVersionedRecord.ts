@@ -31,10 +31,10 @@ export function useVersionedRecord<T extends Versioned, P extends Partial<T>>(
   const [error, setError] = useState("");
   // A bandmate saved first: the record as it is stored now, shown on Reload.
   const [conflict, setConflict] = useState<T | null>(null);
-  const current = useRef<T | null>(null);
+  const shown = useRef<T | null>(null);
 
-  function put(r: T | null) {
-    current.current = r;
+  function show(r: T | null) {
+    shown.current = r;
     setRecord(r);
   }
 
@@ -45,29 +45,29 @@ export function useVersionedRecord<T extends Versioned, P extends Partial<T>>(
 
   /** Shows a copy the page has just loaded (or `null` while one loads); clears any earlier error and conflict. */
   function load(r: T | null) {
-    put(r);
+    show(r);
     dismiss();
   }
 
   /** Resolves true when the server stored the change. */
   async function save(patch: P, failMessage: string): Promise<boolean> {
-    const r = current.current;
+    const r = shown.current;
     if (!r || busy.current.has(r.id)) return false;
     busy.current.add(r.id);
     setSavingIds(new Set(busy.current));
     dismiss();
     // Shown at once; the server's answer replaces it.
-    put({ ...r, ...patch });
+    show({ ...r, ...patch });
     // The user may have moved to another record (a swipe) while this saved: leave that one alone.
-    const stillHere = () => current.current?.id === r.id;
+    const stillHere = () => shown.current?.id === r.id;
     try {
       const saved = await send(r.id, patch, r.updatedAt);
-      if (stillHere()) put(saved);
+      if (stillHere()) show(saved);
       onStored?.(saved);
       return true;
     } catch (e) {
       if (stillHere()) {
-        put(r);
+        show(r);
         setConflict(conflictOf<T>(e));
         setError(e instanceof ApiError ? e.message : failMessage);
       }
@@ -81,7 +81,7 @@ export function useVersionedRecord<T extends Versioned, P extends Partial<T>>(
   /** Shows the record as a bandmate saved it. Only on request: their changes are never merged in silently. */
   function reload() {
     if (!conflict) return;
-    put(conflict);
+    show(conflict);
     dismiss();
     onStored?.(conflict);
   }

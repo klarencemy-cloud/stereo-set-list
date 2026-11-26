@@ -459,10 +459,6 @@ function SongMetronomePanel({ song, onSaveTempo, saving, onSession }: Props) {
     m.start(tempo.bpm, tempo.beatsPerBar);
   }
 
-  function saveTempo(s: Tempo) {
-    void onSaveTempo({ bpm: s.bpm, beatsPerBar: s.beatsPerBar });
-  }
-
   const cantSync = localOnly || (session === undefined && !m.reachable);
   /** The local metronome is on screen: it can't sync, or it is still playing after the network came back. */
   const showLocal = cantSync || localPlaying;
@@ -572,7 +568,7 @@ function SongMetronomePanel({ song, onSaveTempo, saving, onSession }: Props) {
       {m.error && <p role="alert" className="error">{m.error}</p>}
       {differs && (
         <p className="actions">
-          <button type="button" className="btn" disabled={saving} onClick={() => saveTempo(onScreen!)}>
+          <button type="button" className="btn" disabled={saving} onClick={() => void onSaveTempo({ bpm: onScreen!.bpm, beatsPerBar: onScreen!.beatsPerBar })}>
             Save as song tempo
           </button>
         </p>

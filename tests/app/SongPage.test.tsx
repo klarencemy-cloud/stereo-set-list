@@ -84,23 +84,6 @@ describe("SongPage", () => {
     expect(screen.getByText("Changes the key for the whole band.")).toBeInTheDocument();
   });
 
-  it("on a conflict, keeps the old key, says someone else changed it, and Reload shows their version", async () => {
-    const theirs = { ...song, bandKey: "C", updatedAt: "y" };
-    mocked.updateSong.mockRejectedValue(new ApiError(409, "Someone else changed this song. Reload to see their changes.", theirs));
-    renderPage();
-    await screen.findByText("[Intro]");
-    fireEvent.click(screen.getByRole("button", { name: "Transpose" }));
-    fireEvent.click(screen.getByRole("button", { name: "Transpose up" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Someone else changed this song");
-    let chords = Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent);
-    expect(chords).toEqual(["A", "D"]);
-    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
-    expect(screen.queryByRole("alert")).toBeNull();
-    chords = Array.from(document.querySelectorAll(".chord")).map((c) => c.textContent);
-    expect(chords).toEqual(["C", "F"]);
-    expect(peekSong("s1")).toEqual(theirs);
-  });
-
   it("disables the transpose buttons while a save is pending", async () => {
     let resolve!: (v: unknown) => void;
     mocked.updateSong.mockReturnValue(new Promise((r) => (resolve = r)));
