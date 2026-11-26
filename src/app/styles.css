@@ -240,50 +240,85 @@ h2 { font-size: 1.1rem; margin: 1rem 0 0.5rem; }
 
 .actions { display: flex; flex-wrap: wrap; gap: 12px; }
 
-/* Gig floor sheet: only the song titles, huge, black on white. Hidden on screen. */
+/* The floor sheet for the browser's own Print, when the print editor isn't open. Hidden on screen. */
 .print-setlist { display: none; }
-/* Printed lyrics (song page or a whole gig). Hidden on screen. */
-.print-lyrics { display: none; }
 .print-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
 .print-choice-label { font-weight: 600; }
 
+/* Print editor: a full-screen layer over the page, with the sheet as white A4 pages on a grey desk. */
+html.print-editor-open, html.print-editor-open body { overflow: hidden; }
+.print-editor {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; flex-direction: column;
+  background: var(--bg); color: var(--text);
+}
+.pe-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 8px 16px; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.pe-bar-title { flex: 1 1 8em; min-width: 0; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pe-tools {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 8px 16px; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.pe-tool { padding: 0 12px; }
+.pe-select { width: auto; min-height: 44px; }
+.pe-size { display: inline-flex; align-items: center; min-width: 3.5em; justify-content: center; font-variant-numeric: tabular-nums; }
+.pe-active { flex-basis: 100%; font-size: 14px; }
+.pe-note, .pe-confirm { margin: 0; padding: 8px 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.pe-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pe-confirm p { margin: 0; flex-basis: 100%; font-weight: 600; }
+.pe-desk { flex: 1; overflow: auto; padding: 16px 8px; background: #8a8a8f; }
+.pe-pages { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+.pe-page {
+  box-sizing: border-box; width: 210mm; min-height: 297mm; padding: 15mm;
+  background: #fff; color: #000; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  outline: none; overflow-wrap: anywhere;
+}
+.pe-active-page { box-shadow: 0 0 0 4px var(--brand-yellow), 0 2px 10px rgba(0, 0, 0, 0.35); }
+/* Floor sheet: as it always printed, song titles huge, black on white. */
+.pe-floor { font: 900 34pt/1.15 "Arial Black", Arial, Helvetica, sans-serif; }
+.pe-floor > div { margin: 0 0 0.35em; break-inside: avoid; page-break-inside: avoid; }
+/* Lyric sheets */
+.print-song-title { font: 800 22pt/1.15 Arial, Helvetica, sans-serif; margin: 0 0 4pt; color: #000; }
+.print-song-meta { font: 11pt/1.3 Arial, Helvetica, sans-serif; margin: 0 0 10pt; color: #000; }
+.print-empty { font-style: italic; }
+.print-sheet { line-height: 1.35; color: #000; }
+.print-sheet .sheet-line { white-space: pre-wrap; min-height: 1.35em; }
+.print-sheet .sheet-section { margin-top: 10pt; }
+.print-sheet .chord { background: none; color: #000; font-weight: 800; }
+/* A chord line and its lyric, in pieces that wrap together at the same word, each chord over its word. */
+.print-sheet .pe-pair { white-space: normal; }
+.pe-seg { display: inline-flex; flex-direction: column; vertical-align: top; white-space: pre; }
+.pe-seg-chord, .pe-seg-lyric { min-height: 1.35em; }
+/* Keep a section together on one page where it fits. */
+.print-block { break-inside: avoid; page-break-inside: avoid; }
+
 @media print {
   /* No page margin: browsers print their date / site name / URL / page number headers inside the margin, so with
-     none there's nowhere for them to go. The 15mm margin comes from .gig-page padding instead. */
+     none there's nowhere for them to go. The 15mm margin comes from each sheet's padding instead. */
   @page { size: A4 portrait; margin: 0; }
+  html.print-editor-open, html.print-editor-open body { background: #fff; color: #000; padding: 0; overflow: visible; }
+  /* Only the print editor's pages go on paper. */
+  html.print-editor-open body > :not(.print-editor),
+  .print-editor > :not(.pe-desk) { display: none !important; }
+  .print-editor { position: static; display: block; background: #fff; }
+  .pe-desk { overflow: visible; padding: 0; background: none; }
+  .pe-pages { display: block; zoom: 1 !important; }
+  .pe-page {
+    width: auto; min-height: 0; box-shadow: none !important;
+    /* clone: repeat the padding on every printed page, so page 2 and later keep their top margin. */
+    box-decoration-break: clone; -webkit-box-decoration-break: clone;
+  }
+  .pe-page + .pe-page { break-before: page; page-break-before: always; }
+
   html:has(.print-setlist), body:has(.print-setlist) { background: #fff; color: #000; padding: 0; }
   body:has(.print-setlist) .topbar,
   body:has(.print-setlist) .bottom-nav,
-  .gig-page > :not(.print-setlist):not(.print-lyrics) { display: none !important; }
-
-  /* Lyrics: the page renders .print-lyrics only after a print option was picked (and never with .print-setlist). */
-  html:has(.print-lyrics), body:has(.print-lyrics) { background: #fff; color: #000; padding: 0; }
-  body:has(.print-lyrics) .topbar,
-  body:has(.print-lyrics) .bottom-nav,
-  .page:has(> .print-lyrics) > :not(.print-lyrics) { display: none !important; }
-  .page:has(> .print-lyrics) {
-    max-width: none; margin: 0; padding: 15mm;
-    box-decoration-break: clone; -webkit-box-decoration-break: clone;
-  }
-  .print-lyrics { display: block; color: #000; }
-  .print-song + .print-song { break-before: page; page-break-before: always; }
-  .print-song-title { font: 800 22pt/1.15 Arial, Helvetica, sans-serif; margin: 0 0 4pt; color: #000; }
-  .print-song-meta { font: 11pt/1.3 Arial, Helvetica, sans-serif; margin: 0 0 10pt; color: #000; }
-  .print-empty { font: italic 14pt Arial, Helvetica, sans-serif; }
-  .print-sheet { font: 14pt/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; color: #000; }
-  .print-sheet .sheet-line { white-space: pre-wrap; min-height: 1.35em; }
-  .print-sheet .sheet-section { margin-top: 10pt; }
-  .print-sheet .chord { background: none; color: #000; font-weight: 800; }
-  /* Keep a section together on one page where it fits. */
-  .print-block { break-inside: avoid; page-break-inside: avoid; }
-  /* clone: repeat the padding on every printed page, so page 2 and later keep their top margin. */
-  .gig-page { max-width: none; margin: 0; padding: 15mm; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+  .gig-page > :not(.print-setlist) { display: none !important; }
+  .gig-page:has(> .print-setlist) { max-width: none; margin: 0; padding: 15mm; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
   .print-setlist {
-    display: block;
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    color: #000;
+    display: block; list-style: none; margin: 0; padding: 0; color: #000;
     font: 900 34pt/1.15 "Arial Black", Arial, Helvetica, sans-serif;
   }
   .print-setlist li { margin: 0 0 0.35em; break-inside: avoid; page-break-inside: avoid; }

@@ -55,3 +55,17 @@ _Avoid_: Clash, merge error, stale write
 **Reload**:
 The choice, offered after a conflict, to see the bandmate's saved version in place of your unsaved change. Never made for you.
 _Avoid_: Refresh, sync, merge
+
+### Printing
+
+**Floor sheet**:
+A gig's printed setlist: the song titles in setlist order, large enough to read from the stage floor.
+_Avoid_: Printed setlist, set sheet
+
+**Lyric sheet**:
+One song's printed words, one song per page, with or without its chords, in the band key. A gig prints one for each song in its setlist.
+_Avoid_: Lyrics printout, chord chart
+
+**Print editor**:
+The screen that opens before a floor sheet or lyric sheet prints, where you change its words and look. Nothing changed there is saved to the song or gig.
+_Avoid_: Print preview, print page
