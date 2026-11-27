@@ -553,6 +553,10 @@ describe("SongPage print lyrics", () => {
     fireEvent.click(within(editor()).getByRole("button", { name: "Keep editing" }));
     fireEvent.click(within(editor()).getByRole("button", { name: "Reset" }));
     expect(body().style.fontSize).toBe("14pt");
+    // Or pick the size straight from the list between A− and A+.
+    fireEvent.change(within(editor()).getByRole("combobox", { name: "Lyrics size" }), { target: { value: "22" } });
+    expect(body().style.fontSize).toBe("22pt");
+    fireEvent.click(within(editor()).getByRole("button", { name: "Reset" }));
     fireEvent.click(within(editor()).getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog", { name: "Print editor" })).not.toBeInTheDocument();
   });

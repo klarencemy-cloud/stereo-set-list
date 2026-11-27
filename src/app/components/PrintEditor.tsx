@@ -4,8 +4,8 @@ import { createPortal, flushSync } from "react-dom";
 import { printFileName } from "../../shared/print";
 import type { PrintableSong, PrintFile, PrintRow } from "../../shared/print";
 import type { SheetPart } from "../../shared/sheet";
-import { applyStyle, selectAll, useKeptSelection } from "./richText";
-import type { TextStyle } from "./richText";
+import { applyStyle, selectAll, sizeAt, useKeptSelection } from "./richText";
+import type { Align, TextStyle } from "./richText";
 
 /** What the print editor opens with: a gig's floor sheet, or lyric sheets for one song or a whole setlist. */
 export type PrintJob =
@@ -32,12 +32,18 @@ const FLOOR_FONTS: Font[] = [
   FONT.arialBlack, FONT.arial, FONT.impact, FONT.verdana, FONT.trebuchet, FONT.georgia, FONT.times, FONT.courier,
 ];
 const FLOOR_SIZES = [18, 24, 28, 34, 40, 48, 60, 72, 96];
+/** The floor sheet's titles start at this size. */
+const FLOOR_START = 34;
 /** Chords only line up over their words in a font whose letters are all the same width. */
 const CHORD_FONTS: Font[] = [FONT.standard, FONT.courier, FONT.consolas, FONT.menlo];
 const LYRIC_FONTS: Font[] = [
   FONT.standard, FONT.arial, FONT.verdana, FONT.trebuchet, FONT.georgia, FONT.times, FONT.courier,
 ];
 const LYRIC_SIZE = { start: 14, min: 10, max: 28, step: 2 };
+const LYRIC_SIZES = Array.from(
+  { length: (LYRIC_SIZE.max - LYRIC_SIZE.min) / LYRIC_SIZE.step + 1 },
+  (_, i) => LYRIC_SIZE.min + i * LYRIC_SIZE.step,
+);
 /** A4 is 210mm wide: 793.7 CSS pixels. */
 const PAGE_PX = (210 / 25.4) * 96;
 
@@ -161,9 +167,102 @@ function Desk({ children }: { children: ReactNode }) {
   );
 }
 
+/**
+ * A− and A+ either side of a list of sizes: the buttons step through the list, the list jumps straight to one.
+ * `value` null shows "Size" (nothing selected yet).
+ */
+function SizeControl({
+  label,
+  smaller,
+  bigger,
+  sizes,
+  value,
+  onChange,
+}: {
+  label: string;
+  smaller: string;
+  bigger: string;
+  sizes: number[];
+  value: number | null;
+  onChange: (pt: number) => void;
+}) {
+  // A size picked some other way (pasted text, say) still shows, between its neighbours.
+  const options = value === null || sizes.includes(value) ? sizes : [...sizes, value].sort((a, b) => a - b);
+  const down = value === null ? undefined : [...sizes].reverse().find((s) => s < value);
+  const up = value === null ? undefined : sizes.find((s) => s > value);
+  return (
+    <div className="pill pill-split pe-size-control" role="group" aria-label={label}>
+      <button
+        type="button"
+        aria-label={smaller}
+        disabled={value !== null && down === undefined}
+        {...keepSelection}
+        onClick={() => down !== undefined && onChange(down)}
+      >
+        {"A−"}
+      </button>
+      <select
+        className="pe-size-select"
+        aria-label={label}
+        value={value === null ? "" : String(value)}
+        onChange={(e) => {
+          const pt = Number(e.target.value);
+          if (pt) onChange(pt);
+        }}
+      >
+        {value === null && <option value="">Size</option>}
+        {options.map((pt) => (
+          <option key={pt} value={pt}>
+            {`${pt} pt`}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        aria-label={bigger}
+        disabled={value !== null && up === undefined}
+        {...keepSelection}
+        onClick={() => up !== undefined && onChange(up)}
+      >
+        A+
+      </button>
+    </div>
+  );
+}
+
+const ICON_MARGIN = 2;
+const ICON_LONG = 14;
+const ICON_SHORT = 9;
+/** Where each align symbol's short lines start. */
+const SHORT_START: Record<Align, number> = {
+  left: ICON_MARGIN,
+  center: ICON_MARGIN + (ICON_LONG - ICON_SHORT) / 2,
+  right: ICON_MARGIN + ICON_LONG - ICON_SHORT,
+};
+
+/** The align symbol: long and short lines in turn, the short ones lined up the way the button aligns text. */
+function AlignIcon({ to }: { to: Align }) {
+  const start = SHORT_START[to];
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+      <g stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        {[3, 7, 11, 15].map((y, i) =>
+          i % 2 === 0 ? (
+            <line key={y} x1={ICON_MARGIN} y1={y} x2={ICON_MARGIN + ICON_LONG} y2={y} />
+          ) : (
+            <line key={y} x1={start} y1={y} x2={start + ICON_SHORT} y2={y} />
+          ),
+        )}
+      </g>
+    </svg>
+  );
+}
+
 function FloorSheet({ titles, onChanged }: { titles: string[]; onChanged: (changed: boolean) => void }) {
   const ref = useRef<HTMLDivElement>(null);
-  const restore = useKeptSelection(ref);
+  // The size of the selected words, shown between A− and A+; null until words are selected.
+  const [size, setSize] = useState<number | null>(null);
+  const restore = useKeptSelection(ref, (range) => setSize(range.collapsed ? null : (sizeAt(range) ?? FLOOR_START)));
   // Bumped by Reset: a fresh sheet, back as it opened.
   const [version, setVersion] = useState(0);
 
@@ -172,6 +271,7 @@ function FloorSheet({ titles, onChanged }: { titles: string[]; onChanged: (chang
     // Nothing selected: nothing to style, and nothing changed.
     if (!root || !restore()) return;
     applyStyle(root, s);
+    if (s.kind === "size") setSize(s.pt);
     onChanged(true);
   }
 
@@ -180,6 +280,7 @@ function FloorSheet({ titles, onChanged }: { titles: string[]; onChanged: (chang
       type="button"
       className="btn pe-tool"
       aria-label={label}
+      title={label}
       {...keepSelection}
       onClick={() => style(s)}
     >
@@ -206,28 +307,20 @@ function FloorSheet({ titles, onChanged }: { titles: string[]; onChanged: (chang
             </option>
           ))}
         </select>
-        <select
-          className="input pe-select"
-          aria-label="Size"
-          value=""
-          onChange={(e) => {
-            const pt = Number(e.target.value);
-            if (pt) style({ kind: "size", pt });
-          }}
-        >
-          <option value="">Size</option>
-          {FLOOR_SIZES.map((pt) => (
-            <option key={pt} value={pt}>
-              {`${pt} pt`}
-            </option>
-          ))}
-        </select>
+        <SizeControl
+          label="Size"
+          smaller="Smaller text"
+          bigger="Bigger text"
+          sizes={FLOOR_SIZES}
+          value={size}
+          onChange={(pt) => style({ kind: "size", pt })}
+        />
         {tool("Bold", { kind: "bold" }, <b>B</b>)}
         {tool("Italic", { kind: "italic" }, <i>I</i>)}
         {tool("Underline", { kind: "underline" }, <u>U</u>)}
-        {tool("Left", { kind: "align", to: "left" })}
-        {tool("Centre", { kind: "align", to: "center" })}
-        {tool("Right", { kind: "align", to: "right" })}
+        {tool("Align left", { kind: "align", to: "left" }, <AlignIcon to="left" />)}
+        {tool("Align centre", { kind: "align", to: "center" }, <AlignIcon to="center" />)}
+        {tool("Align right", { kind: "align", to: "right" }, <AlignIcon to="right" />)}
         <button
           type="button"
           className="btn pe-tool"
@@ -241,6 +334,7 @@ function FloorSheet({ titles, onChanged }: { titles: string[]; onChanged: (chang
           className="btn pe-tool"
           onClick={() => {
             setVersion((v) => v + 1);
+            setSize(null);
             onChanged(false);
           }}
         >
@@ -304,25 +398,14 @@ function LyricSheets({
             Changing: <strong>{songs[active].title}</strong>
           </span>
         )}
-        <div className="pill pill-split" role="group" aria-label="Lyrics size">
-          <button
-            type="button"
-            aria-label="Smaller lyrics"
-            disabled={look.size <= LYRIC_SIZE.min}
-            onClick={() => setLook({ size: Math.max(LYRIC_SIZE.min, look.size - LYRIC_SIZE.step) })}
-          >
-            {"A−"}
-          </button>
-          <span className="pe-size">{`${look.size} pt`}</span>
-          <button
-            type="button"
-            aria-label="Bigger lyrics"
-            disabled={look.size >= LYRIC_SIZE.max}
-            onClick={() => setLook({ size: Math.min(LYRIC_SIZE.max, look.size + LYRIC_SIZE.step) })}
-          >
-            A+
-          </button>
-        </div>
+        <SizeControl
+          label="Lyrics size"
+          smaller="Smaller lyrics"
+          bigger="Bigger lyrics"
+          sizes={LYRIC_SIZES}
+          value={look.size}
+          onChange={(size) => setLook({ size })}
+        />
         <select
           className="input pe-select"
           aria-label="Lyrics font"

@@ -297,8 +297,17 @@ describe("GigPage print setlist", () => {
     const tools = within(editor()).getByRole("toolbar", { name: "Floor sheet tools" });
     expect(within(tools).getByRole("combobox", { name: "Font" })).toBeInTheDocument();
     expect(within(tools).getByRole("combobox", { name: "Size" })).toBeInTheDocument();
-    for (const name of ["Bold", "Italic", "Underline", "Left", "Centre", "Right", "Select all", "Reset"]) {
+    const aligns = ["Align left", "Align centre", "Align right"];
+    for (const name of ["Bold", "Italic", "Underline", ...aligns, "Select all", "Reset"]) {
       expect(within(tools).getByRole("button", { name })).toBeInTheDocument();
+    }
+    // Alignment shows a symbol, not a word; the name is in its tooltip.
+    for (const name of aligns) {
+      const button = within(tools).getByRole("button", { name });
+      expect(button).toHaveAttribute("title", name);
+      // No words, only the symbol.
+      expect(button.textContent).toBe("");
+      expect(button.querySelector("svg")).not.toBeNull();
     }
     // Nothing selected yet: nothing to style, and Close doesn't ask.
     fireEvent.click(within(tools).getByRole("button", { name: "Bold" }));
@@ -309,11 +318,40 @@ describe("GigPage print setlist", () => {
     window.getSelection()!.addRange(range);
     fireEvent(document, new Event("selectionchange"));
     fireEvent.click(within(tools).getByRole("button", { name: "Bold" }));
-    fireEvent.click(within(tools).getByRole("button", { name: "Centre" }));
+    fireEvent.click(within(tools).getByRole("button", { name: "Align centre" }));
     expect(exec).toHaveBeenCalledWith("bold", false, undefined);
     expect(exec).toHaveBeenCalledWith("justifyCenter", false, undefined);
     fireEvent.click(within(editor()).getByRole("button", { name: "Close" }));
     expect(within(editor()).getByRole("button", { name: "Throw away" })).toBeInTheDocument();
+  });
+
+  it("steps the selected words' size with A− and A+, beside a list of sizes", async () => {
+    const exec = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", { value: exec, configurable: true });
+    renderGig();
+    await openFloorSheet();
+    const tools = within(editor()).getByRole("toolbar", { name: "Floor sheet tools" });
+    const size = within(tools).getByRole("combobox", { name: "Size" }) as HTMLSelectElement;
+    const bigger = within(tools).getByRole("button", { name: "Bigger text" });
+    const smaller = within(tools).getByRole("button", { name: "Smaller text" });
+    // Nothing selected: nothing to size.
+    fireEvent.click(bigger);
+    expect(exec).not.toHaveBeenCalledWith("fontName", false, expect.anything());
+    const range = document.createRange();
+    range.selectNodeContents(floorSheet().firstElementChild!);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    fireEvent(document, new Event("selectionchange"));
+    // The floor sheet starts at 34 pt; A+ goes to the next size in the list.
+    expect(size.value).toBe("34");
+    fireEvent.click(bigger);
+    expect(exec).toHaveBeenCalledWith("fontName", false, expect.anything());
+    expect(size.value).toBe("40");
+    fireEvent.click(smaller);
+    fireEvent.click(smaller);
+    expect(size.value).toBe("28");
+    fireEvent.change(size, { target: { value: "72" } });
+    expect(size.value).toBe("72");
   });
 
   it("does not count styling with nothing selected as a change", async () => {
@@ -417,10 +455,11 @@ describe("GigPage print lyrics", () => {
     const tools = within(ed).getByRole("toolbar", { name: "Lyric sheet tools" });
     expect(within(tools).getByRole("button", { name: "Smaller lyrics" })).toBeInTheDocument();
     expect(within(tools).getByRole("button", { name: "Bigger lyrics" })).toBeInTheDocument();
+    expect(within(tools).getByRole("combobox", { name: "Lyrics size" })).toHaveValue("14");
     expect(within(tools).getByRole("combobox", { name: "Lyrics font" })).toBeInTheDocument();
     expect(within(tools).getByRole("button", { name: "Reset" })).toBeInTheDocument();
     expect(within(ed).queryByRole("button", { name: "Bold" })).not.toBeInTheDocument();
-    expect(within(ed).queryByRole("button", { name: "Centre" })).not.toBeInTheDocument();
+    expect(within(ed).queryByRole("button", { name: "Align centre" })).not.toBeInTheDocument();
   });
 
   it("changes the size and font of only the song you're working on", async () => {

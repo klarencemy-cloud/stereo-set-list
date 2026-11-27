@@ -263,7 +263,13 @@ html.print-editor-open, html.print-editor-open body { overflow: hidden; }
 }
 .pe-tool { padding: 0 12px; }
 .pe-select { width: auto; min-height: 44px; }
-.pe-size { display: inline-flex; align-items: center; min-width: 3.5em; justify-content: center; font-variant-numeric: tabular-nums; }
+/* A− [14 pt ▾] A+: the size list sits inside the pill, between the two buttons. */
+.pe-size-select {
+  min-height: 44px; padding: 0 4px; border: 0; border-left: 1px solid var(--border); border-right: 1px solid var(--border);
+  background: var(--surface); color: var(--text); font: inherit; font-weight: 700; font-variant-numeric: tabular-nums; cursor: pointer;
+}
+/* The open list takes its colours from these, not the pill: set both so it reads in dark mode too. */
+.pe-size-select option { background: var(--surface); color: var(--text); }
 .pe-active { flex-basis: 100%; font-size: 14px; }
 .pe-note, .pe-confirm { margin: 0; padding: 8px 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
 .pe-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
