@@ -196,36 +196,182 @@ describe("GigPage offline saving", () => {
 });
 
 describe("GigPage print setlist", () => {
-  const printTitles = (container: HTMLElement) =>
-    Array.from(container.querySelectorAll(".print-setlist li")).map((li) => li.textContent);
+  const editor = () => screen.getByRole("dialog", { name: "Print editor" });
+  const floorSheet = () => within(editor()).getByRole("textbox", { name: "Floor sheet" });
+  const floorLines = () => Array.from(floorSheet().children).map((el) => el.textContent);
 
-  it("opens the browser print dialog", async () => {
-    const print = vi.spyOn(window, "print").mockImplementation(() => {});
-    renderGig();
-    await screen.findByText("1. Alpha — Key: A");
+  async function openFloorSheet() {
+    await screen.findByText(/^1\. /);
     fireEvent.click(screen.getByRole("button", { name: "Print setlist" }));
-    expect(print).toHaveBeenCalledTimes(1);
-    print.mockRestore();
+    return editor();
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    document.title = "";
   });
 
-  it("prints only the titles, in capitals and setlist order", async () => {
+  it("opens the print editor with the titles in capitals and setlist order, without printing yet", async () => {
+    const print = vi.spyOn(window, "print").mockImplementation(() => {});
+    mocked.getGig.mockResolvedValue({ ...gig, setlist: sl("s2", "s1") });
+    renderGig();
+    await openFloorSheet();
+    expect(floorLines()).toEqual(["BETA", "ALPHA"]);
+    expect(print).not.toHaveBeenCalled();
+  });
+
+  it("leaves deleted songs and set breaks off the floor sheet", async () => {
+    mocked.getGig.mockResolvedValue({
+      ...gig,
+      setlist: [...sl("s1", "gone"), { type: "break", id: "b1", label: "Set 2" }, ...sl("s3")],
+    });
+    renderGig();
+    await openFloorSheet();
+    expect(floorLines()).toEqual(["ALPHA", "GAMMA"]);
+  });
+
+  it("prints from the editor, naming the PDF after the gig, and stays open", async () => {
+    document.title = "Stereo Set";
+    let titleWhilePrinting = "";
+    const print = vi.spyOn(window, "print").mockImplementation(() => {
+      titleWhilePrinting = document.title;
+    });
+    renderGig();
+    await openFloorSheet();
+    fireEvent.click(within(editor()).getByRole("button", { name: "Print" }));
+    expect(print).toHaveBeenCalledTimes(1);
+    expect(titleWhilePrinting).toBe("Winter Show – Floor sheet");
+    fireEvent(window, new Event("afterprint"));
+    expect(document.title).toBe("Stereo Set");
+    expect(editor()).toBeInTheDocument();
+  });
+
+  it("Download PDF opens the print window and says to pick Save as PDF", async () => {
+    const print = vi.spyOn(window, "print").mockImplementation(() => {});
+    renderGig();
+    await openFloorSheet();
+    fireEvent.click(within(editor()).getByRole("button", { name: "Download PDF" }));
+    expect(print).toHaveBeenCalledTimes(1);
+    expect(within(editor()).getByRole("status")).toHaveTextContent("Save as PDF");
+  });
+
+  it("closes straight away when nothing changed", async () => {
+    renderGig();
+    await openFloorSheet();
+    fireEvent.click(within(editor()).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog", { name: "Print editor" })).not.toBeInTheDocument();
+  });
+
+  it("asks before throwing away changes, and Keep editing keeps them", async () => {
+    renderGig();
+    await openFloorSheet();
+    floorSheet().firstElementChild!.textContent = "OPENER";
+    fireEvent.input(floorSheet());
+    fireEvent.click(within(editor()).getByRole("button", { name: "Close" }));
+    fireEvent.click(within(editor()).getByRole("button", { name: "Keep editing" }));
+    expect(floorLines()).toEqual(["OPENER", "BETA"]);
+    fireEvent.click(within(editor()).getByRole("button", { name: "Close" }));
+    fireEvent.click(within(editor()).getByRole("button", { name: "Throw away" }));
+    expect(screen.queryByRole("dialog", { name: "Print editor" })).not.toBeInTheDocument();
+    // Nothing was saved to the gig.
+    expect(mocked.updateGig).not.toHaveBeenCalled();
+  });
+
+  it("Reset puts the floor sheet back the way it opened", async () => {
+    renderGig();
+    await openFloorSheet();
+    floorSheet().firstElementChild!.textContent = "OPENER";
+    fireEvent.input(floorSheet());
+    fireEvent.click(within(editor()).getByRole("button", { name: "Reset" }));
+    expect(floorLines()).toEqual(["ALPHA", "BETA"]);
+    // Back as it opened: Close no longer asks.
+    fireEvent.click(within(editor()).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog", { name: "Print editor" })).not.toBeInTheDocument();
+  });
+
+  it("styles the selected words with the floor sheet's tools", async () => {
+    const exec = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", { value: exec, configurable: true });
+    renderGig();
+    await openFloorSheet();
+    const tools = within(editor()).getByRole("toolbar", { name: "Floor sheet tools" });
+    expect(within(tools).getByRole("combobox", { name: "Font" })).toBeInTheDocument();
+    expect(within(tools).getByRole("combobox", { name: "Size" })).toBeInTheDocument();
+    const aligns = ["Align left", "Align centre", "Align right"];
+    for (const name of ["Bold", "Italic", "Underline", ...aligns, "Select all", "Reset"]) {
+      expect(within(tools).getByRole("button", { name })).toBeInTheDocument();
+    }
+    // Alignment shows a symbol, not a word; the name is in its tooltip.
+    for (const name of aligns) {
+      const button = within(tools).getByRole("button", { name });
+      expect(button).toHaveAttribute("title", name);
+      // No words, only the symbol.
+      expect(button.textContent).toBe("");
+      expect(button.querySelector("svg")).not.toBeNull();
+    }
+    // Nothing selected yet: nothing to style, and Close doesn't ask.
+    fireEvent.click(within(tools).getByRole("button", { name: "Bold" }));
+    expect(exec).not.toHaveBeenCalledWith("bold", false, undefined);
+    const range = document.createRange();
+    range.selectNodeContents(floorSheet().firstElementChild!);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    fireEvent(document, new Event("selectionchange"));
+    fireEvent.click(within(tools).getByRole("button", { name: "Bold" }));
+    fireEvent.click(within(tools).getByRole("button", { name: "Align centre" }));
+    expect(exec).toHaveBeenCalledWith("bold", false, undefined);
+    expect(exec).toHaveBeenCalledWith("justifyCenter", false, undefined);
+    fireEvent.click(within(editor()).getByRole("button", { name: "Close" }));
+    expect(within(editor()).getByRole("button", { name: "Throw away" })).toBeInTheDocument();
+  });
+
+  it("steps the selected words' size with A− and A+, beside a list of sizes", async () => {
+    const exec = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", { value: exec, configurable: true });
+    renderGig();
+    await openFloorSheet();
+    const tools = within(editor()).getByRole("toolbar", { name: "Floor sheet tools" });
+    const size = within(tools).getByRole("combobox", { name: "Size" }) as HTMLSelectElement;
+    const bigger = within(tools).getByRole("button", { name: "Bigger text" });
+    const smaller = within(tools).getByRole("button", { name: "Smaller text" });
+    // Nothing selected: nothing to size.
+    fireEvent.click(bigger);
+    expect(exec).not.toHaveBeenCalledWith("fontName", false, expect.anything());
+    const range = document.createRange();
+    range.selectNodeContents(floorSheet().firstElementChild!);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    fireEvent(document, new Event("selectionchange"));
+    // The floor sheet starts at 34 pt; A+ goes to the next size in the list.
+    expect(size.value).toBe("34");
+    fireEvent.click(bigger);
+    expect(exec).toHaveBeenCalledWith("fontName", false, expect.anything());
+    expect(size.value).toBe("40");
+    fireEvent.click(smaller);
+    fireEvent.click(smaller);
+    expect(size.value).toBe("28");
+    fireEvent.change(size, { target: { value: "72" } });
+    expect(size.value).toBe("72");
+  });
+
+  it("does not count styling with nothing selected as a change", async () => {
+    Object.defineProperty(document, "execCommand", { value: vi.fn(() => true), configurable: true });
+    renderGig();
+    await openFloorSheet();
+    fireEvent.click(within(editor()).getByRole("button", { name: "Bold" }));
+    fireEvent.click(within(editor()).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog", { name: "Print editor" })).not.toBeInTheDocument();
+  });
+
+  it("still prints the floor sheet from the browser's own Print, with the editor closed", async () => {
     mocked.getGig.mockResolvedValue({ ...gig, setlist: sl("s2", "s1") });
     const { container } = renderGig();
     await screen.findByText("1. Beta — Key: C");
-    expect(printTitles(container)).toEqual(["BETA", "ALPHA"]);
-  });
-
-  it("leaves deleted songs off the printed sheet", async () => {
-    mocked.getGig.mockResolvedValue({ ...gig, setlist: sl("s1", "gone", "s3") });
-    const { container } = renderGig();
-    await screen.findByText("1. Alpha — Key: A");
-    expect(printTitles(container)).toEqual(["ALPHA", "GAMMA"]);
-  });
-
-  it("keeps the printed list out of the on-screen setlist", async () => {
-    renderGig();
-    await screen.findByText("1. Alpha — Key: A");
-    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    const fallback = Array.from(container.querySelectorAll(".print-setlist li")).map((li) => li.textContent);
+    expect(fallback).toEqual(["BETA", "ALPHA"]);
+    fireEvent.click(screen.getByRole("button", { name: "Print setlist" }));
+    // While the editor is open, only its pages print.
+    expect(container.querySelector(".print-setlist")).toBeNull();
   });
 
   it("is hidden while editing the setlist", async () => {
@@ -237,10 +383,9 @@ describe("GigPage print setlist", () => {
 
   it("is hidden when the setlist is empty", async () => {
     mocked.getGig.mockResolvedValue({ ...gig, setlist: [] });
-    const { container } = renderGig();
+    renderGig();
     await screen.findByText("No songs in the setlist yet.");
     expect(screen.queryByRole("button", { name: "Print setlist" })).not.toBeInTheDocument();
-    expect(container.querySelector(".print-setlist")).toBeNull();
   });
 });
 
@@ -255,10 +400,23 @@ describe("GigPage print lyrics", () => {
     mocked.getSong.mockImplementation(async (id: string) => ({ ...full[id] }));
   });
 
-  const printedTitles = () =>
-    Array.from(document.querySelectorAll(".print-lyrics .print-song-title")).map((h) => h.textContent);
+  afterEach(() => {
+    vi.restoreAllMocks();
+    document.title = "";
+  });
 
-  it("prints every song in setlist order, skipping breaks and notes, with no setlist sheet alongside", async () => {
+  const editor = () => screen.getByRole("dialog", { name: "Print editor" });
+  const sheets = () => within(editor()).getAllByRole("textbox", { name: /^Lyric sheet: / });
+  const sheetTitles = () => sheets().map((s) => s.querySelector(".print-song-title")!.textContent);
+
+  async function openLyrics(version: "Lyrics + chords" | "Lyrics only") {
+    await screen.findByText(/^1\. /);
+    fireEvent.click(screen.getByRole("button", { name: "Print lyrics" }));
+    fireEvent.click(screen.getByRole("button", { name: version }));
+    return screen.findByRole("dialog", { name: "Print editor" });
+  }
+
+  it("opens every song in setlist order in the editor, skipping breaks and notes, without printing yet", async () => {
     const print = vi.spyOn(window, "print").mockImplementation(() => {});
     mocked.getGig.mockResolvedValue({
       ...gig,
@@ -270,47 +428,88 @@ describe("GigPage print lyrics", () => {
       ],
     });
     renderGig();
-    await screen.findByText("1. Gamma — Key: E");
-    fireEvent.click(screen.getByRole("button", { name: "Print lyrics" }));
-    fireEvent.click(screen.getByRole("button", { name: "Lyrics only" }));
-    await waitFor(() => expect(print).toHaveBeenCalledTimes(1));
-    expect(printedTitles()).toEqual(["Gamma", "Alpha", "Beta"]);
-    const block = document.querySelector(".print-lyrics")!;
-    expect(block).not.toHaveTextContent("Set 2");
-    expect(block).not.toHaveTextContent("slow");
-    expect(block.querySelectorAll(".chord")).toHaveLength(0);
-    expect(block).toHaveTextContent("No lyrics yet");
-    // Only one print block at a time.
-    expect(document.querySelector(".print-setlist")).toBeNull();
-    print.mockRestore();
+    const ed = await openLyrics("Lyrics only");
+    expect(sheetTitles()).toEqual(["Gamma", "Alpha", "Beta"]);
+    expect(ed).not.toHaveTextContent("Set 2");
+    expect(ed).not.toHaveTextContent("slow");
+    expect(ed.querySelectorAll(".chord")).toHaveLength(0);
+    expect(ed).toHaveTextContent("No lyrics yet");
+    expect(print).not.toHaveBeenCalled();
+    // The choice closes once the editor opened.
+    expect(screen.queryByRole("button", { name: "Lyrics only" })).not.toBeInTheDocument();
   });
 
-  it("brings back the setlist sheet for Print setlist after printing lyrics", async () => {
-    const print = vi.spyOn(window, "print").mockImplementation(() => {});
+  it("has no Cancel: pressing Print lyrics again closes the choice", async () => {
     renderGig();
     await screen.findByText("1. Alpha — Key: A");
     fireEvent.click(screen.getByRole("button", { name: "Print lyrics" }));
-    fireEvent.click(screen.getByRole("button", { name: "Lyrics + chords" }));
-    await waitFor(() => expect(document.querySelector(".print-lyrics")).not.toBeNull());
-    expect(document.querySelectorAll(".print-lyrics .chord")).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: "Print setlist" }));
-    expect(document.querySelector(".print-lyrics")).toBeNull();
-    expect(document.querySelector(".print-setlist")).not.toBeNull();
-    expect(print).toHaveBeenCalledTimes(2);
-    print.mockRestore();
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Print lyrics" }));
+    expect(screen.queryByRole("button", { name: "Lyrics only" })).not.toBeInTheDocument();
+  });
+
+  it("gives lyric sheets only a size, a font and Reset", async () => {
+    renderGig();
+    const ed = await openLyrics("Lyrics + chords");
+    expect(ed.querySelectorAll(".chord")).toHaveLength(1);
+    const tools = within(ed).getByRole("toolbar", { name: "Lyric sheet tools" });
+    expect(within(tools).getByRole("button", { name: "Smaller lyrics" })).toBeInTheDocument();
+    expect(within(tools).getByRole("button", { name: "Bigger lyrics" })).toBeInTheDocument();
+    expect(within(tools).getByRole("combobox", { name: "Lyrics size" })).toHaveValue("14");
+    expect(within(tools).getByRole("combobox", { name: "Lyrics font" })).toBeInTheDocument();
+    expect(within(tools).getByRole("button", { name: "Reset" })).toBeInTheDocument();
+    expect(within(ed).queryByRole("button", { name: "Bold" })).not.toBeInTheDocument();
+    expect(within(ed).queryByRole("button", { name: "Align centre" })).not.toBeInTheDocument();
+  });
+
+  it("changes the size and font of only the song you're working on", async () => {
+    renderGig();
+    const ed = await openLyrics("Lyrics + chords");
+    const [alpha, beta] = sheets();
+    const body = (s: HTMLElement) => s;
+    expect(body(alpha).style.fontSize).toBe("14pt");
+    fireEvent.focus(beta);
+    fireEvent.click(within(ed).getByRole("button", { name: "Bigger lyrics" }));
+    expect(body(beta).style.fontSize).toBe("16pt");
+    expect(body(alpha).style.fontSize).toBe("14pt");
+    const font = within(ed).getByRole("combobox", { name: "Lyrics font" }) as HTMLSelectElement;
+    fireEvent.change(font, { target: { value: font.options[1].value } });
+    expect(body(beta).style.fontFamily).not.toBe(body(alpha).style.fontFamily);
+  });
+
+  it("offers only fixed-width fonts with chords, and any font for lyrics only", async () => {
+    renderGig();
+    let ed = await openLyrics("Lyrics + chords");
+    const fonts = () =>
+      Array.from((within(editor()).getByRole("combobox", { name: "Lyrics font" }) as HTMLSelectElement).options).map(
+        (o) => o.textContent,
+      );
+    expect(fonts()).not.toContain("Arial");
+    fireEvent.click(within(ed).getByRole("button", { name: "Close" }));
+    ed = await openLyrics("Lyrics only");
+    expect(fonts()).toContain("Arial");
+  });
+
+  it("names the PDF after the gig", async () => {
+    let titleWhilePrinting = "";
+    vi.spyOn(window, "print").mockImplementation(() => {
+      titleWhilePrinting = document.title;
+    });
+    renderGig();
+    const ed = await openLyrics("Lyrics only");
+    fireEvent.click(within(ed).getByRole("button", { name: "Print" }));
+    expect(titleWhilePrinting).toBe("Winter Show – Lyric sheets");
   });
 
   it("shows an error and keeps the choice open when a song can't load", async () => {
-    const print = vi.spyOn(window, "print").mockImplementation(() => {});
     mocked.getSong.mockRejectedValue(new ApiError(500, "down"));
     renderGig();
     await screen.findByText("1. Alpha — Key: A");
     fireEvent.click(screen.getByRole("button", { name: "Print lyrics" }));
     fireEvent.click(screen.getByRole("button", { name: "Lyrics only" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not load the lyrics to print");
-    expect(print).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Print editor" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Lyrics only" })).toBeInTheDocument();
-    print.mockRestore();
   });
 
   it("is hidden while editing the setlist", async () => {
@@ -635,13 +834,6 @@ describe("GigPage setlist items", () => {
     expect(screen.getByRole("button", { name: "Drag Beta" })).toBeInTheDocument();
   });
 
-  it("prints only the song titles, leaving set breaks off the paper", async () => {
-    mocked.getGig.mockResolvedValue({ ...gig, setlist: withBreak });
-    const { container } = renderGig();
-    await screen.findByText("1. Alpha — Key: A");
-    const printed = Array.from(container.querySelectorAll(".print-setlist li")).map((li) => li.textContent);
-    expect(printed).toEqual(["ALPHA", "BETA"]);
-  });
 });
 
 describe("GigsPage", () => {

@@ -17,7 +17,9 @@ import { useFontSize } from "../components/useFontSize";
 import { useVersionedRecord } from "../components/useVersionedRecord";
 import { useSwipe } from "../components/useSwipe";
 import { useShowChords } from "../components/useShowChords";
-import PrintLyrics, { PrintLyricsChoice, usePrintLyrics } from "../components/PrintLyrics";
+import { PrintLyricsChoice, usePrintLyrics } from "../components/PrintLyrics";
+import PrintEditor from "../components/PrintEditor";
+import type { PrintJob } from "../components/PrintEditor";
 import SongMetronome from "../components/SongMetronome";
 import type { MetroSession } from "../../shared/metronome";
 import { songTempo } from "../../shared/song";
@@ -42,6 +44,7 @@ export default function SongPage() {
   const chords = useShowChords();
   const printer = usePrintLyrics();
   const [choosingPrint, setChoosingPrint] = useState(false);
+  const [printJob, setPrintJob] = useState<PrintJob | null>(null);
   const [showMetronome, setShowMetronome] = useState(false);
   // For the pill's live dot: checked once when the song opens, then kept up to date by the open panel.
   const [metroSession, setMetroSession] = useState<MetroSession | null>(null);
@@ -55,6 +58,7 @@ export default function SongPage() {
     setRunning(false);
     setShowTranspose(false);
     setChoosingPrint(false);
+    setPrintJob(null);
     setShowMetronome(false);
     setMetroSession(null);
     window.scrollTo?.(0, 0);
@@ -206,10 +210,12 @@ export default function SongPage() {
       {choosingPrint && (
         <PrintLyricsChoice
           busy={printer.busy}
-          onCancel={() => setChoosingPrint(false)}
           onPick={async (withChords) => {
             const current = song;
-            if (await printer.print(async () => [current], withChords)) setChoosingPrint(false);
+            const loaded = await printer.load(async () => [current], withChords);
+            if (!loaded) return;
+            setChoosingPrint(false);
+            setPrintJob({ kind: "lyrics", file: { kind: "songLyrics", name: current.title }, withChords, songs: loaded });
           }}
         />
       )}
@@ -267,7 +273,7 @@ export default function SongPage() {
           ) : <span />}
         </nav>
       )}
-      {printer.songs && <PrintLyrics songs={printer.songs} />}
+      {printJob && <PrintEditor job={printJob} onClose={() => setPrintJob(null)} />}
     </main>
   );
 }

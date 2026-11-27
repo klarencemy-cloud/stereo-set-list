@@ -7,7 +7,9 @@ import { formatGigDate } from "../formatDate";
 import SetlistEditor from "../components/SetlistEditor";
 import PlaylistImport from "../components/PlaylistImport";
 import SaveNotice from "../components/SaveNotice";
-import PrintLyrics, { PrintLyricsChoice, usePrintLyrics } from "../components/PrintLyrics";
+import { PrintLyricsChoice, usePrintLyrics } from "../components/PrintLyrics";
+import PrintEditor from "../components/PrintEditor";
+import type { PrintJob } from "../components/PrintEditor";
 import { loadSong } from "../songCache";
 import { setlistOf, songIdsOf } from "../../shared/setlist";
 import { useVersionedRecord } from "../components/useVersionedRecord";
@@ -35,6 +37,7 @@ export default function GigPage() {
   const [ticked, setTicked] = useState<PlaylistTrack[]>([]);
   const printer = usePrintLyrics();
   const [choosingLyrics, setChoosingLyrics] = useState(false);
+  const [printJob, setPrintJob] = useState<PrintJob | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -228,11 +231,13 @@ export default function GigPage() {
             <button
               type="button"
               className="btn"
-              onClick={() => {
-                // Drop any lyrics left from an earlier print, so only the setlist goes on paper.
-                printer.clear();
-                window.print();
-              }}
+              onClick={() =>
+                setPrintJob({
+                  kind: "floor",
+                  file: { kind: "floor", name: gig.name },
+                  titles: ids.map((sid) => byId.get(sid)!.title.toUpperCase()),
+                })
+              }
             >
               Print setlist
             </button>
@@ -247,13 +252,14 @@ export default function GigPage() {
       {!editing && ids.length > 0 && choosingLyrics && (
         <PrintLyricsChoice
           busy={printer.busy}
-          onCancel={() => setChoosingLyrics(false)}
           onPick={async (withChords) => {
             // Songs only, in setlist order: breaks and notes don't print.
             const order = [...ids];
-            if (await printer.print(() => Promise.all(order.map((sid) => loadSong(sid))), withChords)) {
-              setChoosingLyrics(false);
-            }
+            const name = gig.name;
+            const loaded = await printer.load(() => Promise.all(order.map((sid) => loadSong(sid))), withChords);
+            if (!loaded) return;
+            setChoosingLyrics(false);
+            setPrintJob({ kind: "lyrics", file: { kind: "gigLyrics", name }, withChords, songs: loaded });
           }}
         />
       )}
@@ -303,9 +309,10 @@ export default function GigPage() {
       <p>
         <button type="button" className="btn" onClick={removeGig}>Delete gig</button>
       </p>
-      {printer.songs && <PrintLyrics songs={printer.songs} />}
-      {ids.length > 0 && !printer.songs && (
-        // Floor sheet: invisible on screen, the only thing on paper (see @media print in styles.css).
+      {printJob && <PrintEditor job={printJob} onClose={() => setPrintJob(null)} />}
+      {ids.length > 0 && !printJob && (
+        // For the browser's own Print (Ctrl+P): the floor sheet as it opens in the print editor. Invisible on
+        // screen, the only thing on paper (see @media print in styles.css).
         <ol className="print-setlist" aria-hidden="true">
           {ids.map((sid) => (
             <li key={sid}>{byId.get(sid)!.title.toUpperCase()}</li>
