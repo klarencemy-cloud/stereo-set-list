@@ -75,9 +75,16 @@ export function blobsKV(): KV {
     async getTextTagged(k) {
       const r = await store.getWithMetadata(k, { type: "text" });
       if (!r) return null;
+      if (r.etag) return { value: r.data, etag: r.etag };
+      // The local Blobs server (netlify dev) sends no etag on a read, but its listing has one and its
+      // conditional writes check it. The etag is taken before the value is read again: a write in
+      // between makes the etag stale, so the conditional write fails and is retried, never lost.
+      const { blobs } = await store.list({ prefix: k });
+      const etag = blobs.find((b) => b.key === k)?.etag;
       // Without an etag the conditional write below can't be made safe, so fail loudly instead.
-      if (!r.etag) throw new Error(`blob store returned no etag for ${k}`);
-      return { value: r.data, etag: r.etag };
+      if (!etag) throw new Error(`blob store returned no etag for ${k}`);
+      const value = await store.get(k, { type: "text" });
+      return value === null ? null : { value, etag };
     },
     async setTextIfMatch(k, v, etag) {
       // Atomic on the Blobs side: the write lands only if nobody wrote the key since it was read.

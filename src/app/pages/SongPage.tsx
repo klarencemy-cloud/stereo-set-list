@@ -7,6 +7,7 @@ import { transposeContent } from "../../shared/sheet";
 import { transposeKey } from "../../shared/transpose";
 import ChordSheet from "../components/ChordSheet";
 import TrackPlayer from "../components/TrackPlayer";
+import OriginalRecording from "../components/OriginalRecording";
 import TransposeControl from "../components/TransposeControl";
 import SaveNotice from "../components/SaveNotice";
 import { useAutoscroll } from "../components/useAutoscroll";
@@ -248,6 +249,8 @@ export default function SongPage() {
       </p>
       {keyUnknown && <p className="muted key-note">{KEY_UNKNOWN}</p>}
       {song.trackId && <TrackPlayer key={song.trackId} trackId={song.trackId} />}
+      {/* Copies saved before links existed have no spotifyTrackId: no player, the same as "". */}
+      {song.spotifyTrackId && <OriginalRecording spotifyTrackId={song.spotifyTrackId} />}
       {song.content.trim() === "" ? (
         <p className="muted">No lyrics or chords yet {"—"} tap Edit to add them.</p>
       ) : (

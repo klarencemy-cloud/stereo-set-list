@@ -115,7 +115,12 @@ export const api = {
     json<Song>(`/api/songs/${id}`, opts?.fresh ? { headers: { [FRESH_HEADER]: "1" } } : undefined),
   // New songs aren't in anything cached yet, so creating one makes nothing stale.
   createSong: (input: SongInput) => json<Song>("/api/songs", send("POST", input)),
-  importSongs: (tracks: PlaylistTrack[]) => json<Song[]>("/api/songs/batch", send("POST", { tracks })),
+  // Reusing a song can give it its Spotify link, so saved copies of the songs it returns are stale.
+  importSongs: (tracks: PlaylistTrack[]) =>
+    changing(
+      (songs: Song[]) => ({ songs: songs.map((s) => s.id) }),
+      () => json<Song[]>("/api/songs/batch", send("POST", { tracks })),
+    ),
   /** `baseVersion`: the `updatedAt` this page loaded. The server refuses (409) if the song changed since. */
   updateSong: (id: string, patch: Partial<SongInput>, baseVersion?: string) =>
     changing({ songs: [id] }, () => json<Song>(`/api/songs/${id}`, send("PUT", { ...patch, baseVersion }))),

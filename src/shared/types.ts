@@ -11,6 +11,11 @@ export interface Song {
   bpm: number | null;
   /** Beats in a bar (2-7), or null when unknown. Missing on songs saved before it existed. */
   beatsPerBar: number | null;
+  /**
+   * The song's original recording on Spotify, as a track id; "" when nobody has added one. Optional
+   * because offline copies and older clients don't have it; the server always returns it.
+   */
+  spotifyTrackId?: string;
   /** The mp3 of an original song. Set by the server only; missing on regular songs. */
   trackId?: string | null;
   updatedAt: string;

@@ -643,3 +643,58 @@ describe("SongPage metronome pill", () => {
     expect(peekSong("s1")?.bpm).toBe(100);
   });
 });
+
+describe("SongPage original recording", () => {
+  const ID = "4uLU6hMCjMI75M1A2tKUQC";
+  const player = () => screen.queryByTitle("Original recording on Spotify");
+  const setOnline = (on: boolean) => Object.defineProperty(navigator, "onLine", { configurable: true, get: () => on });
+
+  afterEach(() => setOnline(true));
+
+  it("shows nothing when the song has no Spotify link, including copies saved before links existed", async () => {
+    mocked.getSong.mockResolvedValue({ ...song, spotifyTrackId: "" });
+    renderPage();
+    await screen.findByText("Test Song");
+    expect(player()).toBeNull();
+    expect(screen.queryByRole("link", { name: "Open in Spotify" })).not.toBeInTheDocument();
+    cleanup();
+    clearSongCache();
+    mocked.getSong.mockResolvedValue({ ...song });
+    renderPage();
+    await screen.findByText("Test Song");
+    expect(player()).toBeNull();
+  });
+
+  it("plays the original recording in Spotify's player, with a link that opens the Spotify app", async () => {
+    mocked.getSong.mockResolvedValue({ ...song, spotifyTrackId: ID });
+    renderPage();
+    const frame = (await screen.findByTitle("Original recording on Spotify")) as HTMLIFrameElement;
+    expect(frame.src).toBe(`https://open.spotify.com/embed/track/${ID}`);
+    // Without encrypted-media Spotify only ever plays a preview.
+    expect(frame.getAttribute("allow")).toContain("encrypted-media");
+    const open = screen.getByRole("link", { name: "Open in Spotify" });
+    expect(open).toHaveAttribute("href", `https://open.spotify.com/track/${ID}`);
+    expect(open).toHaveAttribute("target", "_blank");
+  });
+
+  it("sits under the band recording when the song has both", async () => {
+    mocked.getSong.mockResolvedValue({ ...song, trackId: "t1", spotifyTrackId: ID });
+    renderPage();
+    const frame = await screen.findByTitle("Original recording on Spotify");
+    const play = screen.getByRole("button", { name: "Play" });
+    expect(play.compareDocumentPosition(frame) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(frame.compareDocumentPosition(screen.getByText("la la")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("says it needs internet while offline, and shows the player once back online", async () => {
+    setOnline(false);
+    mocked.getSong.mockResolvedValue({ ...song, spotifyTrackId: ID });
+    renderPage();
+    expect(await screen.findByText(/needs internet/i)).toBeInTheDocument();
+    expect(player()).toBeNull();
+    setOnline(true);
+    fireEvent(window, new Event("online"));
+    expect(await screen.findByTitle("Original recording on Spotify")).toBeInTheDocument();
+    expect(screen.queryByText(/needs internet/i)).not.toBeInTheDocument();
+  });
+});

@@ -544,3 +544,58 @@ describe("SongFormPage tempo", () => {
     expect(screen.getByText("Tempo must be a whole number from 30 to 300.")).toBeInTheDocument();
   });
 });
+
+describe("SongFormPage Spotify link", () => {
+  const ID = "4uLU6hMCjMI75M1A2tKUQC";
+  const NEW = "0000000000000000000009";
+
+  async function edit(over: Record<string, unknown> = {}) {
+    mocked.getSong.mockResolvedValue({ ...stored, ...over });
+    mocked.updateSong.mockResolvedValue({ ...stored, id: "s1" });
+    renderEdit();
+    await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("Stored"));
+  }
+  const save = () => fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+  it("shows the song's Spotify link", async () => {
+    await edit({ spotifyTrackId: ID });
+    expect(screen.getByLabelText("Spotify link")).toHaveValue(`https://open.spotify.com/track/${ID}`);
+  });
+
+  it("saves a pasted share link as the track it points to", async () => {
+    await edit();
+    expect(screen.getByLabelText("Spotify link")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("Spotify link"), {
+      target: { value: `https://open.spotify.com/intl-de/track/${NEW}?si=abc123` },
+    });
+    save();
+    await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(1));
+    expect(mocked.updateSong.mock.calls[0]).toEqual(["s1", { spotifyTrackId: NEW }, "x"]);
+  });
+
+  it("clears the link when the box is emptied", async () => {
+    await edit({ spotifyTrackId: ID });
+    fireEvent.change(screen.getByLabelText("Spotify link"), { target: { value: "  " } });
+    save();
+    await waitFor(() => expect(mocked.updateSong).toHaveBeenCalledTimes(1));
+    expect(mocked.updateSong.mock.calls[0]).toEqual(["s1", { spotifyTrackId: "" }, "x"]);
+  });
+
+  it("refuses an album or playlist link and keeps what was typed", async () => {
+    await edit();
+    const album = `https://open.spotify.com/album/${ID}`;
+    fireEvent.change(screen.getByLabelText("Spotify link"), { target: { value: album } });
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByText(/one song's link/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Spotify link")).toHaveValue(album);
+  });
+
+  it("sends an empty link for a new song with none", async () => {
+    mocked.createSong.mockResolvedValue({ id: "s2" });
+    renderForm();
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Hello" } });
+    save();
+    await waitFor(() => expect(mocked.createSong).toHaveBeenCalledTimes(1));
+    expect(mocked.createSong.mock.calls[0][0].spotifyTrackId).toBe("");
+  });
+});

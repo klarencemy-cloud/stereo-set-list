@@ -2,6 +2,8 @@
 export interface PlaylistTrack {
   title: string;
   artist: string;
+  /** The track's original recording on Spotify. Missing for pasted lists. */
+  spotifyTrackId?: string;
 }
 
 /** What reading a Spotify playlist returns. */

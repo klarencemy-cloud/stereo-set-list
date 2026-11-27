@@ -9,6 +9,7 @@ import ConflictNotice from "../components/ConflictNotice";
 import type { Song, SongInput } from "../../shared/types";
 import { BEATS_PER_BAR, MAX_BPM, MIN_BPM } from "../../shared/metronome";
 import { songTempo } from "../../shared/song";
+import { spotifyTrackIdFrom, spotifyTrackUrl } from "../../shared/spotify";
 
 const ALL_KEYS = KEYS.flatMap((k) => [k, `${k}m`]);
 
@@ -16,6 +17,7 @@ interface FormValues {
   title: string;
   artist: string;
   link: string;
+  spotify: string;
   originalKey: string;
   bandKey: string;
   capo: number;
@@ -24,7 +26,16 @@ interface FormValues {
   pasted: string;
 }
 
-const SONG_FIELDS = ["title", "artist", "sourceUrl", "originalKey", "bandKey", "capo", "content", "bpm", "beatsPerBar"] as const;
+const SONG_FIELDS = [
+  "title", "artist", "sourceUrl", "originalKey", "bandKey", "capo", "content", "bpm", "beatsPerBar", "spotifyTrackId",
+] as const;
+
+const SPOTIFY_LINK_HELP = "Paste one song's link from Spotify (Share, then Copy Song Link), not an album or playlist.";
+
+/** The typed Spotify link as a track id: "" when empty, null when it isn't a link to one song. */
+function parseSpotifyLink(text: string): string | null {
+  return text.trim() ? spotifyTrackIdFrom(text) : "";
+}
 
 /** The typed tempo: null when empty, undefined when it isn't a tempo the server accepts. */
 function parseBpm(text: string): number | null | undefined {
@@ -39,14 +50,14 @@ function parseBpm(text: string): number | null | undefined {
  */
 function changedFields(input: SongInput, loaded: Song): Partial<SongInput> {
   const out: Partial<Record<keyof SongInput, unknown>> = {};
-  // A copy saved before tempo existed has no bpm or beatsPerBar: that's the same as empty.
-  const was = { ...loaded, ...songTempo(loaded) };
+  // A copy saved before tempo (or links) existed has no bpm, beatsPerBar or spotifyTrackId: that's the same as empty.
+  const was = { ...loaded, ...songTempo(loaded), spotifyTrackId: loaded.spotifyTrackId ?? "" };
   for (const f of SONG_FIELDS) if (input[f] !== was[f]) out[f] = input[f];
   return out as Partial<SongInput>;
 }
 
 const BLANK: FormValues = {
-  title: "", artist: "", link: "", originalKey: "", bandKey: "", capo: 0, bpm: "", beatsPerBar: "", pasted: "",
+  title: "", artist: "", link: "", spotify: "", originalKey: "", bandKey: "", capo: 0, bpm: "", beatsPerBar: "", pasted: "",
 };
 
 /** A comparable picture of the fields the user can change, to tell whether anything is unsaved. */
@@ -65,6 +76,7 @@ export default function SongFormPage() {
   const [link, setLink] = useState("");
   const [title, setTitle] = useState("");
   const [artist, setArtist] = useState("");
+  const [spotify, setSpotify] = useState("");
   const [originalKey, setOriginalKey] = useState("");
   const [bandKey, setBandKey] = useState("");
   const [capo, setCapo] = useState(0);
@@ -101,6 +113,8 @@ export default function SongFormPage() {
     setTitle(s.title);
     setIsOriginal(Boolean(s.trackId));
     setArtist(s.artist);
+    const spotifyText = s.spotifyTrackId ? spotifyTrackUrl(s.spotifyTrackId) : "";
+    setSpotify(spotifyText);
     setOriginalKey(s.originalKey);
     setBandKey(s.bandKey);
     setCapo(s.capo);
@@ -119,6 +133,7 @@ export default function SongFormPage() {
         title: s.title,
         artist: s.artist,
         link: s.sourceUrl ?? "",
+        spotify: spotifyText,
         originalKey: s.originalKey,
         bandKey: s.bandKey,
         capo: s.capo,
@@ -175,11 +190,12 @@ export default function SongFormPage() {
         : (imported ?? existing ?? "");
   const dirty =
     baseline !== null &&
-    snapshotOf({ title, artist, link, originalKey, bandKey, capo, bpm, beatsPerBar, pasted }) !== baseline;
+    snapshotOf({ title, artist, link, spotify, originalKey, bandKey, capo, bpm, beatsPerBar, pasted }) !== baseline;
   const { allowNavigation } = useUnsavedChanges(dirty);
   // A song may have no key yet (an original nobody has worked out, or a song imported from a playlist).
   const bpmValue = parseBpm(bpm);
-  const canSave = title.trim() !== "" && bpmValue !== undefined && !saving;
+  const spotifyTrackId = parseSpotifyLink(spotify);
+  const canSave = title.trim() !== "" && bpmValue !== undefined && spotifyTrackId !== null && !saving;
 
   async function save() {
     setSaving(true);
@@ -197,6 +213,8 @@ export default function SongFormPage() {
       // Empty means nobody has set it: stored as null, never a made-up tempo.
       bpm: bpmValue ?? null,
       beatsPerBar: beatsPerBar ? Number(beatsPerBar) : null,
+      // Save is off while the link isn't a song's link, so null never gets here.
+      spotifyTrackId: spotifyTrackId ?? "",
     };
     const patch = loaded ? changedFields(input, loaded) : input;
     if (id && Object.keys(patch).length === 0) {
@@ -285,6 +303,18 @@ export default function SongFormPage() {
         Artist
         <input className="input" value={artist} onChange={(e) => setArtist(e.target.value)} />
       </label>
+      <label className="field">
+        Spotify link
+        <input
+          className="input"
+          type="url"
+          value={spotify}
+          placeholder="https://open.spotify.com/track/..."
+          aria-invalid={spotifyTrackId === null}
+          onChange={(e) => setSpotify(e.target.value)}
+        />
+      </label>
+      {spotifyTrackId === null && <p className="error">{SPOTIFY_LINK_HELP}</p>}
       <label className="field">
         Original key
         <select

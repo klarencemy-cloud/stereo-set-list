@@ -4,6 +4,24 @@ A private site for one band: its songs, chord sheets, gigs and recordings, and t
 
 ## Language
 
+### Songs
+
+**Original song**:
+A song the band wrote.
+_Avoid_: Own song, the original (that suggests another artist's version)
+
+**Cover song**:
+A song by another artist that the band plays.
+_Avoid_: Regular song, cover (on its own)
+
+**Band recording**:
+An uploaded audio file of the band playing a song. Any song can have one, but usually only original songs do.
+_Avoid_: Track, mp3, demo
+
+**Original recording**:
+The released version of a song, by whoever first put it out, that the band listens to in order to learn it. For an original song it is the band's own release. A song's original key is the key of its original recording.
+_Avoid_: Reference recording, Spotify song, the original
+
 ### Synced metronome
 
 **Session**:

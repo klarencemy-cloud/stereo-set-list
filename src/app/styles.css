@@ -210,6 +210,8 @@ h2 { font-size: 1.1rem; margin: 1rem 0 0.5rem; }
 .source-link { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent-ink); font-weight: 600; }
 @media (prefers-color-scheme: dark) { .source-link { color: var(--brand-blue); } }
 .key-note { margin: 0 0 12px; font-weight: 600; }
+.original-recording { margin: 0 0 12px; }
+.original-recording iframe { display: block; border: 0; border-radius: 12px; }
 .danger-zone { margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border); }
 .btn.danger { color: var(--error); border-color: var(--error); }
 .sheet {

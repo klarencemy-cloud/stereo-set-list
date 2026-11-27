@@ -1,4 +1,5 @@
 import { SPOTIFY_PAGE_TRACKS, type PlaylistResult, type PlaylistTrack } from "../../../src/shared/playlist";
+import { isSpotifyTrackId } from "../../../src/shared/spotify";
 
 /**
  * Reads a public Spotify playlist from its embed page, which needs no Spotify account or API key.
@@ -66,7 +67,11 @@ export function parseSpotifyEmbedHtml(html: string): PlaylistResult {
     const t = (raw ?? {}) as Record<string, unknown>;
     const title = typeof t.title === "string" ? t.title.trim() : "";
     if (!title) continue;
-    tracks.push({ title, artist: typeof t.subtitle === "string" ? t.subtitle.trim() : "" });
+    const track: PlaylistTrack = { title, artist: typeof t.subtitle === "string" ? t.subtitle.trim() : "" };
+    // Kept so the song can play its original recording. A podcast episode or odd id is left out.
+    const id = typeof t.uri === "string" ? t.uri.match(/^spotify:track:(.+)$/)?.[1] : undefined;
+    if (isSpotifyTrackId(id)) track.spotifyTrackId = id;
+    tracks.push(track);
   }
   if (tracks.length === 0) throw new PlaylistError("empty");
   const name = typeof entity.name === "string" ? entity.name : typeof entity.title === "string" ? entity.title : "";

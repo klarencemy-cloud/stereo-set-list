@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 const store = {
   getWithMetadata: vi.fn(),
+  get: vi.fn(),
+  list: vi.fn(),
   set: vi.fn(),
 };
 vi.mock("@netlify/blobs", () => ({ getStore: vi.fn(() => store) }));
@@ -30,8 +32,18 @@ describe("blobsKV", () => {
     expect(store.set).toHaveBeenCalledWith("metronome/a", "v", { onlyIfNew: true });
   });
 
+  it("takes the etag from the listing when a read has none (the local netlify dev store)", async () => {
+    store.getWithMetadata.mockResolvedValueOnce({ data: "v1", etag: undefined, metadata: {} });
+    store.list.mockResolvedValueOnce({ blobs: [{ key: "songs/ab", etag: '"other"' }, { key: "songs/a", etag: '"e2"' }], directories: [] });
+    store.get.mockResolvedValueOnce("v2");
+    // The value is read after the etag, so a write in between leaves the etag stale, never wrong.
+    expect(await blobsKV().getTextTagged("songs/a")).toEqual({ value: "v2", etag: '"e2"' });
+    expect(store.list).toHaveBeenCalledWith({ prefix: "songs/a" });
+  });
+
   it("refuses to hand out a value without an etag rather than write unconditionally", async () => {
     store.getWithMetadata.mockResolvedValueOnce({ data: "v1", etag: undefined, metadata: {} });
+    store.list.mockResolvedValueOnce({ blobs: [], directories: [] });
     await expect(blobsKV().getTextTagged("songs/a")).rejects.toThrow(/etag/);
   });
 });

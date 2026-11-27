@@ -45,12 +45,21 @@ describe("parseSpotifyEmbedHtml", () => {
     expect(parseSpotifyEmbedHtml(fixture)).toEqual({
       name: "Friday Rehearsal",
       tracks: [
-        { title: "Garden Path Song", artist: "The Made Up Band" },
-        { title: "Café & Rain", artist: "Nowhere Trio, Guest Singer" },
-        { title: "Lighthouse - Live", artist: "The Made Up Band" },
+        { title: "Garden Path Song", artist: "The Made Up Band", spotifyTrackId: "0000000000000000000001" },
+        { title: "Café & Rain", artist: "Nowhere Trio, Guest Singer", spotifyTrackId: "0000000000000000000002" },
+        { title: "Lighthouse - Live", artist: "The Made Up Band", spotifyTrackId: "0000000000000000000003" },
       ],
       truncated: false,
     });
+  });
+
+  it("leaves out a track id that isn't a Spotify track", () => {
+    const html = fixture
+      .replace('"uri":"spotify:track:0000000000000000000001"', '"uri":"spotify:episode:0000000000000000000001"')
+      .replace('"uri":"spotify:track:0000000000000000000002"', '"uri":"spotify:track:bad"');
+    const { tracks } = parseSpotifyEmbedHtml(html);
+    expect(tracks[0]).toEqual({ title: "Garden Path Song", artist: "The Made Up Band" });
+    expect(tracks[1]).toEqual({ title: "Café & Rain", artist: "Nowhere Trio, Guest Singer" });
   });
 
   it("says when the page is full, since Spotify may have left tracks out", () => {

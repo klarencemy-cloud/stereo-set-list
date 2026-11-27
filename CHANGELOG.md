@@ -2,6 +2,13 @@
 
 What's new on Stereo Set, newest first.
 
+## Unreleased: Hear the original recording
+
+### Added
+
+- **Play a song's original recording from Spotify.** Paste a song's Spotify link on Edit song (in Spotify: Share, then Copy Song Link) and the song page shows Spotify's player, under the band recording if the song has one. Logged into spotify.com on a laptop, it plays the whole song. On a phone Spotify only plays a short preview there, so tap **Open in Spotify** to hear the whole song in the Spotify app. Offline, the page says the original recording needs internet.
+- **Playlist imports keep the link.** Songs made from a Spotify playlist get each track's link. Importing a playlist again also adds the link to songs you already have, but only to songs that don't have one yet. It never replaces a link.
+
 ## Unreleased: A steadier band metronome
 
 ### Fixed

@@ -5,6 +5,7 @@ import { toSongSummary } from "../../../src/shared/song";
 import { isValidKey } from "../../../src/shared/transpose";
 import { applyChange, BEATS_PER_BAR, MAX_BPM, MIN_BPM, type MetroChange, type MetroGrid, type MetroSession } from "../../../src/shared/metronome";
 import { songMatchKey, songsByMatchKey, uniqueTracks, type PlaylistTrack } from "../../../src/shared/playlist";
+import { isSpotifyTrackId } from "../../../src/shared/spotify";
 import type { KV } from "./kv";
 
 export class ValidationError extends Error {
@@ -58,9 +59,15 @@ export const LIMITS = {
   metroLeader: 64,
 } as const;
 
-const SONG_FIELDS = ["title", "artist", "sourceUrl", "originalKey", "bandKey", "capo", "content", "bpm", "beatsPerBar"] as const;
-/** Song fields an older client may leave out of a create; they are stored as null (unknown). */
-const OPTIONAL_SONG_FIELDS: readonly string[] = ["bpm", "beatsPerBar"];
+const SONG_FIELDS = [
+  "title", "artist", "sourceUrl", "originalKey", "bandKey", "capo", "content", "bpm", "beatsPerBar", "spotifyTrackId",
+] as const;
+/** Song fields an older client may leave out of a create, and what they are stored as (unknown). */
+const OPTIONAL_SONG_FIELDS: Partial<Record<(typeof SONG_FIELDS)[number], unknown>> = {
+  bpm: null,
+  beatsPerBar: null,
+  spotifyTrackId: "",
+};
 
 function checkString(field: string, v: unknown, max: number): string {
   if (typeof v !== "string") throw new ValidationError(`${field} must be text`);
@@ -101,6 +108,10 @@ function checkSongField(field: (typeof SONG_FIELDS)[number], v: unknown): unknow
         throw new ValidationError(`beatsPerBar must be empty or a whole number from ${BEATS_PER_BAR[0]} to ${BEATS_PER_BAR[BEATS_PER_BAR.length - 1]}`);
       }
       return v;
+    case "spotifyTrackId":
+      // The client turns a pasted link into the id; "" means no original recording yet.
+      if (v !== "" && !isSpotifyTrackId(v)) throw new ValidationError("spotifyTrackId must be empty or a Spotify track id");
+      return v;
   }
 }
 
@@ -111,8 +122,8 @@ function cleanSong(input: unknown, partial: boolean): Partial<SongInput> {
   for (const f of SONG_FIELDS) {
     if (!(f in src)) {
       if (partial) continue;
-      if (OPTIONAL_SONG_FIELDS.includes(f)) {
-        out[f] = null;
+      if (f in OPTIONAL_SONG_FIELDS) {
+        out[f] = OPTIONAL_SONG_FIELDS[f];
         continue;
       }
       throw new ValidationError(`${f} is required`);
@@ -242,15 +253,26 @@ function checkTracks(v: unknown): PlaylistTrack[] {
   if (v.length > LIMITS.gigSongs) throw new ValidationError(`a playlist import can hold at most ${LIMITS.gigSongs} songs`);
   return v.map((t) => {
     if (!t || typeof t !== "object") throw new ValidationError("each track needs a title and an artist");
-    const { title, artist } = t as Record<string, unknown>;
+    const { title, artist, spotifyTrackId } = t as Record<string, unknown>;
     const cleanTitle = checkString("title", title, LIMITS.title).trim();
     if (!cleanTitle) throw new ValidationError("title is required");
-    return { title: cleanTitle, artist: checkString("artist", artist, LIMITS.artist).trim() };
+    const track: PlaylistTrack = { title: cleanTitle, artist: checkString("artist", artist, LIMITS.artist).trim() };
+    if (spotifyTrackId !== undefined) {
+      if (!isSpotifyTrackId(spotifyTrackId)) throw new ValidationError("spotifyTrackId must be a Spotify track id");
+      track.spotifyTrackId = spotifyTrackId;
+    }
+    return track;
   });
 }
 
 /** A new song nobody has filled in yet. */
-function blankSong({ id, title, artist, trackId }: { id: string; title: string; artist: string; trackId?: string }): Song {
+function blankSong({ id, title, artist, trackId, spotifyTrackId = "" }: {
+  id: string;
+  title: string;
+  artist: string;
+  trackId?: string;
+  spotifyTrackId?: string;
+}): Song {
   return {
     id,
     title,
@@ -264,6 +286,7 @@ function blankSong({ id, title, artist, trackId }: { id: string; title: string; 
     // Nor its tempo.
     bpm: null,
     beatsPerBar: null,
+    spotifyTrackId,
     ...(trackId !== undefined ? { trackId } : {}),
     updatedAt: new Date().toISOString(),
   };
@@ -355,12 +378,17 @@ function toMetroSession(stored: MetroSession, nowMs: number): MetroSession {
   return prev ? { ...s, prev } : s;
 }
 
-/** A song as stored; songs saved before tempo existed have no bpm or beatsPerBar. */
+/** A song as stored; songs saved before tempo (or the original recording) existed lack those fields. */
 type StoredSong = Omit<Song, "bpm" | "beatsPerBar"> & Partial<Pick<Song, "bpm" | "beatsPerBar">>;
 
 /** Every song read goes through this, so get, list, update and import can't disagree. */
 function toSong(stored: StoredSong): Song {
-  return { ...stored, bpm: stored.bpm ?? null, beatsPerBar: stored.beatsPerBar ?? null };
+  return {
+    ...stored,
+    bpm: stored.bpm ?? null,
+    beatsPerBar: stored.beatsPerBar ?? null,
+    spotifyTrackId: stored.spotifyTrackId ?? "",
+  };
 }
 
 type StoredGig = {
@@ -420,6 +448,14 @@ export function makeRepo(kv: KV) {
   async function getSong(id: string): Promise<Song | null> {
     const stored = await readJson<StoredSong>(`songs/${id}`);
     return stored && toSong(stored);
+  }
+  /** Gives a song its original recording, unless a bandmate gave it one (or deleted it) meanwhile. */
+  async function fillSpotifyTrack(song: Song, spotifyTrackId: string): Promise<Song> {
+    const next = await modify<StoredSong>(`songs/${song.id}`, (stored) => {
+      const cur = toSong(stored);
+      return cur.spotifyTrackId ? null : { ...cur, spotifyTrackId, updatedAt: nextStamp(cur.updatedAt) };
+    });
+    return next ? toSong(next) : song;
   }
   const readSongs = async () => (await readAll<StoredSong>("songs/")).map(toSong);
   const getTrack = (id: string) => readJson<Track>(`tracks/${id}`);
@@ -578,6 +614,7 @@ export function makeRepo(kv: KV) {
      * Turns a playlist into songs: a track matching an existing song (same title and artist,
      * ignoring case and spacing) reuses it; the rest become songs with no key or chords yet.
      * Returns one song per distinct track, in playlist order. Safe to repeat.
+     * A reused song with no original recording gets the track's; one it already has is never replaced.
      */
     async importSongs(input: unknown): Promise<Song[]> {
       const tracks = uniqueTracks(checkTracks(input));
@@ -586,10 +623,10 @@ export function makeRepo(kv: KV) {
       for (const t of tracks) {
         const found = byKey.get(songMatchKey(t.title, t.artist));
         if (found) {
-          out.push(found);
+          out.push(t.spotifyTrackId && !found.spotifyTrackId ? await fillSpotifyTrack(found, t.spotifyTrackId) : found);
           continue;
         }
-        const song = blankSong({ id: crypto.randomUUID(), title: t.title, artist: t.artist });
+        const song = blankSong({ id: crypto.randomUUID(), title: t.title, artist: t.artist, spotifyTrackId: t.spotifyTrackId });
         await writeJson(`songs/${song.id}`, song);
         out.push(song);
       }

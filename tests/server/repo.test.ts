@@ -667,6 +667,75 @@ describe("original songs", () => {
   });
 });
 
+describe("original recording (Spotify track)", () => {
+  const ID = "4uLU6hMCjMI75M1A2tKUQC";
+
+  it("is empty unless given, and can be set, changed and cleared", async () => {
+    const repo = makeRepo(memoryKV());
+    const s = await repo.createSong(song());
+    expect(s.spotifyTrackId).toBe("");
+    expect((await repo.createSong(song({ spotifyTrackId: ID }))).spotifyTrackId).toBe(ID);
+    expect((await repo.updateSong(s.id, { spotifyTrackId: ID })).spotifyTrackId).toBe(ID);
+    expect((await repo.getSong(s.id))!.spotifyTrackId).toBe(ID);
+    expect((await repo.updateSong(s.id, { spotifyTrackId: "" })).spotifyTrackId).toBe("");
+  });
+
+  it("accepts only a Spotify track id, not a link or anything else", async () => {
+    const repo = makeRepo(memoryKV());
+    const s = await repo.createSong(song());
+    for (const bad of [`https://open.spotify.com/track/${ID}`, "short", 5, null]) {
+      await expect(repo.updateSong(s.id, { spotifyTrackId: bad } as never)).rejects.toThrow(ValidationError);
+      await expect(repo.createSong(song({ spotifyTrackId: bad } as never))).rejects.toThrow(ValidationError);
+    }
+  });
+
+  it("reads a song stored before it existed as empty through get, list, update and import", async () => {
+    const kv = memoryKV();
+    await kv.setText("songs/old", JSON.stringify({ ...song(), id: "old", updatedAt: "2026-01-01T00:00:00.000Z" }));
+    const repo = makeRepo(kv);
+    expect((await repo.getSong("old"))!.spotifyTrackId).toBe("");
+    expect((await repo.listSongs())[0].spotifyTrackId).toBe("");
+    const [imported] = await repo.importSongs([{ title: "Wonderwall", artist: "Oasis" }]);
+    expect(imported.spotifyTrackId).toBe("");
+    expect((await repo.updateSong("old", { capo: 1 })).spotifyTrackId).toBe("");
+  });
+
+  it("is kept from a playlist import on a new song", async () => {
+    const repo = makeRepo(memoryKV());
+    const [s] = await repo.importSongs([{ title: "Yellow", artist: "Coldplay", spotifyTrackId: ID }]);
+    expect(s.spotifyTrackId).toBe(ID);
+    expect((await repo.getSong(s.id))!.spotifyTrackId).toBe(ID);
+    const [pasted] = await repo.importSongs([{ title: "Creep", artist: "Radiohead" }]);
+    expect(pasted.spotifyTrackId).toBe("");
+  });
+
+  it("is filled in on an existing song by a re-import only when the song has none", async () => {
+    const repo = makeRepo(memoryKV());
+    const empty = await repo.createSong(song());
+    const OTHER = "0000000000000000000009";
+    const kept = await repo.createSong(song({ title: "Creep", artist: "Radiohead", spotifyTrackId: OTHER }));
+    const [filled, untouched] = await repo.importSongs([
+      { title: "Wonderwall", artist: "Oasis", spotifyTrackId: ID },
+      { title: "Creep", artist: "Radiohead", spotifyTrackId: ID },
+    ]);
+    expect(filled).toMatchObject({ id: empty.id, spotifyTrackId: ID, content: empty.content });
+    expect(filled.updatedAt).not.toBe(empty.updatedAt);
+    expect((await repo.getSong(empty.id))!.spotifyTrackId).toBe(ID);
+    expect(untouched).toEqual(kept);
+    // A pasted list (no ids) never clears a link.
+    const [again] = await repo.importSongs([{ title: "Wonderwall", artist: "Oasis" }]);
+    expect(again.spotifyTrackId).toBe(ID);
+  });
+
+  it("rejects a playlist track whose id isn't a Spotify track id", async () => {
+    const repo = makeRepo(memoryKV());
+    for (const bad of ["short", 5, `https://open.spotify.com/track/${ID}`]) {
+      await expect(repo.importSongs([{ title: "A", artist: "", spotifyTrackId: bad }])).rejects.toThrow(ValidationError);
+    }
+    expect(await repo.listSongs()).toHaveLength(0);
+  });
+});
+
 describe("importSongs", () => {
   it("reuses matching songs, creates the rest empty, and keeps playlist order", async () => {
     const repo = makeRepo(memoryKV());
